@@ -1,0 +1,38 @@
+#!/bin/sh
+# Pre-commit gate for the GT7 backend.
+#
+# Enforces the mechanical floor so nothing broken or unformatted is committed:
+#   gofmt (formatting)  ->  golangci-lint (govet + staticcheck + revive doc-comments + ...)
+#   ->  go build  ->  go test
+#
+# govulncheck is NOT run here: it queries the vulnerability database over the network and is too
+# slow for every commit. Run `make vuln` in CI or periodically instead.
+# Comment *quality* is not machine-checkable and is enforced by review, not here.
+#
+# Enable once with:  make hooks   (sets core.hooksPath to .githooks)
+# Install the tooling with:  make tools
+# Bypass in an emergency with:  git commit --no-verify
+set -e
+
+echo "[pre-commit] gofmt"
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+	echo "[pre-commit] FAIL: gofmt needed on:"
+	echo "$unformatted"
+	exit 1
+fi
+
+echo "[pre-commit] golangci-lint"
+if ! command -v golangci-lint >/dev/null 2>&1; then
+	echo "[pre-commit] FAIL: golangci-lint not found. Install it with: make tools"
+	exit 1
+fi
+golangci-lint run
+
+echo "[pre-commit] go build"
+go build ./...
+
+echo "[pre-commit] go test"
+go test ./...
+
+echo "[pre-commit] OK"
