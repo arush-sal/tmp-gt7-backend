@@ -1,4 +1,4 @@
-module github.com/arush-sal/gt7/backend
+module github.com/arush-sal/garage/backend
 
 go 1.26.3
 

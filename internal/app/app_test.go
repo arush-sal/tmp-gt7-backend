@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	telemetryv1 "github.com/arush-sal/gt7/backend/gen/gt7/telemetry/v1"
-	"github.com/arush-sal/gt7/backend/internal/app"
-	"github.com/arush-sal/gt7/backend/internal/config"
+	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
+	"github.com/arush-sal/garage/backend/internal/app"
+	"github.com/arush-sal/garage/backend/internal/config"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )

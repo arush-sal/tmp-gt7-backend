@@ -51,3 +51,6 @@ CLAUDE.md
 # Local runtime
 *.local.yaml
 /rawdump/
+
+# MkDocs build output
+/site/
