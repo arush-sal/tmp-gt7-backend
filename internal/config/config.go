@@ -72,8 +72,44 @@ func Load(args []string) (Config, error) {
 		RawBufferSize:     v.GetInt("raw_buffer.size"),
 		LogLevel:          v.GetString("log.level"),
 	}
-	if cfg.PS5IP == "" {
-		return Config{}, errors.New("config: ps5.ip is required")
+	if err := cfg.validate(); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
+
+// validate rejects resolved values that would crash or misbehave at runtime: a non-positive
+// heartbeat interval panics time.NewTicker, a zero-size buffer makes the publisher spin, and
+// out-of-range ports never bind.
+func (c Config) validate() error {
+	if c.PS5IP == "" {
+		return errors.New("config: ps5.ip is required")
+	}
+	if c.RTPSAddr == "" {
+		return errors.New("config: rtps.addr is required")
+	}
+	if !validPort(c.RecvPort) {
+		return fmt.Errorf("config: udp.recv_port must be 1..65535, got %d", c.RecvPort)
+	}
+	if !validPort(c.SendPort) {
+		return fmt.Errorf("config: udp.send_port must be 1..65535, got %d", c.SendPort)
+	}
+	if c.HeartbeatInterval <= 0 {
+		return fmt.Errorf("config: heartbeat.interval must be > 0, got %s", c.HeartbeatInterval)
+	}
+	if c.LiveBufferSize <= 0 {
+		return fmt.Errorf("config: live_buffer.size must be > 0, got %d", c.LiveBufferSize)
+	}
+	if c.RawBufferSize <= 0 {
+		return fmt.Errorf("config: raw_buffer.size must be > 0, got %d", c.RawBufferSize)
+	}
+	switch c.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("config: log.level must be debug|info|warn|error, got %q", c.LogLevel)
+	}
+	return nil
+}
+
+// validPort reports whether p is a usable TCP/UDP port.
+func validPort(p int) bool { return p >= 1 && p <= 65535 }

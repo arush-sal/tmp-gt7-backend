@@ -54,3 +54,6 @@ CLAUDE.md
 
 # MkDocs build output
 /site/
+
+# Internal audit/review docs (kept local; recorded in the vault)
+audit.md
