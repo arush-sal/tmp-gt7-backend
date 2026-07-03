@@ -84,3 +84,58 @@ func TestConfigPrecedence(t *testing.T) {
 		t.Errorf("flag-over-env: RecvPort = %d, want 42000", c.RecvPort)
 	}
 }
+
+// TestLoadBackend_Defaults checks the backend binary's zero-flag defaults.
+func TestLoadBackend_Defaults(t *testing.T) {
+	c, err := LoadBackend(nil)
+	if err != nil {
+		t.Fatalf("LoadBackend: %v", err)
+	}
+	if c.IngestAddr != "localhost:50051" {
+		t.Errorf("IngestAddr = %q, want localhost:50051", c.IngestAddr)
+	}
+	if c.LogLevel != "info" {
+		t.Errorf("LogLevel = %q, want info", c.LogLevel)
+	}
+}
+
+// TestLoadBackend_Overrides checks flag and env precedence for ingest.addr (flag > env).
+func TestLoadBackend_Overrides(t *testing.T) {
+	t.Setenv("GT7_INGEST_ADDR", "0.0.0.0:6000")
+	if c, _ := LoadBackend(nil); c.IngestAddr != "0.0.0.0:6000" {
+		t.Errorf("env: IngestAddr = %q, want 0.0.0.0:6000", c.IngestAddr)
+	}
+	if c, _ := LoadBackend([]string{"--ingest.addr=127.0.0.1:7000"}); c.IngestAddr != "127.0.0.1:7000" {
+		t.Errorf("flag-over-env: IngestAddr = %q, want 127.0.0.1:7000", c.IngestAddr)
+	}
+}
+
+// TestLoadBackend_Validation rejects an empty address and an unknown log level.
+func TestLoadBackend_Validation(t *testing.T) {
+	if _, err := LoadBackend([]string{"--ingest.addr="}); err == nil {
+		t.Error("empty ingest.addr: want error, got nil")
+	}
+	if _, err := LoadBackend([]string{"--log.level=trace"}); err == nil {
+		t.Error("bad log.level: want error, got nil")
+	}
+}
+
+// TestLoadBackend_Storage checks the storage selector + its DSN requirement.
+func TestLoadBackend_Storage(t *testing.T) {
+	// default is memory, no DSN needed
+	if c, err := LoadBackend(nil); err != nil || c.Storage != "memory" {
+		t.Fatalf("default storage: c=%+v err=%v, want memory/nil", c, err)
+	}
+	// postgres without a DSN is rejected
+	if _, err := LoadBackend([]string{"--storage=postgres"}); err == nil {
+		t.Error("storage=postgres without db.dsn: want error, got nil")
+	}
+	// postgres with a DSN is accepted
+	if c, err := LoadBackend([]string{"--storage=postgres", "--db.dsn=postgres://x"}); err != nil || c.DBDSN != "postgres://x" {
+		t.Errorf("storage=postgres with dsn: c=%+v err=%v", c, err)
+	}
+	// unknown backing is rejected
+	if _, err := LoadBackend([]string{"--storage=redis"}); err == nil {
+		t.Error("storage=redis: want error, got nil")
+	}
+}

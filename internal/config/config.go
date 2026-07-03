@@ -113,3 +113,81 @@ func (c Config) validate() error {
 
 // validPort reports whether p is a usable TCP/UDP port.
 func validPort(p int) bool { return p >= 1 && p <= 65535 }
+
+// BackendConfig holds the backend (RTPS) binary's runtime configuration. It is separate from the
+// collector's Config — a different binary with different keys — but uses the same precedence
+// (flag > env > file > default) and the same GT7_ env prefix (e.g. GT7_INGEST_ADDR for ingest.addr).
+type BackendConfig struct {
+	// IngestAddr is the TCP address the telemetry ingest gRPC server listens on. It must match the
+	// address the collector dials (its rtps.addr); both default to localhost:50051.
+	IngestAddr string
+	LogLevel   string
+
+	// Storage selects the session store backing: "memory" (default; dev/tests) or "postgres".
+	Storage string
+	// DBDSN is the PostgreSQL connection string; required when Storage is "postgres".
+	DBDSN string
+}
+
+// LoadBackend parses args for the backend binary and returns the resolved BackendConfig.
+func LoadBackend(args []string) (BackendConfig, error) {
+	fs := pflag.NewFlagSet("rtps", pflag.ContinueOnError)
+	fs.String("ingest.addr", "localhost:50051", "address the telemetry ingest gRPC server listens on")
+	fs.String("log.level", "info", "log level: debug|info|warn|error")
+	fs.String("storage", "memory", "session store backing: memory|postgres")
+	fs.String("db.dsn", "", "PostgreSQL connection string (required when storage=postgres)")
+	fs.String("config", "", "path to a config file (optional)")
+	if err := fs.Parse(args); err != nil {
+		return BackendConfig{}, err
+	}
+
+	v := viper.New()
+	if err := v.BindPFlags(fs); err != nil {
+		return BackendConfig{}, err
+	}
+	v.SetEnvPrefix("GT7")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	if path, _ := fs.GetString("config"); path != "" {
+		v.SetConfigFile(path)
+		if err := v.ReadInConfig(); err != nil {
+			return BackendConfig{}, fmt.Errorf("config: read %s: %w", path, err)
+		}
+	}
+
+	cfg := BackendConfig{
+		IngestAddr: v.GetString("ingest.addr"),
+		LogLevel:   v.GetString("log.level"),
+		Storage:    v.GetString("storage"),
+		DBDSN:      v.GetString("db.dsn"),
+	}
+	if err := cfg.validate(); err != nil {
+		return BackendConfig{}, err
+	}
+	return cfg, nil
+}
+
+// validate rejects resolved values that would fail at runtime: an empty listen address never binds,
+// an unknown log level can't build a logger, an unknown storage backing has no implementation, and
+// postgres storage needs a DSN to connect.
+func (c BackendConfig) validate() error {
+	if c.IngestAddr == "" {
+		return errors.New("config: ingest.addr is required")
+	}
+	switch c.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("config: log.level must be debug|info|warn|error, got %q", c.LogLevel)
+	}
+	switch c.Storage {
+	case "memory":
+	case "postgres":
+		if c.DBDSN == "" {
+			return errors.New("config: db.dsn is required when storage=postgres")
+		}
+	default:
+		return fmt.Errorf("config: storage must be memory|postgres, got %q", c.Storage)
+	}
+	return nil
+}
