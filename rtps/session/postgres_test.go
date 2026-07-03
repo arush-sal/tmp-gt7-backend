@@ -8,6 +8,7 @@ import (
 	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
+	"github.com/arush-sal/garage/backend/internal/db"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
@@ -47,23 +48,23 @@ func sharedPostgres(t *testing.T) string {
 	return pgDSN
 }
 
-// freshPGStore returns a migrated PostgresStore with an empty sessions table (truncated so each test
-// asserts against a known-empty starting point despite the shared database).
+// freshPGStore returns a PostgresStore over a migrated pool with an empty sessions table (truncated
+// so each test asserts against a known-empty starting point despite the shared database).
 func freshPGStore(t *testing.T) *PostgresStore {
 	t.Helper()
 	ctx := context.Background()
-	st, err := NewPostgresStore(ctx, sharedPostgres(t))
+	pool, err := db.Connect(ctx, sharedPostgres(t))
 	if err != nil {
-		t.Fatalf("NewPostgresStore: %v", err)
+		t.Fatalf("db.Connect: %v", err)
 	}
-	t.Cleanup(st.Close)
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	t.Cleanup(pool.Close)
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
 	}
-	if _, err := st.pool.Exec(ctx, "TRUNCATE sessions"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE sessions CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	return st
+	return NewPostgresStore(pool)
 }
 
 // TestPostgresStore_RoundTrip checks full field fidelity through the DB, including the enum Source,

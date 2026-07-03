@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -225,6 +226,34 @@ func TestDetector_CloseIdempotent(t *testing.T) {
 	d.Close() // second call must not emit or panic
 	if len(sink.ends) != 1 {
 		t.Errorf("ends=%d after double Close, want 1", len(sink.ends))
+	}
+}
+
+// errStore fails every Save — models a DB outage.
+type errStore struct{ saves int }
+
+func (e *errStore) Save(*Record) error         { e.saves++; return errors.New("boom") }
+func (e *errStore) Get(string) (*Record, bool) { return nil, false }
+func (e *errStore) List() []*Record            { return nil }
+
+// TestDetector_SaveErrorNotConfirmed: if persisting the active session fails, the session must NOT be
+// confirmed (no OnSessionStart — which would cascade into FK-violating lap inserts), and the failure
+// must be surfaced via OnError.
+func TestDetector_SaveErrorNotConfirmed(t *testing.T) {
+	var errs int
+	cfg := testCfg()
+	cfg.OnError = func(error) { errs++ }
+	sink := &capSink{}
+	d := NewDetector(sink, &errStore{}, cfg)
+	for _, f := range inRaceRun(0, 100, 12, 1384, 1, 2, 2) {
+		d.Observe(f)
+	}
+	d.Close()
+	if len(sink.starts) != 0 {
+		t.Errorf("starts=%d, want 0 (save failed -> not confirmed)", len(sink.starts))
+	}
+	if errs == 0 {
+		t.Error("OnError not called on save failure")
 	}
 }
 

@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"fmt"
 	"time"
@@ -10,54 +9,19 @@ import (
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 )
 
-// migrationsFS holds the goose SQL migrations, embedded so the binary is self-contained (no external
-// migration files to ship).
-//
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
-
-// PostgresStore is the persistent Store implementation (D-B1 reversed for SM: sessions persist).
-// It backs the same Store interface as MemStore, so the Detector and ingest server are unchanged.
+// PostgresStore is the persistent Store implementation (D-B1 reversed for SM: sessions persist). It
+// backs the same Store interface as MemStore, so the Detector and ingest server are unchanged. It
+// borrows a shared pgx pool (created + migrated by internal/db) and does not own its lifecycle.
 type PostgresStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresStore connects to Postgres via a pgx pool and verifies the connection. Call Migrate once
-// after construction (and Close on shutdown).
-func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("session: pgx pool: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("session: ping postgres: %w", err)
-	}
-	return &PostgresStore{pool: pool}, nil
+// NewPostgresStore returns a store over an already-connected, already-migrated pool.
+func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
+	return &PostgresStore{pool: pool}
 }
-
-// Migrate applies the embedded goose migrations (idempotent). goose speaks database/sql, so we adapt
-// the pgx pool with stdlib.OpenDBFromPool rather than opening a second connection.
-func (s *PostgresStore) Migrate(ctx context.Context) error {
-	db := stdlib.OpenDBFromPool(s.pool)
-	defer func() { _ = db.Close() }()
-
-	goose.SetBaseFS(migrationsFS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("session: goose dialect: %w", err)
-	}
-	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
-		return fmt.Errorf("session: migrate: %w", err)
-	}
-	return nil
-}
-
-// Close releases the connection pool.
-func (s *PostgresStore) Close() { s.pool.Close() }
 
 // upsertSQL inserts a session or updates every mutable column on id conflict (the Detector saves a
 // session active, then again on close).

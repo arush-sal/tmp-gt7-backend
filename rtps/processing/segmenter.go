@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -18,6 +19,10 @@ type LapSegmenter struct {
 	store LapStore
 	mu    sync.Mutex
 	state map[string]*lapState
+
+	// OnError, if set, is called when persisting a lap fails (the Sink API is error-less, so this
+	// surfaces store failures that would otherwise be silent). nil = ignore.
+	OnError func(error)
 }
 
 // lapState tracks the lap currently being accumulated for one session.
@@ -102,7 +107,7 @@ func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastL
 		dur = st.lastTime.Sub(st.startTime)
 	}
 	timed := st.lapNumber > 0
-	_ = s.store.Save(&Lap{
+	if err := s.store.Save(&Lap{
 		SessionID:  sessionID,
 		LapNumber:  st.lapNumber,
 		StartTime:  st.startTime,
@@ -113,5 +118,7 @@ func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastL
 		Complete:   complete,
 		Timed:      timed,
 		Valid:      timed && complete && st.gapCount == 0,
-	})
+	}); err != nil && s.OnError != nil {
+		s.OnError(fmt.Errorf("save lap %s#%d: %w", sessionID, st.lapNumber, err))
+	}
 }

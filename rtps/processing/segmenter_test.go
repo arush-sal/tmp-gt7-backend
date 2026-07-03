@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -163,4 +164,26 @@ func lapNums(laps []*Lap) []int32 {
 		n[i] = l.LapNumber
 	}
 	return n
+}
+
+// errLapStore fails every Save — models a DB outage.
+type errLapStore struct{ saves int }
+
+func (e *errLapStore) Save(*Lap) error         { e.saves++; return errors.New("boom") }
+func (e *errLapStore) BySession(string) []*Lap { return nil }
+func (e *errLapStore) List() []*Lap            { return nil }
+
+// TestSegmenter_SaveErrorSurfaced: a lap-store failure must reach OnError rather than being swallowed.
+func TestSegmenter_SaveErrorSurfaced(t *testing.T) {
+	var errs int
+	seg := NewLapSegmenter(&errLapStore{})
+	seg.OnError = func(error) { errs++ }
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	seg.OnFrame("s1", mkFrame(0, 1, 0, false))
+	seg.OnFrame("s1", mkFrame(100, 2, 60_000, false)) // boundary -> emit lap -> Save errors
+	seg.OnSessionEnd(rec)                             // flush final lap -> Save errors
+	if errs == 0 {
+		t.Error("OnError not called on lap save failure")
+	}
 }

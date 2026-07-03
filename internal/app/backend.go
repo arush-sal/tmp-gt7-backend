@@ -7,15 +7,17 @@ import (
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/internal/config"
+	"github.com/arush-sal/garage/backend/internal/db"
 	"github.com/arush-sal/garage/backend/rtps/ingest"
+	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
 // RunBackend starts the backend (RTPS) process: it binds the ingest gRPC server and serves until ctx
-// is cancelled (SIGINT/SIGTERM), then stops gracefully. Slice 1 wires an in-memory session store and
-// a logging sink; persistence and downstream domains slot in here later.
+// is cancelled (SIGINT/SIGTERM), then stops gracefully. It wires the session store, the lap
+// segmenter, and a logging sink (fanned out) — in-memory or Postgres per config.
 func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) error {
 	if log == nil { // defensive: match ingest.NewServer / NewLoggingSink nil-logger handling
 		log = zap.NewNop()
@@ -25,27 +27,39 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 		return fmt.Errorf("listen %s: %w", cfg.IngestAddr, err)
 	}
 
-	// Select the session store backing (config-driven, D-B5 seam). Postgres migrates on startup.
-	var store session.Store
+	// Select the storage backing (config-driven, D-B5 seam). One pool + one migration set (internal/db)
+	// back both the session and lap stores. Postgres migrates on startup.
+	var (
+		sessStore session.Store
+		lapStore  processing.LapStore
+	)
 	switch cfg.Storage {
 	case "postgres":
-		ps, err := session.NewPostgresStore(ctx, cfg.DBDSN)
+		pool, err := db.Connect(ctx, cfg.DBDSN)
 		if err != nil {
-			return fmt.Errorf("postgres store: %w", err)
+			return fmt.Errorf("db connect: %w", err)
 		}
-		defer ps.Close()
-		if err := ps.Migrate(ctx); err != nil {
-			return fmt.Errorf("migrate: %w", err)
+		defer pool.Close()
+		if err := db.Migrate(ctx, pool); err != nil {
+			return fmt.Errorf("db migrate: %w", err)
 		}
-		log.Info("using postgres session store")
-		store = ps
+		sessStore = session.NewPostgresStore(pool)
+		lapStore = processing.NewPostgresLapStore(pool)
+		log.Info("using postgres stores")
 	default:
-		log.Info("using in-memory session store")
-		store = session.NewMemStore()
+		sessStore = session.NewMemStore()
+		lapStore = processing.NewMemLapStore()
+		log.Info("using in-memory stores")
 	}
 
-	sink := ingest.NewLoggingSink(log)
-	srv := ingest.NewServer(store, sink, session.Config{}, log)
+	// Fan out the session stream to the lap segmenter (Processing) and a logging sink. Persistence
+	// failures are surfaced via error hooks (the Sink/Observe API is otherwise error-less).
+	segmenter := processing.NewLapSegmenter(lapStore)
+	segmenter.OnError = func(err error) { log.Error("lap persistence failed", zap.Error(err)) }
+	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter)
+
+	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
+	srv := ingest.NewServer(sessStore, sink, detCfg, log)
 
 	gs := grpc.NewServer()
 	telemetryv1.RegisterTelemetryServer(gs, srv)

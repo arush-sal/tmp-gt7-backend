@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -24,6 +25,10 @@ type Config struct {
 	MinSession              time.Duration // a session shorter than this at close is dropped as noise
 	PackageIDResetThreshold uint32        // backward package_id jump beyond this = defensive reset
 	NewID                   func() string // session id generator; injected for deterministic tests
+	// OnError, if set, is called when persisting a session fails. The Sink/Observe API is error-less,
+	// so this surfaces store failures (e.g. DB down) that would otherwise be silent. nil = ignore
+	// (fine for MemStore, which never errors).
+	OnError func(error)
 }
 
 // Detector is the Session Management state machine. It consumes one telemetry stream's frames in
@@ -159,9 +164,21 @@ func (d *Detector) maybeConfirm(ts time.Time) {
 		return
 	}
 	if ts.Sub(d.cur.StartTime) >= d.cfg.MinSession {
+		if err := d.store.Save(d.cur); err != nil {
+			// Do not confirm: emitting OnSessionStart/OnFrame for a session that was never persisted
+			// would cascade into FK-violating lap inserts downstream. Surface and skip.
+			d.onError(fmt.Errorf("save active session %s: %w", d.cur.ID, err))
+			return
+		}
 		d.started = true
-		_ = d.store.Save(d.cur)
 		d.sink.OnSessionStart(d.cur)
+	}
+}
+
+// onError surfaces a persistence failure via the configured hook (no-op if unset).
+func (d *Detector) onError(err error) {
+	if d.cfg.OnError != nil {
+		d.cfg.OnError(err)
 	}
 }
 
@@ -172,7 +189,10 @@ func (d *Detector) finalize() {
 	if d.cur != nil && d.started {
 		d.cur.EndTime = d.lastInRaceTs
 		d.cur.Status = classify(d.cur)
-		_ = d.store.Save(d.cur)
+		if err := d.store.Save(d.cur); err != nil {
+			// The session row already exists (saved active at confirm); only the final update failed.
+			d.onError(fmt.Errorf("save final session %s: %w", d.cur.ID, err))
+		}
 		d.sink.OnSessionEnd(d.cur)
 	}
 	d.cur = nil
