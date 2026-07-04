@@ -82,6 +82,7 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 	c := pipeline.Counters()
 	log.Info("collector stopped",
 		zap.Uint64("published", c.Published),
+		zap.Uint64("valid", c.Valid),
 		zap.Uint64("foreign", c.Foreign),
 		zap.Uint64("short", c.Short),
 		zap.Uint64("stale", c.Stale),
@@ -109,6 +110,7 @@ func report(ctx context.Context, log *zap.Logger, p *ingest.Pipeline, pub *trans
 			c := p.Counters()
 			fields := []zap.Field{
 				zap.Uint64("published", c.Published),
+				zap.Uint64("valid", c.Valid),
 				zap.Uint64("foreign", c.Foreign),
 				zap.Uint64("short", c.Short),
 				zap.Uint64("stale", c.Stale),
