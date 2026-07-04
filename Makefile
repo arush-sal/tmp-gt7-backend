@@ -10,7 +10,7 @@ STORAGE  ?= memory
 DB_DSN   ?=
 API_ADDR ?= localhost:8080
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live dist-windows
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
@@ -83,6 +83,14 @@ live:
 		sleep 2; \
 		./bin/collector --ps5.ip=$(IP) --log.level=warn & COL=$$!; \
 		./bin/tui --api http://$(API_ADDR)"
+
+## dist-windows: cross-compile collector/rtps/tui for Windows (amd64) into bin/windows/
+dist-windows:
+	@mkdir -p bin/windows
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/windows/collector.exe ./cmd/collector
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/windows/rtps.exe ./cmd/rtps
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/windows/tui.exe ./cmd/tui
+	@echo "built bin/windows/{collector,rtps,tui}.exe"
 
 ## clean: remove build and coverage artifacts
 clean:
