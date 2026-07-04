@@ -63,7 +63,7 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return pub.Run(gctx) })
-	g.Go(func() error { report(gctx, log, pipeline, pub, raw); return nil })
+	g.Go(func() error { report(gctx, log, pipeline, pub, raw, cfg.RecvPort); return nil })
 	g.Go(func() error {
 		// The receiver is the driver; when it stops, tear everything down.
 		defer cancel()
@@ -99,7 +99,7 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 
 // report periodically logs the pipeline counters and drop counts at INFO. It runs on its own
 // goroutine so the receive hot path only ever touches atomic counters, never the logger.
-func report(ctx context.Context, log *zap.Logger, p *ingest.Pipeline, pub *transport.Publisher, raw rawsink.RawSink) {
+func report(ctx context.Context, log *zap.Logger, p *ingest.Pipeline, pub *transport.Publisher, raw rawsink.RawSink, recvPort int) {
 	t := time.NewTicker(reportInterval)
 	defer t.Stop()
 	for {
@@ -121,7 +121,14 @@ func report(ctx context.Context, log *zap.Logger, p *ingest.Pipeline, pub *trans
 			if ls, ok := raw.(*rawsink.LocalSink); ok {
 				fields = append(fields, zap.Uint64("raw_dropped", ls.Dropped()))
 			}
-			log.Info("telemetry stats", fields...)
+			// received = every inbound datagram (valid GT7 + foreign + wrong-length). Zero means the
+			// PS5 isn't reaching us at all — surface it loudly rather than a quiet all-zeros stat.
+			if c.Valid+c.Foreign+c.Short == 0 {
+				log.Warn("no UDP telemetry received — is GT7 running on the console, and is inbound UDP allowed on the recv port?",
+					append(fields, zap.Int("recv_port", recvPort))...)
+			} else {
+				log.Info("telemetry stats", fields...)
+			}
 		}
 	}
 }
