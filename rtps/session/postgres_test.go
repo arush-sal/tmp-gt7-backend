@@ -30,7 +30,7 @@ func sharedPostgres(t *testing.T) string {
 			return
 		}
 		ctx := context.Background()
-		c, err := postgres.Run(ctx, "postgres:16-alpine",
+		c, err := postgres.Run(ctx, "timescale/timescaledb:latest-pg16",
 			postgres.WithDatabase("garage"),
 			postgres.WithUsername("test"),
 			postgres.WithPassword("test"),

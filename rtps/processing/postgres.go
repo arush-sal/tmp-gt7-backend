@@ -68,6 +68,81 @@ func (s *PostgresLapStore) List() []*Lap {
 	return scanLaps(rows)
 }
 
+// PostgresTraceStore bulk-loads trace samples into the lap_trace hypertable via COPY.
+type PostgresTraceStore struct {
+	pool *pgxpool.Pool
+}
+
+// NewPostgresTraceStore returns a trace store over an already-connected, already-migrated pool.
+func NewPostgresTraceStore(pool *pgxpool.Pool) *PostgresTraceStore {
+	return &PostgresTraceStore{pool: pool}
+}
+
+var traceColumns = []string{
+	"recv_timestamp", "session_id", "lap_number", "seq", "distance",
+	"pos_x", "pos_y", "pos_z", "speed", "throttle", "brake", "rpm", "gear", "yaw", "ang_vel_y",
+}
+
+// SaveBatch COPY-loads a batch of samples — the efficient bulk path for high-rate trace ingest.
+func (s *PostgresTraceStore) SaveBatch(samples []Sample) error {
+	if len(samples) == 0 {
+		return nil
+	}
+	rows := make([][]any, len(samples))
+	for i, m := range samples {
+		rows[i] = []any{
+			m.RecvTime, m.SessionID, m.LapNumber, int64(m.Seq), m.Distance,
+			m.PosX, m.PosY, m.PosZ, m.Speed, m.Throttle, m.Brake, m.RPM, m.Gear, m.Yaw, m.AngVelY,
+		}
+	}
+	if _, err := s.pool.CopyFrom(context.Background(),
+		pgx.Identifier{"lap_trace"}, traceColumns, pgx.CopyFromRows(rows)); err != nil {
+		return fmt.Errorf("processing: save trace batch (%d rows): %w", len(samples), err)
+	}
+	return nil
+}
+
+// ByLap returns a lap's samples ordered by seq. Read/scan errors surface (not masked as "no data").
+func (s *PostgresTraceStore) ByLap(sessionID string, lapNumber int32) ([]Sample, error) {
+	rows, err := s.pool.Query(context.Background(),
+		"SELECT "+joinCols(traceColumns)+" FROM lap_trace WHERE session_id=$1 AND lap_number=$2 ORDER BY seq",
+		sessionID, lapNumber)
+	if err != nil {
+		return nil, fmt.Errorf("processing: query trace %s#%d: %w", sessionID, lapNumber, err)
+	}
+	defer rows.Close()
+
+	var out []Sample
+	for rows.Next() {
+		var (
+			m   Sample
+			seq int64
+		)
+		if err := rows.Scan(&m.RecvTime, &m.SessionID, &m.LapNumber, &seq, &m.Distance,
+			&m.PosX, &m.PosY, &m.PosZ, &m.Speed, &m.Throttle, &m.Brake, &m.RPM, &m.Gear, &m.Yaw, &m.AngVelY); err != nil {
+			return nil, fmt.Errorf("processing: scan trace row: %w", err)
+		}
+		m.Seq = uint64(seq)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("processing: iterate trace rows: %w", err)
+	}
+	return out, nil
+}
+
+// joinCols renders a column list for SELECT (COPY takes the slice form directly).
+func joinCols(cols []string) string {
+	s := ""
+	for i, c := range cols {
+		if i > 0 {
+			s += ", "
+		}
+		s += c
+	}
+	return s
+}
+
 // scanLaps maps rows to Laps, narrowing the widened columns and converting nanoseconds back to a
 // Duration.
 func scanLaps(rows pgx.Rows) []*Lap {

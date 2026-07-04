@@ -29,7 +29,7 @@ func sharedPostgres(t *testing.T) string {
 			return
 		}
 		ctx := context.Background()
-		c, err := postgres.Run(ctx, "postgres:16-alpine",
+		c, err := postgres.Run(ctx, "timescale/timescaledb:latest-pg16",
 			postgres.WithDatabase("garage"),
 			postgres.WithUsername("test"),
 			postgres.WithPassword("test"),
@@ -59,10 +59,56 @@ func freshPool(t *testing.T) *pgxpool.Pool {
 	if err := db.Migrate(ctx, pool); err != nil {
 		t.Fatalf("db.Migrate: %v", err)
 	}
+	// sessions CASCADE clears laps (FK); lap_trace has no FK, so truncate it explicitly.
 	if _, err := pool.Exec(ctx, "TRUNCATE sessions CASCADE"); err != nil {
-		t.Fatalf("truncate: %v", err)
+		t.Fatalf("truncate sessions: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "TRUNCATE lap_trace"); err != nil {
+		t.Fatalf("truncate lap_trace: %v", err)
 	}
 	return pool
+}
+
+// TestPostgresTraceStore_RoundTrip checks COPY batch insert + ordered ByLap read through the
+// TimescaleDB hypertable, including float field fidelity.
+func TestPostgresTraceStore_RoundTrip(t *testing.T) {
+	pool := freshPool(t)
+	// Parent session row (lap_trace FKs to sessions).
+	if err := session.NewPostgresStore(pool).Save(&session.Record{
+		ID: "s1", StartTime: time.Unix(900, 0).UTC(), Status: session.StatusFinished,
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	ts := NewPostgresTraceStore(pool)
+
+	samples := []Sample{
+		{RecvTime: time.Unix(1000, 0).UTC(), SessionID: "s1", LapNumber: 1, Seq: 2, Distance: 5.5,
+			PosX: 2, PosY: 2, PosZ: 3, Speed: 120, Throttle: 80, Brake: 0, RPM: 6500, Gear: 3, Yaw: 0.11, AngVelY: 0.22},
+		{RecvTime: time.Unix(999, 0).UTC(), SessionID: "s1", LapNumber: 1, Seq: 1, Distance: 0,
+			PosX: 1, PosY: 2, PosZ: 3, Speed: 100, Throttle: 50, Brake: 0, RPM: 6000, Gear: 3, Yaw: 0.1, AngVelY: 0.2},
+		{RecvTime: time.Unix(1002, 0).UTC(), SessionID: "s1", LapNumber: 2, Seq: 3, Distance: 0, Gear: 4},
+	}
+	if err := ts.SaveBatch(samples); err != nil {
+		t.Fatalf("SaveBatch: %v", err)
+	}
+
+	lap1, err := ts.ByLap("s1", 1)
+	if err != nil {
+		t.Fatalf("ByLap: %v", err)
+	}
+	if len(lap1) != 2 {
+		t.Fatalf("lap1 = %d samples, want 2", len(lap1))
+	}
+	if lap1[0].Seq != 1 || lap1[1].Seq != 2 { // ORDER BY seq
+		t.Errorf("lap1 seq order = %d,%d, want 1,2", lap1[0].Seq, lap1[1].Seq)
+	}
+	if lap1[1].Distance != 5.5 || lap1[1].Speed != 120 || lap1[1].Gear != 3 {
+		t.Errorf("field fidelity: %+v", lap1[1])
+	}
+	lap2, _ := ts.ByLap("s1", 2)
+	if len(lap2) != 1 {
+		t.Errorf("lap2 = %d samples, want 1", len(lap2))
+	}
 }
 
 // TestPostgresLapStore_RoundTrip checks field fidelity through the DB. A parent session row must exist

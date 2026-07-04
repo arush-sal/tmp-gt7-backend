@@ -30,8 +30,9 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	// Select the storage backing (config-driven, D-B5 seam). One pool + one migration set (internal/db)
 	// back both the session and lap stores. Postgres migrates on startup.
 	var (
-		sessStore session.Store
-		lapStore  processing.LapStore
+		sessStore  session.Store
+		lapStore   processing.LapStore
+		traceStore processing.TraceStore
 	)
 	switch cfg.Storage {
 	case "postgres":
@@ -45,18 +46,22 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 		}
 		sessStore = session.NewPostgresStore(pool)
 		lapStore = processing.NewPostgresLapStore(pool)
+		traceStore = processing.NewPostgresTraceStore(pool)
 		log.Info("using postgres stores")
 	default:
 		sessStore = session.NewMemStore()
 		lapStore = processing.NewMemLapStore()
+		traceStore = processing.NewMemTraceStore()
 		log.Info("using in-memory stores")
 	}
 
-	// Fan out the session stream to the lap segmenter (Processing) and a logging sink. Persistence
-	// failures are surfaced via error hooks (the Sink/Observe API is otherwise error-less).
+	// Fan out the session stream to the lap segmenter + trace recorder (Processing) and a logging
+	// sink. Persistence failures are surfaced via error hooks (the Sink/Observe API is error-less).
 	segmenter := processing.NewLapSegmenter(lapStore)
 	segmenter.OnError = func(err error) { log.Error("lap persistence failed", zap.Error(err)) }
-	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter)
+	recorder := processing.NewTraceRecorder(traceStore)
+	recorder.OnError = func(err error) { log.Error("trace persistence failed", zap.Error(err)) }
+	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder)
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
 	srv := ingest.NewServer(sessStore, sink, detCfg, log)
