@@ -28,7 +28,7 @@ func TestClient_Sessions(t *testing.T) {
 
 func TestClient_Coaching(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"analysis":{"SessionID":"s1","HasPB":true,"PBLap":2},"coaching":{"status":"pending","note":"x"}}`))
+		_, _ = w.Write([]byte(`{"analysis":{"session_id":"s1","has_pb":true,"pb_lap":2},"coaching":{"status":"pending","note":"x"}}`))
 	}))
 	defer srv.Close()
 

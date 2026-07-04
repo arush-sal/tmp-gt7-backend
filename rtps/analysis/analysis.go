@@ -12,37 +12,40 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/processing"
 )
 
+// Durations serialize as int64 NANOSECONDS in JSON; the `_ns` key suffix marks the unit for API
+// consumers (divide by 1e6 for milliseconds).
+
 // LapDelta is a valid lap's time relative to the Personal Best.
 type LapDelta struct {
-	LapNumber int32
-	Duration  time.Duration
-	DeltaToPB time.Duration // Duration - PB.Duration (0 for the PB lap itself)
+	LapNumber int32         `json:"lap_number"`
+	Duration  time.Duration `json:"duration_ns"`
+	DeltaToPB time.Duration `json:"delta_to_pb_ns"` // Duration - PB.Duration (0 for the PB lap itself)
 }
 
 // SectorDelta is one sector's time for a lap relative to the PB lap's same sector — where time is
 // won or lost around the track.
 type SectorDelta struct {
-	Index     int
-	LapTime   time.Duration
-	PBTime    time.Duration
-	DeltaToPB time.Duration // LapTime - PBTime (positive = slower than PB here)
+	Index     int           `json:"index"`
+	LapTime   time.Duration `json:"lap_time_ns"`
+	PBTime    time.Duration `json:"pb_time_ns"`
+	DeltaToPB time.Duration `json:"delta_to_pb_ns"` // LapTime - PBTime (positive = slower than PB here)
 }
 
 // Consistency summarizes the spread of valid lap times.
 type Consistency struct {
-	Count  int
-	Best   time.Duration
-	Mean   time.Duration
-	StdDev time.Duration
-	Spread time.Duration // slowest - fastest valid lap
+	Count  int           `json:"count"`
+	Best   time.Duration `json:"best_ns"`
+	Mean   time.Duration `json:"mean_ns"`
+	StdDev time.Duration `json:"std_dev_ns"`
+	Spread time.Duration `json:"spread_ns"` // slowest - fastest valid lap
 }
 
 // SectorBest is the fastest time seen for one sector across a session's valid laps, and which lap set
 // it. The theoretical-best lap is the sum of these.
 type SectorBest struct {
-	Index     int
-	Duration  time.Duration
-	LapNumber int32 // the lap that owns this best sector
+	Index     int           `json:"index"`
+	Duration  time.Duration `json:"duration_ns"`
+	LapNumber int32         `json:"lap_number"` // the lap that owns this best sector
 }
 
 // theoreticalBest computes the optimal lap the driver has *demonstrated piece-by-piece*: for each

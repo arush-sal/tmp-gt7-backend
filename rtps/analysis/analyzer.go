@@ -11,28 +11,28 @@ import (
 
 // LapAnalysis is one valid lap's analysis relative to the session PB.
 type LapAnalysis struct {
-	LapNumber    int32
-	Duration     time.Duration
-	DeltaToPB    time.Duration
-	SectorDeltas []SectorDelta
+	LapNumber    int32         `json:"lap_number"`
+	Duration     time.Duration `json:"duration_ns"`
+	DeltaToPB    time.Duration `json:"delta_to_pb_ns"`
+	SectorDeltas []SectorDelta `json:"sector_deltas"`
 }
 
 // SessionAnalysis is the deterministic analysis of one session: its PB, per-lap and per-sector deltas,
 // consistency, and explainable recommendations.
 type SessionAnalysis struct {
-	SessionID string
-	HasPB     bool
-	PBLap     int32
-	PBTime    time.Duration
-	Laps      []LapAnalysis
+	SessionID string        `json:"session_id"`
+	HasPB     bool          `json:"has_pb"`
+	PBLap     int32         `json:"pb_lap"`
+	PBTime    time.Duration `json:"pb_time_ns"`
+	Laps      []LapAnalysis `json:"laps"`
 	// Consistency = how repeatable the valid laps are (own-PB comparison).
-	Consistency Consistency
+	Consistency Consistency `json:"consistency"`
 	// Improvement view: the theoretical-best lap (sum of the fastest sector times the driver has
 	// achieved) and how much time that leaves on the table vs the PB's sectors.
-	TheoreticalBest time.Duration
-	TimeOnTable     time.Duration
-	BestSectors     []SectorBest
-	Recommendations []string
+	TheoreticalBest time.Duration `json:"theoretical_best_ns"`
+	TimeOnTable     time.Duration `json:"time_on_table_ns"`
+	BestSectors     []SectorBest  `json:"best_sectors"`
+	Recommendations []string      `json:"recommendations"`
 }
 
 // Analyzer produces SessionAnalysis from the stored lap model + traces + the RKB. It reads through the
