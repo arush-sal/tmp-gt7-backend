@@ -3,6 +3,7 @@ package processing
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 // sample is a tiny helper to build a trace Sample with just distance + speed + gear (the fields these
@@ -73,5 +74,34 @@ func TestAt_Interpolates(t *testing.T) {
 func TestAt_Empty(t *testing.T) {
 	if _, ok := (NormalizedLap{}).At(0.5); ok {
 		t.Error("At on empty lap: ok=true, want false")
+	}
+}
+
+// TestTimeAt: elapsed time interpolates linearly between samples at a non-knot fraction; clamps at the
+// ends; empty lap -> ok=false.
+func TestTimeAt(t *testing.T) {
+	base := time.Unix(1000, 0)
+	n := Normalize([]Sample{
+		{Distance: 0, RecvTime: base},
+		{Distance: 50, RecvTime: base.Add(2 * time.Second)},
+		{Distance: 100, RecvTime: base.Add(4 * time.Second)},
+	})
+	cases := []struct {
+		f    float64
+		want time.Duration // offset from base
+	}{
+		{-1, 0}, {0, 0}, {0.25, 1 * time.Second}, {0.5, 2 * time.Second}, {0.75, 3 * time.Second}, {1, 4 * time.Second}, {2, 4 * time.Second},
+	}
+	for _, c := range cases {
+		got, ok := n.TimeAt(c.f)
+		if !ok {
+			t.Fatalf("TimeAt(%v): ok=false", c.f)
+		}
+		if d := got.Sub(base); d != c.want {
+			t.Errorf("TimeAt(%v) = base+%v, want base+%v", c.f, d, c.want)
+		}
+	}
+	if _, ok := (NormalizedLap{}).TimeAt(0.5); ok {
+		t.Error("TimeAt on empty lap: ok=true, want false")
 	}
 }

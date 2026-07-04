@@ -1,5 +1,7 @@
 package processing
 
+import "time"
+
 // NormSample is a trace Sample placed on the lap's 0..1 track-distance axis.
 type NormSample struct {
 	Sample
@@ -47,15 +49,48 @@ func (n NormalizedLap) At(f float64) (NormSample, bool) {
 	if len(n.Points) == 0 {
 		return NormSample{}, false
 	}
+	lo, hi, t, ok := n.locate(f)
+	if !ok {
+		return NormSample{}, false
+	}
+	if lo == hi {
+		return n.Points[lo], true
+	}
+	return lerp(n.Points[lo], n.Points[hi], t, f), true
+}
+
+// TimeAt returns the elapsed wall-clock time at track-distance fraction f, linearly interpolating the
+// frame timestamps between the bracketing samples (time IS continuous, unlike gear). Used for sector
+// durations. f is clamped to [0,1]; ok is false only for an empty lap.
+func (n NormalizedLap) TimeAt(f float64) (time.Time, bool) {
+	lo, hi, t, ok := n.locate(f)
+	if !ok {
+		return time.Time{}, false
+	}
+	a := n.Points[lo].RecvTime
+	if lo == hi {
+		return a, true
+	}
+	b := n.Points[hi].RecvTime
+	return a.Add(time.Duration(float64(b.Sub(a)) * t)), true
+}
+
+// locate finds the bracket [lo, hi] and interpolation parameter t for fraction f (clamped to [0,1]).
+// lo == hi means f fell on/beyond an endpoint (t is 0). ok is false only when the lap has no points.
+// Shared by At and TimeAt. Ties: for interior duplicate fractions the search lands on the last such
+// sample as the lower bound; an exact hit on the first knot returns the first sample.
+func (n NormalizedLap) locate(f float64) (lo, hi int, t float64, ok bool) {
+	if len(n.Points) == 0 {
+		return 0, 0, 0, false
+	}
 	if f <= n.Points[0].Fraction {
-		return n.Points[0], true
+		return 0, 0, 0, true
 	}
-	last := n.Points[len(n.Points)-1]
-	if f >= last.Fraction {
-		return last, true
+	last := len(n.Points) - 1
+	if f >= n.Points[last].Fraction {
+		return last, last, 0, true
 	}
-	// Binary-search the bracket [lo, hi] with Points[lo].Fraction <= f < Points[hi].Fraction.
-	lo, hi := 0, len(n.Points)-1
+	lo, hi = 0, last
 	for lo+1 < hi {
 		mid := (lo + hi) / 2
 		if n.Points[mid].Fraction <= f {
@@ -64,12 +99,10 @@ func (n NormalizedLap) At(f float64) (NormSample, bool) {
 			hi = mid
 		}
 	}
-	a, b := n.Points[lo], n.Points[hi]
-	t := 0.0
-	if span := b.Fraction - a.Fraction; span > 0 {
-		t = (f - a.Fraction) / span
+	if span := n.Points[hi].Fraction - n.Points[lo].Fraction; span > 0 {
+		t = (f - n.Points[lo].Fraction) / span
 	}
-	return lerp(a, b, t, f), true
+	return lo, hi, t, true
 }
 
 // lerp linearly interpolates the continuous fields of a and b at parameter t in [0,1], stamping the
