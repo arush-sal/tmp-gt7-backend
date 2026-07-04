@@ -122,6 +122,10 @@ Non-2xx responses use a stable shape: `{ "error": "<message>" }`.
 ## Running locally
 
 ```bash
+# everything at once against a PS5 (backend + collector + TUI; Ctrl-C stops all):
+make live IP=192.168.1.99
+
+# or piece by piece:
 go run ./cmd/rtps --storage=memory            # gRPC ingest :50051, HTTP API :8080
 # stream telemetry (collector, or the replay-client tool), then:
 curl localhost:8080/v1/sessions

@@ -4,7 +4,13 @@
 GO      ?= go
 PKG     ?= ./...
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean
+# `make live` knobs (see the live target)
+IP       ?=
+STORAGE  ?= memory
+DB_DSN   ?=
+API_ADDR ?= localhost:8080
+
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
@@ -63,6 +69,22 @@ hooks:
 	git config core.hooksPath .githooks
 	@echo "git hooks path set to .githooks"
 
+## live: run backend + collector + TUI together against a PS5. Usage: make live IP=192.168.1.99
+##       (opts: STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port). Ctrl-C stops all.
+live:
+	@test -n "$(IP)" || { echo "usage: make live IP=<ps5-ip> [STORAGE=postgres DB_DSN=... API_ADDR=host:port]"; exit 2; }
+	@mkdir -p bin
+	$(GO) build -o bin/rtps ./cmd/rtps
+	$(GO) build -o bin/collector ./cmd/collector
+	$(GO) build -o bin/tui ./cmd/tui
+	@echo ">> backend ($(API_ADDR)) + collector (PS5 $(IP)); TUI in foreground — Ctrl-C stops all"
+	@bash -c "trap 'kill $$RTPS $$COL 2>/dev/null' EXIT INT TERM; \
+		./bin/rtps --storage=$(STORAGE) --db.dsn='$(DB_DSN)' --api.addr=$(API_ADDR) --log.level=warn & RTPS=$$!; \
+		sleep 2; \
+		./bin/collector --ps5.ip=$(IP) --log.level=warn & COL=$$!; \
+		./bin/tui --api http://$(API_ADDR)"
+
 ## clean: remove build and coverage artifacts
 clean:
 	rm -f coverage.out cmd/collector/collector
+	rm -rf bin
