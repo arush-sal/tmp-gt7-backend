@@ -121,7 +121,9 @@ type BackendConfig struct {
 	// IngestAddr is the TCP address the telemetry ingest gRPC server listens on. It must match the
 	// address the collector dials (its rtps.addr); both default to localhost:50051.
 	IngestAddr string
-	LogLevel   string
+	// APIAddr is the TCP address the HTTP read API (sessions/coaching) listens on.
+	APIAddr  string
+	LogLevel string
 
 	// Storage selects the session store backing: "memory" (default; dev/tests) or "postgres".
 	Storage string
@@ -133,6 +135,7 @@ type BackendConfig struct {
 func LoadBackend(args []string) (BackendConfig, error) {
 	fs := pflag.NewFlagSet("rtps", pflag.ContinueOnError)
 	fs.String("ingest.addr", "localhost:50051", "address the telemetry ingest gRPC server listens on")
+	fs.String("api.addr", "localhost:8080", "address the HTTP read API listens on")
 	fs.String("log.level", "info", "log level: debug|info|warn|error")
 	fs.String("storage", "memory", "session store backing: memory|postgres")
 	fs.String("db.dsn", "", "PostgreSQL connection string (required when storage=postgres)")
@@ -158,6 +161,7 @@ func LoadBackend(args []string) (BackendConfig, error) {
 
 	cfg := BackendConfig{
 		IngestAddr: v.GetString("ingest.addr"),
+		APIAddr:    v.GetString("api.addr"),
 		LogLevel:   v.GetString("log.level"),
 		Storage:    v.GetString("storage"),
 		DBDSN:      v.GetString("db.dsn"),
@@ -174,6 +178,9 @@ func LoadBackend(args []string) (BackendConfig, error) {
 func (c BackendConfig) validate() error {
 	if c.IngestAddr == "" {
 		return errors.New("config: ingest.addr is required")
+	}
+	if c.APIAddr == "" {
+		return errors.New("config: api.addr is required")
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

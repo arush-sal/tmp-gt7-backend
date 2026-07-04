@@ -139,3 +139,13 @@ func TestLoadBackend_Storage(t *testing.T) {
 		t.Error("storage=redis: want error, got nil")
 	}
 }
+
+// TestLoadBackend_APIAddr checks the api.addr default + required validation.
+func TestLoadBackend_APIAddr(t *testing.T) {
+	if c, err := LoadBackend(nil); err != nil || c.APIAddr != "localhost:8080" {
+		t.Fatalf("default api.addr: c=%+v err=%v, want localhost:8080", c, err)
+	}
+	if _, err := LoadBackend([]string{"--api.addr="}); err == nil {
+		t.Error("empty api.addr: want error, got nil")
+	}
+}

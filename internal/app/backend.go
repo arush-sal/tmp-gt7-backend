@@ -2,29 +2,33 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"sync"
+	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/internal/config"
 	"github.com/arush-sal/garage/backend/internal/db"
+	"github.com/arush-sal/garage/backend/rtps/analysis"
+	"github.com/arush-sal/garage/backend/rtps/api"
+	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/ingest"
 	"github.com/arush-sal/garage/backend/rtps/processing"
+	"github.com/arush-sal/garage/backend/rtps/reference"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
-// RunBackend starts the backend (RTPS) process: it binds the ingest gRPC server and serves until ctx
-// is cancelled (SIGINT/SIGTERM), then stops gracefully. It wires the session store, the lap
-// segmenter, and a logging sink (fanned out) — in-memory or Postgres per config.
+// RunBackend starts the backend (RTPS) process: the ingest gRPC server (Session Management ->
+// Processing) and the HTTP read API (Analysis -> Coaching -> Presentation). It serves until ctx is
+// cancelled (SIGINT/SIGTERM), then stops both gracefully. Stores are in-memory or Postgres per config.
 func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) error {
 	if log == nil { // defensive: match ingest.NewServer / NewLoggingSink nil-logger handling
 		log = zap.NewNop()
-	}
-	lis, err := net.Listen("tcp", cfg.IngestAddr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", cfg.IngestAddr, err)
 	}
 
 	// Select the storage backing (config-driven, D-B5 seam). One pool + one migration set (internal/db)
@@ -64,27 +68,75 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder)
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
-	srv := ingest.NewServer(sessStore, sink, detCfg, log)
+	ingestSrv := ingest.NewServer(sessStore, sink, detCfg, log)
 
 	gs := grpc.NewServer()
-	telemetryv1.RegisterTelemetryServer(gs, srv)
+	telemetryv1.RegisterTelemetryServer(gs, ingestSrv)
 
-	// Serve on its own goroutine so we can wait on either a serve error or the shutdown signal.
-	serveErr := make(chan error, 1)
+	// Read side: Analysis -> Coaching (placeholder, D-B21) -> HTTP API. The KB is a stub for now, so
+	// Analysis falls back to mini-sectors (the pipeline works without the real RKB).
+	analyzer := analysis.Analyzer{Laps: lapStore, Traces: traceStore, KB: reference.NewStaticKB(), FallbackSectors: 3}
+	apiSrv := api.NewServer(coach.New(analyzer), sessStore, log)
+	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
+
+	// Bind the ingest listener only once we're committed to serving (after storage init), so a failed
+	// startup never leaks a listener.
+	lis, err := net.Listen("tcp", cfg.IngestAddr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", cfg.IngestAddr, err)
+	}
+
+	// Both servers run on their own goroutine; the first error (or shutdown signal) tears down both.
+	serveErr := make(chan error, 2)
 	go func() {
-		log.Info("rtps ingest server listening", zap.String("addr", cfg.IngestAddr))
+		log.Info("ingest gRPC server listening", zap.String("addr", cfg.IngestAddr))
 		serveErr <- gs.Serve(lis)
+	}()
+	go func() {
+		log.Info("http API server listening", zap.String("addr", cfg.APIAddr))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
 	}()
 
 	select {
 	case <-ctx.Done():
-		log.Info("shutdown signal received; stopping ingest server")
-		gs.GracefulStop() // drains in-flight streams, then Serve returns nil
+		log.Info("shutdown signal received; stopping servers")
+		stopServers(gs, httpSrv)
 		return nil
 	case err := <-serveErr:
+		stopServers(gs, httpSrv) // one server exited; bring the other down gracefully too
 		if err != nil {
-			return fmt.Errorf("grpc serve: %w", err)
+			return fmt.Errorf("serve: %w", err)
 		}
 		return nil
 	}
+}
+
+// stopServers shuts the gRPC and HTTP servers down CONCURRENTLY, each bounded by a timeout so a
+// long-lived ingest stream (which GracefulStop would otherwise wait on) can't stall the HTTP
+// shutdown. gRPC falls back to a hard Stop, HTTP to its Shutdown deadline.
+func stopServers(gs *grpc.Server, httpSrv *http.Server) {
+	const grace = 5 * time.Second
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		done := make(chan struct{})
+		go func() { gs.GracefulStop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(grace):
+			gs.Stop() // force-close remaining streams
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	}()
+	wg.Wait()
 }

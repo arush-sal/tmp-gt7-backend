@@ -6,6 +6,7 @@ package analysis
 
 import (
 	"math"
+	"slices"
 	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/processing"
@@ -34,6 +35,53 @@ type Consistency struct {
 	Mean   time.Duration
 	StdDev time.Duration
 	Spread time.Duration // slowest - fastest valid lap
+}
+
+// SectorBest is the fastest time seen for one sector across a session's valid laps, and which lap set
+// it. The theoretical-best lap is the sum of these.
+type SectorBest struct {
+	Index     int
+	Duration  time.Duration
+	LapNumber int32 // the lap that owns this best sector
+}
+
+// theoreticalBest computes the optimal lap the driver has *demonstrated piece-by-piece*: for each
+// sector, the fastest time across all their valid laps. Returns the summed optimal time and the
+// per-sector bests (ordered by sector index). This is improvement guidance from own data — a target
+// that beats any single actual lap, yet every piece has already been achieved.
+func theoreticalBest(perLap map[int32][]processing.SectorResult) (time.Duration, []SectorBest) {
+	// Iterate laps in ascending order so a tie for a sector's best time is resolved deterministically
+	// (lowest lap number wins) — map iteration order would otherwise make SectorBest.LapNumber flaky.
+	lapNums := make([]int32, 0, len(perLap))
+	for lapNum := range perLap {
+		lapNums = append(lapNums, lapNum)
+	}
+	slices.Sort(lapNums)
+
+	best := map[int]SectorBest{}
+	for _, lapNum := range lapNums {
+		for _, s := range perLap[lapNum] {
+			if s.Duration <= 0 {
+				continue
+			}
+			if b, ok := best[s.Index]; !ok || s.Duration < b.Duration {
+				best[s.Index] = SectorBest{Index: s.Index, Duration: s.Duration, LapNumber: lapNum}
+			}
+		}
+	}
+	idxs := make([]int, 0, len(best))
+	for i := range best {
+		idxs = append(idxs, i)
+	}
+	slices.Sort(idxs)
+
+	var total time.Duration
+	out := make([]SectorBest, 0, len(idxs))
+	for _, i := range idxs {
+		out = append(out, best[i])
+		total += best[i].Duration
+	}
+	return total, out
 }
 
 // PersonalBest returns the fastest PB-usable lap (Valid: timed, complete, gap-free). ok is false when

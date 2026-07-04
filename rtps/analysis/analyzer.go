@@ -20,12 +20,18 @@ type LapAnalysis struct {
 // SessionAnalysis is the deterministic analysis of one session: its PB, per-lap and per-sector deltas,
 // consistency, and explainable recommendations.
 type SessionAnalysis struct {
-	SessionID       string
-	HasPB           bool
-	PBLap           int32
-	PBTime          time.Duration
-	Laps            []LapAnalysis
-	Consistency     Consistency
+	SessionID string
+	HasPB     bool
+	PBLap     int32
+	PBTime    time.Duration
+	Laps      []LapAnalysis
+	// Consistency = how repeatable the valid laps are (own-PB comparison).
+	Consistency Consistency
+	// Improvement view: the theoretical-best lap (sum of the fastest sector times the driver has
+	// achieved) and how much time that leaves on the table vs the PB's sectors.
+	TheoreticalBest time.Duration
+	TimeOnTable     time.Duration
+	BestSectors     []SectorBest
 	Recommendations []string
 }
 
@@ -60,10 +66,8 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 	}
 	res.HasPB, res.PBLap, res.PBTime = true, pb.LapNumber, pb.Duration
 
-	pbSectors, err := a.sectorsOf(ctx, sessionID, pb.LapNumber)
-	if err != nil {
-		return res, err
-	}
+	// Compute each valid lap's sectors once; reuse for deltas + the theoretical best.
+	perLap := make(map[int32][]processing.SectorResult)
 	for _, l := range laps {
 		if !l.Valid {
 			continue
@@ -72,11 +76,30 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 		if err != nil {
 			return res, err
 		}
+		perLap[l.LapNumber] = secs
+	}
+	pbSectors := perLap[pb.LapNumber]
+
+	// Improvement view: theoretical best = sum of the fastest sector times; time on the table = how
+	// much the PB's sectors trail those bests (both sector-time based, so apples-to-apples).
+	res.TheoreticalBest, res.BestSectors = theoreticalBest(perLap)
+	var pbSectorSum time.Duration
+	for _, sd := range pbSectors {
+		pbSectorSum += sd.Duration
+	}
+	if pbSectorSum > res.TheoreticalBest {
+		res.TimeOnTable = pbSectorSum - res.TheoreticalBest
+	}
+
+	for _, l := range laps {
+		if !l.Valid {
+			continue
+		}
 		res.Laps = append(res.Laps, LapAnalysis{
 			LapNumber:    l.LapNumber,
 			Duration:     l.Duration,
 			DeltaToPB:    l.Duration - pb.Duration,
-			SectorDeltas: sectorDeltas(secs, pbSectors),
+			SectorDeltas: sectorDeltas(perLap[l.LapNumber], pbSectors),
 		})
 	}
 	res.Recommendations = recommend(res)
@@ -103,6 +126,13 @@ func recommend(r SessionAnalysis) []string {
 	if r.Consistency.Count >= 2 {
 		recs = append(recs, fmt.Sprintf("Consistency: %d valid laps, spread %+.3fs (std-dev %.3fs).",
 			r.Consistency.Count, r.Consistency.Spread.Seconds(), r.Consistency.StdDev.Seconds()))
+	}
+
+	// Improvement pointer from own data (no external reference needed).
+	if r.TheoreticalBest > 0 && r.TimeOnTable > 0 {
+		recs = append(recs, fmt.Sprintf(
+			"Theoretical best %s — %+.3fs on the table across your best sectors (each driven faster before, just not together).",
+			formatDuration(r.TheoreticalBest), r.TimeOnTable.Seconds()))
 	}
 
 	// The lap furthest off PB, and where it lost the most.
