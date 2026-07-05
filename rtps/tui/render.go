@@ -84,6 +84,108 @@ func RenderReport(rep coach.Report) string {
 	return b.String()
 }
 
+// dash is the placeholder for a value that is not yet resolved (RKB-deferred or enrichment pending).
+const dash = "—"
+
+// RenderLive renders the live pit-wall dashboard from one snapshot. width<=0 uses 120.
+func RenderLive(s LiveSnapshot, width int) string {
+	if width <= 0 {
+		width = 120
+	}
+	if s.Status != "live" || s.Frame == nil {
+		return titleStyle.Render("GARAGE — Live") + "\n\n" +
+			dimStyle.Render("Waiting for telemetry… (idle — no live session)") + "\n\n" +
+			dimStyle.Render("s: sessions · q: quit")
+	}
+	f := s.Frame
+	header := lipgloss.NewStyle().MaxWidth(width).Render(liveHeader(s))
+	left := leftTelemetry(f)
+	right := rightColumn(s)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
+	return header + "\n\n" + body + "\n\n" +
+		dimStyle.Render("streaming · s: sessions · q: quit")
+}
+
+func liveHeader(s LiveSnapshot) string {
+	f := s.Frame
+	pos := dash
+	if f.TotalPositions > 0 && f.CurrentPosition > 0 {
+		pos = fmt.Sprintf("P%d/%d", f.CurrentPosition, f.TotalPositions)
+	}
+	return headerStyle.Render(fmt.Sprintf(
+		"POS %s   LAP %d/%d   TRACK %s   DELTA %s   PREDICTED %s   BEST %s",
+		pos, f.CurrentLap, f.TotalLaps, dash, dash, dash, lap(f.BestLap())))
+}
+
+func leftTelemetry(f *LiveFrame) string {
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("TELEMETRY") + "\n")
+	fmt.Fprintf(&b, "SPEED  %6.1f km/h\n", f.CarSpeed)
+	sug := ""
+	if f.SuggestedGear > 0 && f.SuggestedGear != f.CurrentGear {
+		sug = dimStyle.Render(fmt.Sprintf(" (shift %d)", f.SuggestedGear))
+	}
+	fmt.Fprintf(&b, "GEAR   %d%s\n", f.CurrentGear, sug)
+	fmt.Fprintf(&b, "RPM    %5.0f\n", f.Rpm)
+	b.WriteString("THROT  " + bar(f.Throttle, 20) + "\n")
+	b.WriteString("BRAKE  " + bar(f.Brake, 20) + "\n")
+	fmt.Fprintf(&b, "BOOST  %+.2f\n", f.Boost)
+	return b.String()
+}
+
+func rightColumn(s LiveSnapshot) string {
+	var b strings.Builder
+	// Lap timing (direct/derived)
+	b.WriteString(headerStyle.Render("LAP") + "\n")
+	if s.Derived != nil {
+		fmt.Fprintf(&b, "  current %s\n", lap(time.Duration(s.Derived.CurrentLapTimeNs)))
+	}
+	fmt.Fprintf(&b, "  last    %s\n", lap(s.Frame.LastLap()))
+	fmt.Fprintf(&b, "  best    %s\n\n", lap(s.Frame.BestLap()))
+
+	// Tyres (direct)
+	b.WriteString(headerStyle.Render("TYRE °C") + "\n")
+	fmt.Fprintf(&b, "  FL %3.0f  FR %3.0f\n", s.Frame.TyreTempFL, s.Frame.TyreTempFR)
+	fmt.Fprintf(&b, "  RL %3.0f  RR %3.0f\n\n", s.Frame.TyreTempRL, s.Frame.TyreTempRR)
+
+	// Fuel (direct/derived)
+	b.WriteString(headerStyle.Render("FUEL") + "\n")
+	if s.Derived != nil {
+		fmt.Fprintf(&b, "  %.1f L (%.0f%%)\n\n", s.Frame.CurrentFuel, s.Derived.FuelPct)
+	} else {
+		fmt.Fprintf(&b, "  %.1f L (%s)\n\n", s.Frame.CurrentFuel, dash)
+	}
+
+	// Analysis (enrichment — placeholder until it resolves)
+	b.WriteString(headerStyle.Render("ANALYSIS") + "\n")
+	if a := s.Enrichment.Analysis; a != nil && a.HasPB {
+		fmt.Fprintf(&b, "  PB lap %d  %s\n", a.PBLap, lap(a.PBTime))
+		if a.TheoreticalBest > 0 {
+			fmt.Fprintf(&b, "  theoretical %s\n", lap(a.TheoreticalBest))
+		}
+		for _, r := range a.Recommendations {
+			b.WriteString(dimStyle.Render("  • "+r) + "\n")
+		}
+	} else {
+		b.WriteString(dimStyle.Render("  "+dash+" no analysis yet (needs a completed lap)") + "\n")
+	}
+	b.WriteString("\n" + headerStyle.Render("COACHING") + "\n")
+	b.WriteString(dimStyle.Render("  pending") + "\n")
+	return b.String()
+}
+
+// bar renders a 0..1 value as a filled bar of the given width.
+func bar(v float32, width int) string {
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	n := int(float32(width)*v + 0.5)
+	return "[" + strings.Repeat("#", n) + strings.Repeat("·", width-n) + "]"
+}
+
 // lap formats a lap time as M:SS.mmm.
 func lap(d time.Duration) string {
 	if d <= 0 {
