@@ -60,25 +60,40 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 		log.Info("using in-memory stores")
 	}
 
-	// Fan out the session stream to the lap segmenter + trace recorder (Processing) and a logging
-	// sink. Persistence failures are surfaced via error hooks (the Sink/Observe API is error-less).
+	// Real-time egress: the Hub taps every frame at ingest (publish-first); the async trace store keeps
+	// storage writes off the ingest goroutine; the enrich sink refreshes live analysis per lap.
+	hub := live.New()
+	enrich := live.NewEnrichmentState()
+
+	traceStore = live.NewAsyncTraceStore(traceStore, 256, func(dropped int) {
+		log.Warn("trace batch dropped (storage back-pressure)", zap.Int("dropped", dropped))
+	})
+	defer traceStore.(*live.AsyncTraceStore).Close()
+
+	// Fan out the session stream to the lap segmenter + trace recorder (Processing), a logging sink,
+	// and the enrichment sink. Persistence failures are surfaced via error hooks (the Sink/Observe API
+	// is error-less).
 	segmenter := processing.NewLapSegmenter(lapStore)
 	segmenter.OnError = func(err error) { log.Error("lap persistence failed", zap.Error(err)) }
 	recorder := processing.NewTraceRecorder(traceStore)
 	recorder.OnError = func(err error) { log.Error("trace persistence failed", zap.Error(err)) }
-	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder)
+
+	// Analysis -> Coaching (placeholder, D-B21). The KB is a stub for now, so Analysis falls back to
+	// mini-sectors (the pipeline works without the real RKB).
+	analyzer := analysis.Analyzer{Laps: lapStore, Traces: traceStore, KB: reference.NewStaticKB(), FallbackSectors: 3}
+	enrichSink := live.NewEnrichSink(analyzer, enrich, func(err error) { log.Error("enrichment failed", zap.Error(err)) })
+	defer enrichSink.Close()
+
+	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder, enrichSink)
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
 	ingestSrv := ingest.NewServer(sessStore, sink, detCfg, log)
+	ingestSrv.Publisher = hub // publish-first egress
 
 	gs := grpc.NewServer()
 	telemetryv1.RegisterTelemetryServer(gs, ingestSrv)
 
-	// Read side: Analysis -> Coaching (placeholder, D-B21) -> HTTP API. The KB is a stub for now, so
-	// Analysis falls back to mini-sectors (the pipeline works without the real RKB).
-	analyzer := analysis.Analyzer{Laps: lapStore, Traces: traceStore, KB: reference.NewStaticKB(), FallbackSectors: 3}
-	hub := live.New()
-	enrich := live.NewEnrichmentState()
+	// Read side: Analysis -> Coaching -> HTTP API.
 	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, log)
 	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
