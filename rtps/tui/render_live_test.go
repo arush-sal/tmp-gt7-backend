@@ -46,6 +46,49 @@ func TestRenderLive_Idle(t *testing.T) {
 	}
 }
 
+// TestRenderLive_PedalBarsNormalizeToPercent guards against the pedal bars
+// treating Throttle/Brake (0-100 scale) as if they were already 0..1 — a
+// bug that made any pedal input above 1% render as a full bar.
+func TestRenderLive_PedalBarsNormalizeToPercent(t *testing.T) {
+	half := LiveSnapshot{
+		Status: "live",
+		Frame:  &LiveFrame{CarSpeed: 100, Throttle: 50, Brake: 0},
+	}
+	out := stripANSI(RenderLive(half, 120))
+	lines := strings.Split(out, "\n")
+	var throtLine string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "THROT") {
+			throtLine = l
+			break
+		}
+	}
+	if throtLine == "" {
+		t.Fatalf("no THROT line found:\n%s", out)
+	}
+	fill := strings.Count(throtLine, "#")
+	if fill == 20 || fill == 0 {
+		t.Errorf("Throttle:50 should be a roughly half-filled bar, got %d/20 fill chars: %q", fill, throtLine)
+	}
+	if fill < 8 || fill > 12 {
+		t.Errorf("Throttle:50 expected ~10/20 fill chars, got %d: %q", fill, throtLine)
+	}
+
+	full := LiveSnapshot{
+		Status: "live",
+		Frame:  &LiveFrame{CarSpeed: 100, Throttle: 100, Brake: 0},
+	}
+	outFull := stripANSI(RenderLive(full, 120))
+	for _, l := range strings.Split(outFull, "\n") {
+		if strings.HasPrefix(l, "THROT") {
+			if strings.Count(l, "#") != 20 {
+				t.Errorf("Throttle:100 should be a full bar, got %q", l)
+			}
+			break
+		}
+	}
+}
+
 func TestRenderLive_WithEnrichment(t *testing.T) {
 	s := LiveSnapshot{
 		Status: "live", Frame: &LiveFrame{CarSpeed: 100, CurrentLap: 3},
@@ -57,5 +100,29 @@ func TestRenderLive_WithEnrichment(t *testing.T) {
 	out := stripANSI(RenderLive(s, 120))
 	if !strings.Contains(out, "Personal Best") {
 		t.Errorf("expected PB recommendation surfaced:\n%s", out)
+	}
+}
+
+// TestRenderLive_ResolvedNoPB guards against conflating "enrichment not
+// resolved yet" (Analysis == nil) with "resolved, but no valid lap" (Analysis
+// != nil, HasPB == false) — the latter must surface the analyzer's own
+// recommendation instead of falling back to the "no analysis yet" placeholder.
+func TestRenderLive_ResolvedNoPB(t *testing.T) {
+	s := LiveSnapshot{
+		Status: "live", Frame: &LiveFrame{CarSpeed: 100, CurrentLap: 1},
+		Derived: &LiveDerived{},
+		Enrichment: LiveEnrichment{SessionID: "sess-1", Analysis: &analysis.SessionAnalysis{
+			HasPB: false,
+			Recommendations: []string{
+				"No valid (complete, timed, gap-free) lap in this session — no Personal Best to analyze.",
+			},
+		}},
+	}
+	out := stripANSI(RenderLive(s, 120))
+	if !strings.Contains(out, "No valid") {
+		t.Errorf("expected resolved no-PB recommendation surfaced:\n%s", out)
+	}
+	if strings.Contains(out, "no analysis yet") {
+		t.Errorf("resolved no-PB analysis should not show the pending placeholder:\n%s", out)
 	}
 }

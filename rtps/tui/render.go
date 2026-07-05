@@ -127,8 +127,8 @@ func leftTelemetry(f *LiveFrame) string {
 	}
 	fmt.Fprintf(&b, "GEAR   %d%s\n", f.CurrentGear, sug)
 	fmt.Fprintf(&b, "RPM    %5.0f\n", f.Rpm)
-	b.WriteString("THROT  " + bar(f.Throttle, 20) + "\n")
-	b.WriteString("BRAKE  " + bar(f.Brake, 20) + "\n")
+	b.WriteString("THROT  " + bar(f.Throttle/100, 20) + "\n")
+	b.WriteString("BRAKE  " + bar(f.Brake/100, 20) + "\n")
 	fmt.Fprintf(&b, "BOOST  %+.2f\n", f.Boost)
 	return b.String()
 }
@@ -158,7 +158,10 @@ func rightColumn(s LiveSnapshot) string {
 
 	// Analysis (enrichment — placeholder until it resolves)
 	b.WriteString(headerStyle.Render("ANALYSIS") + "\n")
-	if a := s.Enrichment.Analysis; a != nil && a.HasPB {
+	switch a := s.Enrichment.Analysis; {
+	case a == nil: // enrichment not resolved yet
+		b.WriteString(dimStyle.Render("  "+dash+" no analysis yet (needs a completed lap)") + "\n")
+	case a.HasPB:
 		fmt.Fprintf(&b, "  PB lap %d  %s\n", a.PBLap, lap(a.PBTime))
 		if a.TheoreticalBest > 0 {
 			fmt.Fprintf(&b, "  theoretical %s\n", lap(a.TheoreticalBest))
@@ -166,8 +169,14 @@ func rightColumn(s LiveSnapshot) string {
 		for _, r := range a.Recommendations {
 			b.WriteString(dimStyle.Render("  • "+r) + "\n")
 		}
-	} else {
-		b.WriteString(dimStyle.Render("  "+dash+" no analysis yet (needs a completed lap)") + "\n")
+	default: // resolved, but no valid lap yet — surface the analyzer's own recommendation(s)
+		if len(a.Recommendations) > 0 {
+			for _, r := range a.Recommendations {
+				b.WriteString(dimStyle.Render("  • "+r) + "\n")
+			}
+		} else {
+			b.WriteString(dimStyle.Render("  "+dash+" no valid lap yet") + "\n")
+		}
 	}
 	b.WriteString("\n" + headerStyle.Render("COACHING") + "\n")
 	b.WriteString(dimStyle.Render("  pending") + "\n")
