@@ -10,6 +10,23 @@ collector uses; the frontend only touches the HTTP API below.
 - All routes are under `/v1`. Responses are `application/json`.
 - Read-only today: only `GET`. No auth in this version (single-user/local).
 
+## Live telemetry (primary)
+
+- `GET /v1/live` (and `/` alias) — snapshot: `{served_at, status, frame, derived, enrichment}`.
+  `frame` carries ALL canonical fields (snake_case); `derived` has `current_lap_time_ns`, `fuel_pct`,
+  `source`; `enrichment` holds `session_id` (present once a session starts) plus correlated fields that
+  fill in as they resolve (`analysis` per lap; `car_name`/`track`/`delta_to_best_ns` reserved, null for
+  now).
+- `GET /v1/live/stream` — Server-Sent Events, one `data:` JSON payload (the same snapshot shape) per
+  frame at line rate. A fresh client also gets the current snapshot immediately on connect. Slow clients
+  coalesce to the freshest frame. `: ping` heartbeat every 15s.
+- Idle (no telemetry yet): `200` with `status:"idle"` and `frame:null`; the other top-level keys are
+  still present (`served_at`, `derived:null`, `enrichment` as usual) — e.g.
+  `{"served_at":"…","status":"idle","frame":null,"derived":null,"enrichment":{…}}`.
+
+The `/v1/sessions*` endpoints below are the **retention / post-race analysis** surface, not the live
+surface — a session summary is intentionally not live-updated mid-race.
+
 ## Conventions
 
 - **Durations are integer NANOSECONDS.** Every duration field ends in `_ns`. Divide by `1e6` for
