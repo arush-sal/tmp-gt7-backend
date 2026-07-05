@@ -107,9 +107,57 @@ func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// handleLiveStream is implemented in Task 5.
+// handleLiveStream: GET /v1/live/stream -> Server-Sent Events, one JSON payload per fresh frame.
+// Event-driven (no ticker): the subscriber's latest-slot coalesces for slow clients. The network write
+// happens here on the request goroutine, never under the Hub lock.
 func (s *Server) handleLiveStream(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not implemented")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable proxy buffering
+	w.WriteHeader(http.StatusOK)
+
+	sub := s.live.Subscribe()
+	defer sub.Close()
+
+	// Emit the current snapshot immediately so a fresh client isn't blank until the next frame.
+	s.emit(w, flusher)
+
+	ctx := r.Context()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return // client disconnected
+		case <-heartbeat.C:
+			_, _ = w.Write([]byte(": ping\n\n")) // comment frame keeps intermediaries open
+			flusher.Flush()
+		case <-sub.C():
+			if sub.Take() == nil {
+				continue
+			}
+			s.emit(w, flusher)
+		}
+	}
+}
+
+// emit writes the current live payload as one SSE data event.
+func (s *Server) emit(w http.ResponseWriter, flusher http.Flusher) {
+	frame, lapStart, ok := s.live.Latest()
+	body, err := live.BuildPayload(frame, lapStart, ok, s.enrich.Get())
+	if err != nil {
+		return // skip a bad frame rather than kill the stream
+	}
+	_, _ = w.Write([]byte("data: "))
+	_, _ = w.Write(body)
+	_, _ = w.Write([]byte("\n\n"))
+	flusher.Flush()
 }
 
 // writeJSON marshals v to a buffer first, so an encode failure yields a clean 500 instead of a 200
