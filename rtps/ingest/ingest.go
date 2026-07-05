@@ -23,6 +23,15 @@ type Server struct {
 	sink  session.Sink
 	cfg   session.Config
 	log   *zap.Logger
+
+	// Publisher, if set, receives each frame for live egress before Observe. nil = no live egress.
+	Publisher Publisher
+}
+
+// Publisher receives every frame for real-time egress (the live.Hub). It is called on the ingest
+// goroutine BEFORE detection/storage, so implementations must be non-blocking (publish-first, D-B25).
+type Publisher interface {
+	Publish(*telemetryv1.TelemetryFrame)
 }
 
 // NewServer wires a Server. A nil logger is replaced with a no-op so the server is always safe to call.
@@ -57,6 +66,9 @@ func (s *Server) Ingest(stream telemetryv1.Telemetry_IngestServer) error {
 			d.Close()
 			s.log.Warn("ingest stream error; force-closed session", zap.Uint64("frames", frames), zap.Error(err))
 			return err
+		}
+		if s.Publisher != nil {
+			s.Publisher.Publish(f) // egress first: consumers get the frame before any processing
 		}
 		d.Observe(f)
 		frames++
