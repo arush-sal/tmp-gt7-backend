@@ -66,13 +66,27 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 	}
 	res.HasPB, res.PBLap, res.PBTime = true, pb.LapNumber, pb.Duration
 
-	// Compute each valid lap's sectors once; reuse for deltas + the theoretical best.
+	// Compute each valid lap's sectors once; reuse for deltas + the theoretical best. A valid lap is
+	// only *sector-analyzable* if its trace faithfully covers it (see sectorAnalyzable): sector times
+	// are derived from frame timestamps along the distance axis and telescope to the trace's wall-clock
+	// span, so a lap whose trace does not span its authoritative duration (a mid-race join lap, a
+	// standing-start spillover, a dropout splice) yields sector times that would corrupt every consumer
+	// below. Such laps stay in PB/consistency (duration-based) but are omitted here, so they contribute
+	// no best sector and get no sector deltas.
 	perLap := make(map[int32][]processing.SectorResult)
 	for _, l := range laps {
 		if !l.Valid {
 			continue
 		}
-		secs, err := a.sectorsOf(ctx, sessionID, l.LapNumber)
+		samples, err := a.Traces.ByLap(sessionID, l.LapNumber)
+		if err != nil {
+			return res, err
+		}
+		if !sectorAnalyzable(l.Duration, samples) {
+			continue
+		}
+		norm := processing.Normalize(samples)
+		secs, _, err := processing.SectorsForLap(ctx, a.KB, sessionID, norm, a.FallbackSectors)
 		if err != nil {
 			return res, err
 		}
@@ -106,16 +120,41 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 	return res, nil
 }
 
-// sectorsOf resolves one lap's per-sector metrics: load its trace, distance-normalize it, and split
-// by the RKB's sectors (falling back to mini-sectors when the track is unknown).
-func (a Analyzer) sectorsOf(ctx context.Context, sessionID string, lapNumber int32) ([]processing.SectorResult, error) {
-	samples, err := a.Traces.ByLap(sessionID, lapNumber)
-	if err != nil {
-		return nil, err
+// Sector-analyzability tolerance. A lap's trace is trusted for sector timing only when its wall-clock
+// span sits within this band of the lap's authoritative GT7 duration. Because contiguous mini-sectors
+// telescope (Σ sector times == lastSample − firstSample == trace span), a span that disagrees with the
+// real lap time means the trace does not cover exactly one clean lap. Clean 60Hz laps matched their
+// GT7 time within ~0.1s across the 4-race capture; the floor leaves margin for the one-frame boundary
+// (the next lap's first frame — which GT7 stamps the lap time from — is not in this lap's trace).
+// Deliberately strict; widen only with evidence. (Mid-lap dropouts are already excluded upstream:
+// Lap.Valid requires gapCount == 0.)
+const (
+	sectorSpanAbsTol = 300 * time.Millisecond
+	sectorSpanPctTol = 0.005 // 0.5% of the lap duration
+)
+
+// sectorAnalyzable reports whether a valid lap's trace faithfully covers it, so its distance-fraction
+// sector times reconcile with the lap's authoritative duration. It rejects traces that are empty, have
+// no usable distance axis, or whose wall-clock span diverges from the lap duration beyond the tolerance
+// — the join-lap / standing-start / splice cases whose sector times would otherwise collapse the
+// theoretical best.
+func sectorAnalyzable(dur time.Duration, samples []processing.Sample) bool {
+	if dur <= 0 || len(samples) < 2 {
+		return false
 	}
-	norm := processing.Normalize(samples)
-	secs, _, err := processing.SectorsForLap(ctx, a.KB, sessionID, norm, a.FallbackSectors)
-	return secs, err
+	if samples[len(samples)-1].Distance <= 0 { // stationary/degenerate: no distance axis to split on
+		return false
+	}
+	span := samples[len(samples)-1].RecvTime.Sub(samples[0].RecvTime)
+	tol := sectorSpanAbsTol
+	if p := time.Duration(sectorSpanPctTol * float64(dur)); p > tol {
+		tol = p
+	}
+	diff := span - dur
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= tol
 }
 
 // recommend turns the deltas into short, data-supported statements (no invented advice — this is the
