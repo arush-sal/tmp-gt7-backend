@@ -108,6 +108,122 @@ func TestEnrichSink_ConcurrentSessionsNoEviction(t *testing.T) {
 	}
 }
 
+// blockingLapStore wraps a LapStore whose BySession call blocks on a channel until released, so a test
+// can put an AnalyzeSession call in flight and hold it there deterministically. AnalyzeSession calls
+// Laps.BySession first, so blocking there is sufficient without touching TraceStore.
+type blockingLapStore struct {
+	inner   processing.LapStore
+	release chan struct{}
+	entered chan struct{} // closed once BySession has been entered, so the test can observe "in flight"
+	once    sync.Once
+}
+
+func newBlockingLapStore(inner processing.LapStore) *blockingLapStore {
+	return &blockingLapStore{inner: inner, release: make(chan struct{}), entered: make(chan struct{})}
+}
+
+func (b *blockingLapStore) Save(lap *processing.Lap) error { return b.inner.Save(lap) }
+
+func (b *blockingLapStore) BySession(sessionID string) []*processing.Lap {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return b.inner.BySession(sessionID)
+}
+
+func (b *blockingLapStore) List() []*processing.Lap { return b.inner.List() }
+
+// TestEnrichSink_NoStaleRepublishAfterEnd is the regression for the staff-review-flagged race: the
+// async worker can still be inside AnalyzeSession for a session when OnSessionEnd fires. Without the
+// active-session fence, drain's e.state.Set after AnalyzeSession returns would republish the ended
+// session's analysis over the clear that OnSessionEnd already published. Run with -race.
+func TestEnrichSink_NoStaleRepublishAfterEnd(t *testing.T) {
+	laps := newBlockingLapStore(processing.NewMemLapStore())
+	analyzer := analysis.Analyzer{
+		Laps: laps, Traces: processing.NewMemTraceStore(), KB: reference.NewStaticKB(), FallbackSectors: 3,
+	}
+	state := NewEnrichmentState()
+	e := NewEnrichSink(analyzer, state, func(err error) { t.Errorf("unexpected onErr: %v", err) })
+	defer e.Close()
+
+	rec := &session.Record{ID: "session-stale", CurrentLap: 0}
+	e.OnSessionStart(rec)
+	e.OnFrame("session-stale", &telemetryv1.TelemetryFrame{CurrentLap: 1}) // enqueues + wakes worker
+
+	// Wait for the worker to actually be inside AnalyzeSession (blocked in BySession) before ending the
+	// session, so the end genuinely races the in-flight recompute rather than preceding it.
+	select {
+	case <-laps.entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker never entered AnalyzeSession (BySession) in time")
+	}
+
+	e.OnSessionEnd(rec) // clears + fences while the recompute is still blocked mid-flight
+	close(laps.release) // let the blocked AnalyzeSession proceed to completion
+
+	// The enrichment must be, and must STAY, cleared: the fenced recompute must never republish
+	// session-stale's analysis over the clear. Poll for a sustained window rather than a single check.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if en := state.Get(); en.Analysis != nil {
+			t.Fatalf("stale recompute republished after OnSessionEnd: %+v", en)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// TestEnrichSink_NoStaleRepublishAcrossCollidingGenerations is the regression for the staff-review-
+// flagged generation-collision race: session IDs (e.g. "sess-N") are minted per-Detector, so they are
+// only unique within a single gRPC stream and can collide across streams (reconnect, or concurrent
+// collectors sharing one EnrichSink). Without a generation-keyed fence, a stale in-flight recompute for
+// an ended generation-1 session could republish over a newer, colliding-ID generation-2 session's state,
+// even though drain's plain id-presence re-check (active[id] exists) would incorrectly pass. Run with -race.
+func TestEnrichSink_NoStaleRepublishAcrossCollidingGenerations(t *testing.T) {
+	laps := newBlockingLapStore(processing.NewMemLapStore())
+	analyzer := analysis.Analyzer{
+		Laps: laps, Traces: processing.NewMemTraceStore(), KB: reference.NewStaticKB(), FallbackSectors: 3,
+	}
+	state := NewEnrichmentState()
+	e := NewEnrichSink(analyzer, state, func(err error) { t.Errorf("unexpected onErr: %v", err) })
+	defer e.Close()
+
+	const id = "sess-1"
+	rec1 := &session.Record{ID: id, CurrentLap: 0}
+	e.OnSessionStart(rec1)                                    // generation 1
+	e.OnFrame(id, &telemetryv1.TelemetryFrame{CurrentLap: 1}) // enqueues + wakes worker (gen 1)
+
+	// Wait for the worker to actually be inside AnalyzeSession (blocked in BySession) for generation 1,
+	// so the id reuse below genuinely races the in-flight gen-1 recompute rather than preceding it.
+	select {
+	case <-laps.entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker never entered AnalyzeSession (BySession) in time")
+	}
+
+	e.OnSessionEnd(rec1) // ends gen 1: clears state, drops gen 1 from active
+
+	// A new, colliding-ID session starts: same id "sess-1", but a fresh generation. Because no lap
+	// boundary fires for it, no recompute is requested for generation 2 — its expected published state
+	// is exactly OnSessionStart's reset (SessionID set, Analysis nil).
+	rec2 := &session.Record{ID: id, CurrentLap: 0}
+	e.OnSessionStart(rec2) // generation 2
+
+	close(laps.release) // let the blocked generation-1 AnalyzeSession proceed to completion
+
+	// The state must reflect generation 2's reset (Analysis nil), and must NEVER show generation 1's
+	// stale non-nil analysis republished over it. Poll for a sustained window rather than a single check.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		en := state.Get()
+		if en.Analysis != nil {
+			t.Fatalf("stale generation-1 recompute republished over generation-2's state: %+v", en)
+		}
+		if en.SessionID != id {
+			t.Fatalf("unexpected session id in state: %+v", en)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestEnrichSink_CloseRace hammers OnFrame/OnSessionEnd (which call request) from goroutines while
 // Close runs concurrently, guarding against a send-on-closed-channel panic. Run with -race.
 func TestEnrichSink_CloseRace(t *testing.T) {

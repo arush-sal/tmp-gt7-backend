@@ -10,9 +10,17 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/session"
 )
 
-// EnrichSink refreshes a session's analysis when a lap completes (or the session ends) and publishes
-// it into EnrichmentState, so the live stream's `analysis` fills in per lap without running the heavy
+// EnrichSink refreshes a session's analysis when a lap completes and publishes it into
+// EnrichmentState, so the live stream's `analysis` fills in per lap without running the heavy
 // analysis on every 60Hz frame. It implements session.Sink.
+//
+// Lifecycle: OnSessionStart resets the published enrichment for the new session (correlated fields
+// null again). OnFrame's lap-boundary detection requests an async recompute so the live view fills in
+// progressively during the session. OnSessionEnd CLEARS the published enrichment (does not recompute)
+// so that between stints, and during a new stint's pre-confirmation window, live enrichment reads null
+// rather than the just-ended session's stale analysis. The finished session's analysis remains
+// available via the sessions/coaching retention endpoint; nothing is lost because the last completed
+// lap's analysis was already published on its lap-boundary OnFrame during the active session.
 //
 // AnalyzeSession (normalizes traces + splits sectors) runs on a SEPARATE worker goroutine, never on
 // the ingest goroutine — recomputing inline would block stream.Recv and stall the live publish cadence
@@ -25,7 +33,20 @@ import (
 // that lap is simply not sector-analyzable yet (empty sector deltas, handled by the sector guard) and
 // its sectors appear on the next refresh once the batch drains; a dropped batch leaves it duration-only.
 //
-// mu guards lap + pending because session.Sink instances are shared across concurrent ingest streams.
+// Active-session fence: the worker's recompute runs OUTSIDE mu (AnalyzeSession is heavy), so a session
+// can end while its recompute is in flight. drain re-checks active AFTER AnalyzeSession returns, under
+// the same mu that OnSessionEnd uses to clear state, so publish and clear are mutually exclusive: an id
+// that ended during analysis is dropped, never republished over the cleared enrichment.
+//
+// The fence is keyed on a GENERATION token, not merely the session ID: session IDs (e.g. "sess-N") are
+// minted per-Detector, so they are only unique within one gRPC stream and can collide across streams
+// (reconnect, or concurrent collectors sharing one EnrichSink). If generation N's recompute is still in
+// flight when a colliding-ID generation N+1 starts, a plain id-presence re-check would pass and publish
+// gen-N's stale analysis into gen-N+1's live view. Keying active on id -> generation and requiring the
+// SAME generation to still be current at publish time closes that hole.
+//
+// mu guards lap + pending + active + gen because session.Sink instances are shared across concurrent
+// ingest streams.
 type EnrichSink struct {
 	analyzer analysis.Analyzer
 	state    *EnrichmentState
@@ -34,6 +55,8 @@ type EnrichSink struct {
 	mu      sync.Mutex
 	lap     map[string]int32    // last seen current_lap per session, to detect boundaries
 	pending map[string]struct{} // sessions awaiting a recompute (per-session coalescing)
+	active  map[string]uint64   // session id -> current generation; fences stale/colliding publishes
+	gen     uint64              // monotonic generation counter, bumped on every OnSessionStart
 	stopped bool
 
 	notify chan struct{} // 1-deep wakeup for the worker
@@ -49,7 +72,7 @@ func NewEnrichSink(analyzer analysis.Analyzer, state *EnrichmentState, onErr fun
 	}
 	e := &EnrichSink{
 		analyzer: analyzer, state: state, onErr: onErr,
-		lap: map[string]int32{}, pending: map[string]struct{}{},
+		lap: map[string]int32{}, pending: map[string]struct{}{}, active: map[string]uint64{},
 		notify: make(chan struct{}, 1), stop: make(chan struct{}),
 	}
 	e.wg.Add(1)
@@ -71,22 +94,36 @@ func (e *EnrichSink) worker() {
 	}
 }
 
-// drain recomputes analysis for every currently-pending session (coalesced) and publishes it.
+// drain recomputes analysis for every currently-pending, still-active session (coalesced) and
+// publishes it. The active re-check after AnalyzeSession fences out sessions that ended while their
+// recompute was in flight, AND out sessions whose id was reused by a newer generation in the meantime
+// (see the type doc comment): the generation captured at pre-filter must still match the current
+// generation for that id at publish time.
 func (e *EnrichSink) drain() {
+	type work struct {
+		id  string
+		gen uint64
+	}
 	e.mu.Lock()
-	ids := make([]string, 0, len(e.pending))
+	todo := make([]work, 0, len(e.pending))
 	for id := range e.pending {
-		ids = append(ids, id)
+		if g, ok := e.active[id]; ok { // only recompute still-active sessions
+			todo = append(todo, work{id: id, gen: g})
+		}
 	}
 	e.pending = map[string]struct{}{}
 	e.mu.Unlock()
-	for _, id := range ids {
-		a, err := e.analyzer.AnalyzeSession(context.Background(), id)
+	for _, w := range todo {
+		a, err := e.analyzer.AnalyzeSession(context.Background(), w.id)
 		if err != nil {
-			e.onErr(fmt.Errorf("enrich analyze %s: %w", id, err))
+			e.onErr(fmt.Errorf("enrich analyze %s: %w", w.id, err))
 			continue
 		}
-		e.state.Set(Enrichment{SessionID: id, Analysis: &a})
+		e.mu.Lock()
+		if e.active[w.id] == w.gen { // same session generation still active? (guards ID collisions across streams)
+			e.state.Set(Enrichment{SessionID: w.id, Analysis: &a})
+		}
+		e.mu.Unlock()
 	}
 }
 
@@ -105,10 +142,15 @@ func (e *EnrichSink) request(sessionID string) {
 	}
 }
 
-// OnSessionStart seeds the lap tracker and resets the published enrichment for the new session.
+// OnSessionStart seeds the lap tracker, bumps the generation counter and records it as the current
+// generation for this session id, and resets the published enrichment for the new session. Bumping the
+// generation even on an id collision (a reused "sess-N" from a different Detector/stream) ensures any
+// recompute still in flight for the prior occupant of that id is fenced out by drain's generation check.
 func (e *EnrichSink) OnSessionStart(rec *session.Record) {
 	e.mu.Lock()
 	e.lap[rec.ID] = rec.CurrentLap
+	e.gen++
+	e.active[rec.ID] = e.gen
 	e.mu.Unlock()
 	e.state.Set(Enrichment{SessionID: rec.ID})
 }
@@ -125,12 +167,18 @@ func (e *EnrichSink) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) {
 	}
 }
 
-// OnSessionEnd forgets the session's lap tracker and requests one final recompute.
+// OnSessionEnd forgets the session's lap tracker, fences it out of pending/active, and clears the
+// published live enrichment, so the live view reflects only the active session rather than lingering
+// on the just-ended one's analysis. The delete+clear happen under mu so they are serialized with
+// drain's publish: an in-flight recompute for this session that finishes after this call sees the
+// session no longer active and drops its publish instead of republishing over the clear.
 func (e *EnrichSink) OnSessionEnd(rec *session.Record) {
 	e.mu.Lock()
 	delete(e.lap, rec.ID)
+	delete(e.active, rec.ID)
+	delete(e.pending, rec.ID)
+	e.state.Set(Enrichment{}) // clear under mu so it can't be reordered after a stale worker publish
 	e.mu.Unlock()
-	e.request(rec.ID)
 }
 
 // Close stops the worker after a final drain. Idempotent.

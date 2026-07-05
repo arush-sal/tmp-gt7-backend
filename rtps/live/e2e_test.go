@@ -168,17 +168,17 @@ func TestEgress_GoldenReplayPopulatesLive(t *testing.T) {
 			t.Fatalf("send: %v", err)
 		}
 	}
-	if _, err := stream.CloseAndRecv(); err != nil {
-		t.Fatalf("CloseAndRecv: %v", err)
-	}
 
 	// Direct metrics available from the latest frame (publish-first: no analysis dependency).
 	if _, _, ok := hub.Latest(); !ok {
 		t.Fatal("hub has no frame after replay")
 	}
 
-	// Enrichment analysis populates asynchronously (a separate worker goroutine, see EnrichSink), so
-	// poll with a bounded timeout rather than sleeping a fixed duration or racing the assertion.
+	// Assert enrichment BEFORE CloseAndRecv: OnSessionEnd (triggered by the client's EOF, which the
+	// detector treats as the session ending) now CLEARS the live enrichment rather than recomputing
+	// it, so the session must still be open when we check that enrichment populated. The server
+	// processes sent frames asynchronously, so poll with a bounded timeout rather than sleeping a
+	// fixed duration or racing the assertion.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if en := enrich.Get(); en.Analysis != nil && en.Analysis.HasPB {
@@ -216,10 +216,35 @@ func TestEgress_GoldenReplayPopulatesLive(t *testing.T) {
 			if enr.Analysis == nil || !enr.Analysis.HasPB {
 				t.Error("payload enrichment.analysis.has_pb not true")
 			}
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("enrichment analysis never populated after replay")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatalf("CloseAndRecv: %v", err)
+	}
+
+	// Lock in the new lifecycle: once the session ends (EOF -> OnSessionEnd), live enrichment is
+	// cleared rather than lingering on the just-ended session's analysis.
+	deadline = time.Now().Add(2 * time.Second)
+	for enrich.Get().Analysis != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("enrichment was not cleared after session end")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Strengthened post-close assertion: don't just catch the first nil and declare victory — a stale
+	// in-flight recompute could still land after the clear and republish. Poll for a sustained window
+	// and fail if enrichment ever becomes non-nil again.
+	sustainedUntil := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(sustainedUntil) {
+		if en := enrich.Get(); en.Analysis != nil {
+			t.Fatalf("enrichment became non-nil again after session end (stale republish): %+v", en)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
