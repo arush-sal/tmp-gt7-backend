@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+#
+# rtps — the backend (gRPC ingest + HTTP read API). Multi-stage: a full Go toolchain builds a fully
+# static binary, then we ship it on distroless/static so the runtime image has no shell, no package
+# manager, and a non-root user. The DB migrations are compiled into the binary (//go:embed in
+# internal/db), so no migration files are copied into the final image.
+
+FROM golang:1.26 AS build
+WORKDIR /src
+
+# Download modules first, in their own cached layer, so source edits don't re-fetch deps.
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+# CGO off => a static binary that runs on distroless/static. -trimpath + -s -w for a lean, reproducible
+# build. BuildKit caches the module + compile caches across builds.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/rtps ./cmd/rtps
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/rtps /rtps
+# 8080 = HTTP read API, 50051 = telemetry ingest gRPC (documentation only; publish via compose).
+EXPOSE 8080 50051
+USER nonroot:nonroot
+ENTRYPOINT ["/rtps"]

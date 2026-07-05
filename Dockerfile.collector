@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+#
+# collector — receives GT7 UDP telemetry from a PS5, decodes it, and streams canonical frames to rtps
+# over gRPC. Same multi-stage static build as rtps. Note: to actually receive the console's UDP the
+# container must run with host networking (see docker-compose.yml); a bridge network cannot deliver the
+# PS5's fixed-destination-port datagrams.
+
+FROM golang:1.26 AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/collector ./cmd/collector
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/collector /collector
+# UDP 33740 = telemetry recv, 33739 = heartbeat send (both handled by host networking at runtime).
+EXPOSE 33740/udp
+USER nonroot:nonroot
+ENTRYPOINT ["/collector"]
