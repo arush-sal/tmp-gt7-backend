@@ -9,6 +9,7 @@ import (
 
 	"github.com/arush-sal/garage/backend/rtps/analysis"
 	"github.com/arush-sal/garage/backend/rtps/coach"
+	"github.com/arush-sal/garage/backend/rtps/live"
 	"github.com/arush-sal/garage/backend/rtps/session"
 )
 
@@ -22,7 +23,7 @@ func (fakeAnalyzer) AnalyzeSession(_ context.Context, id string) (analysis.Sessi
 func testServer() (*Server, *session.MemStore) {
 	store := session.NewMemStore()
 	_ = store.Save(&session.Record{ID: "s1", CarID: 1384, Status: session.StatusFinished})
-	return NewServer(coach.New(fakeAnalyzer{}), store, nil), store
+	return NewServer(coach.New(fakeAnalyzer{}), store, live.New(), live.NewEnrichmentState(), nil), store
 }
 
 func TestAPI_ListSessions(t *testing.T) {

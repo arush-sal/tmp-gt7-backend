@@ -16,6 +16,7 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/api"
 	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/ingest"
+	"github.com/arush-sal/garage/backend/rtps/live"
 	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/reference"
 	"github.com/arush-sal/garage/backend/rtps/session"
@@ -76,7 +77,9 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	// Read side: Analysis -> Coaching (placeholder, D-B21) -> HTTP API. The KB is a stub for now, so
 	// Analysis falls back to mini-sectors (the pipeline works without the real RKB).
 	analyzer := analysis.Analyzer{Laps: lapStore, Traces: traceStore, KB: reference.NewStaticKB(), FallbackSectors: 3}
-	apiSrv := api.NewServer(coach.New(analyzer), sessStore, log)
+	hub := live.New()
+	enrich := live.NewEnrichmentState()
+	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, log)
 	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	// Bind the ingest listener only once we're committed to serving (after storage init), so a failed

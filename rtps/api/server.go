@@ -9,24 +9,27 @@ import (
 	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/coach"
+	"github.com/arush-sal/garage/backend/rtps/live"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
 )
 
-// Server serves the read API. It depends only on the Coaching domain (for reports) and the session
-// store (for the session list).
+// Server serves the read API. It depends on the Coaching domain (for reports), the session store
+// (for the session list), and the live egress Hub + EnrichmentState (for the /v1/live snapshot).
 type Server struct {
 	coach    coach.Coach
 	sessions session.Store
+	live     *live.Hub
+	enrich   *live.EnrichmentState
 	log      *zap.Logger
 }
 
 // NewServer wires the API server. A nil logger is replaced with a no-op.
-func NewServer(c coach.Coach, sessions session.Store, log *zap.Logger) *Server {
+func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, log *zap.Logger) *Server {
 	if log == nil {
 		log = zap.NewNop()
 	}
-	return &Server{coach: c, sessions: sessions, log: log}
+	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, log: log}
 }
 
 // Handler returns the HTTP routes (Go 1.22+ method+wildcard patterns; no router dependency).
@@ -34,6 +37,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/coaching", s.handleSessionCoaching)
+	mux.HandleFunc("GET /v1/live", s.handleLive)
+	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
+	mux.HandleFunc("GET /{$}", s.handleLive)                  // "/" alias, exact match only
 	return mux
 }
 
@@ -85,6 +91,25 @@ func (s *Server) handleSessionCoaching(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// handleLive: GET /v1/live (and / alias) -> the current frame + progressive-enrichment snapshot.
+func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
+	frame, lapStart, ok := s.live.Latest()
+	body, err := live.BuildPayload(frame, lapStart, ok, s.enrich.Get())
+	if err != nil {
+		s.log.Error("live payload encode failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to encode live payload")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// handleLiveStream is implemented in Task 5.
+func (s *Server) handleLiveStream(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotImplemented, "not implemented")
 }
 
 // writeJSON marshals v to a buffer first, so an encode failure yields a clean 500 instead of a 200
