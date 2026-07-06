@@ -158,6 +158,36 @@ func TestSegmenter_FrameAfterEndDropped(t *testing.T) {
 	}
 }
 
+// TestSegmenter_FallbackFlag: a lap closed by a lap-counter increment (complete) has Fallback=false;
+// the partial final lap flushed on session end (no last_lap) has Fallback=true.
+func TestSegmenter_FallbackFlag(t *testing.T) {
+	store := NewMemLapStore()
+	seg := NewLapSegmenter(store)
+	base := time.Unix(1_700_000_000, 0)
+	f := func(ms int, lap int32, last time.Duration) *telemetryv1.TelemetryFrame {
+		fr := &telemetryv1.TelemetryFrame{CurrentLap: lap, RecvTimestamp: timestamppb.New(base.Add(time.Duration(ms) * time.Millisecond))}
+		if last > 0 {
+			fr.LastLap = durationpb.New(last)
+		}
+		return fr
+	}
+	seg.OnSessionStart(&session.Record{ID: "s"})
+	seg.OnFrame("s", f(0, 1, 0))
+	seg.OnFrame("s", f(100, 2, 90*time.Second)) // closes lap 1 with last_lap=90s -> not fallback
+	seg.OnSessionEnd(&session.Record{ID: "s"})  // flushes lap 2 as partial -> fallback
+	laps := store.BySession("s")
+	byNum := map[int32]*Lap{}
+	for _, l := range laps {
+		byNum[l.LapNumber] = l
+	}
+	if byNum[1] == nil || byNum[1].Fallback {
+		t.Errorf("lap 1 should be GT7-timed (Fallback=false), got %+v", byNum[1])
+	}
+	if byNum[2] == nil || !byNum[2].Fallback {
+		t.Errorf("lap 2 (partial) should be Fallback=true, got %+v", byNum[2])
+	}
+}
+
 func lapNums(laps []*Lap) []int32 {
 	n := make([]int32, len(laps))
 	for i, l := range laps {

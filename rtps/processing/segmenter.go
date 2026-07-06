@@ -103,8 +103,10 @@ func (s *LapSegmenter) OnSessionEnd(rec *session.Record) {
 // gap-free lap.
 func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastLap time.Duration) {
 	dur := lastLap
+	fallback := false
 	if dur <= 0 { // formation lap, or the partial final lap: no authoritative last_lap
 		dur = st.lastTime.Sub(st.startTime)
+		fallback = true
 	}
 	timed := st.lapNumber > 0
 	if err := s.store.Save(&Lap{
@@ -118,6 +120,7 @@ func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastL
 		Complete:   complete,
 		Timed:      timed,
 		Valid:      timed && complete && st.gapCount == 0,
+		Fallback:   fallback,
 	}); err != nil && s.OnError != nil {
 		s.OnError(fmt.Errorf("save lap %s#%d: %w", sessionID, st.lapNumber, err))
 	}

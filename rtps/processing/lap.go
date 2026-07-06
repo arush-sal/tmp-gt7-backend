@@ -27,4 +27,5 @@ type Lap struct {
 	Complete bool // closed by a lap-counter increment (vs the session ending mid-lap)
 	Timed    bool // a timed racing lap (LapNumber > 0); excludes the formation/out lap
 	Valid    bool // usable for Personal-Best: Timed && Complete && GapCount == 0
+	Fallback bool // Duration came from the wall-clock span (GT7 last_lap was unavailable), not an authoritative lap time
 }
