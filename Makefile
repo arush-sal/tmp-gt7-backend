@@ -4,13 +4,14 @@
 GO      ?= go
 PKG     ?= ./...
 
-# `make live` knobs (see the live target)
+# `make live` / `make dist-joshua` knobs
 IP       ?=
 STORAGE  ?= memory
 DB_DSN   ?=
 API_ADDR ?= localhost:8080
+JOSHUA   ?= salil@joshua
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live dist-windows
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live dist-joshua
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
@@ -84,13 +85,22 @@ live:
 		./bin/collector --ps5.ip=$(IP) --log.level=warn & COL=$$!; \
 		./bin/tui --api http://$(API_ADDR)"
 
-## dist-windows: cross-compile collector/rtps/tui for Windows (amd64) into bin/windows/
-dist-windows:
-	@mkdir -p bin/windows
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/windows/collector.exe ./cmd/collector
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/windows/rtps.exe ./cmd/rtps
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/windows/tui.exe ./cmd/tui
-	@echo "built bin/windows/{collector,rtps,tui}.exe"
+## dist-joshua: build linux rtps+collector, copy to the joshua LAN host, and (re)start them there.
+## joshua sits on the PS5's LAN and receives the console's UDP natively (WSL2 NAT cannot). rtps binds
+## its API wide (0.0.0.0:8080) so a WSL/dev box can curl http://<joshua-lan-ip>:8080. Usage:
+##   make dist-joshua IP=192.168.1.99 [JOSHUA=user@host]
+dist-joshua:
+	@test -n "$(IP)" || { echo "usage: make dist-joshua IP=<ps5-ip> [JOSHUA=user@host]"; exit 2; }
+	@mkdir -p bin/linux
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/linux/rtps ./cmd/rtps
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/linux/collector ./cmd/collector
+	scp bin/linux/rtps bin/linux/collector $(JOSHUA):~/
+	ssh $(JOSHUA) 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 1; \
+		nohup ~/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=0.0.0.0:8080 --ingest.addr=localhost:50051 --log.level=info >~/rtps.log 2>&1 & disown; \
+		sleep 2; \
+		nohup ~/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >~/collector.log 2>&1 & disown; \
+		echo "started rtps + collector on $(JOSHUA) (logs: ~/rtps.log ~/collector.log)"'
+	@echo ">> rtps API on $(JOSHUA):8080 (bind 0.0.0.0). From a dev box: curl http://<joshua-lan-ip>:8080/v1/live"
 
 ## clean: remove build and coverage artifacts
 clean:
