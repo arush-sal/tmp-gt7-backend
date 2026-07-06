@@ -30,7 +30,11 @@ type livePayload struct {
 var protoMarshal = protojson.MarshalOptions{EmitUnpopulated: true, UseProtoNames: true}
 
 // BuildPayload assembles the full live snapshot JSON. When ok is false (no frame yet) it returns an
-// idle payload with a null frame.
+// idle payload with a null frame. Precondition: when ok is true the caller must pass a non-nil frame
+// with its RecvTimestamp set and a valid lapStart. Hub.Latest returns these unvalidated, so the
+// guarantee actually rests on every Hub.Publish caller (today the ingest path, which always publishes
+// a canonical frame with RecvTimestamp set); otherwise the derived current_lap_time_ns is computed from
+// a zero/garbage instant and may be a large or nonsensical value.
 func BuildPayload(frame *telemetryv1.TelemetryFrame, lapStart time.Time, ok bool, en Enrichment) ([]byte, error) {
 	enrJSON, err := json.Marshal(en)
 	if err != nil {

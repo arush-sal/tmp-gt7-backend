@@ -99,17 +99,28 @@ func TestStreamLive_BackoffOnCleanEOF(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	// Step 1: wait (bounded) for the FIRST connection attempt. Polling instead of a fixed sleep
+	// means we start measuring only once the stream goroutine has actually dialed — on a slow
+	// runner the first dial may not have happened within an arbitrary fixed window.
+	deadline := time.Now().Add(2 * time.Second)
+	for attempts.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("no connection attempt observed within 2s; stream never started")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Step 2: from a known baseline, measure how many further attempts land within one backoff
+	// window (~250ms). With the 250ms backoff in effect, reconnects are spaced ~250ms apart, so at
+	// most one or two new attempts can occur in this window. A busy-spin bug (no backoff) would
+	// produce hundreds/thousands. The window sleep here measures a rate; it is not a sleep-as-
+	// assertion for whether the stream started (that is Step 1's job).
+	baseline := attempts.Load()
+	time.Sleep(250 * time.Millisecond)
+	delta := attempts.Load() - baseline
 	cancel()
 
-	// The 250ms backoff bounds how many connection attempts can occur within 200ms: at most a
-	// couple (initial dial + maybe one retry right at the boundary). A busy-spin bug would produce
-	// hundreds/thousands of attempts in the same window.
-	got := attempts.Load()
-	if got > 3 {
-		t.Fatalf("observed %d connection attempts in 200ms; expected busy-spin to be bounded by backoff", got)
-	}
-	if got < 1 {
-		t.Fatalf("observed %d connection attempts; expected at least 1", got)
+	if delta > 2 {
+		t.Fatalf("observed %d new connection attempts within a 250ms backoff window; expected backoff to bound reconnects", delta)
 	}
 }

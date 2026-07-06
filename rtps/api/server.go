@@ -24,10 +24,18 @@ type Server struct {
 	log      *zap.Logger
 }
 
-// NewServer wires the API server. A nil logger is replaced with a no-op.
+// NewServer wires the API server. Nil live dependencies are replaced with safe empties (a no-op
+// logger, an empty Hub, an empty EnrichmentState) so the live handlers never nil-deref. The coach and
+// session store are NOT guarded — the session routes require them and will fault if they are nil.
 func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, log *zap.Logger) *Server {
 	if log == nil {
 		log = zap.NewNop()
+	}
+	if hub == nil {
+		hub = live.New()
+	}
+	if enrich == nil {
+		enrich = live.NewEnrichmentState()
 	}
 	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, log: log}
 }

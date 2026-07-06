@@ -62,6 +62,12 @@ func (h *Hub) Latest() (*telemetryv1.TelemetryFrame, time.Time, bool) {
 func (h *Hub) Subscribe() *Sub {
 	s := &Sub{hub: h, notify: make(chan struct{}, 1)}
 	h.mu.Lock()
+	// Lazy-init defends a zero-value Hub{} (one not built via New()): its subs map is nil, and a
+	// nil-map write panics. Publish's range and Latest already tolerate a nil map; only this write
+	// needs the guard. No effect on the normal New() path (map is already non-nil).
+	if h.subs == nil {
+		h.subs = make(map[*Sub]struct{})
+	}
 	h.subs[s] = struct{}{}
 	h.mu.Unlock()
 	return s
