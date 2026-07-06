@@ -135,7 +135,8 @@ func leftTelemetry(f *LiveFrame) string {
 	b.WriteString(headerStyle.Render("TELEMETRY") + "\n")
 	fmt.Fprintf(&b, "SPEED  %6.1f km/h\n", f.CarSpeed)
 	sug := ""
-	if f.SuggestedGear > 0 && f.SuggestedGear != f.CurrentGear {
+	// GT7 sends suggested_gear as a nibble; 15 = "no suggestion" sentinel. Reverse-engineered protocol fact.
+	if f.SuggestedGear > 0 && f.SuggestedGear < 15 && f.SuggestedGear != f.CurrentGear {
 		sug = dimStyle.Render(fmt.Sprintf(" (shift %d)", f.SuggestedGear))
 	}
 	fmt.Fprintf(&b, "GEAR   %d%s\n", f.CurrentGear, sug)

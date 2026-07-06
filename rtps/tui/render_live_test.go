@@ -167,3 +167,14 @@ func TestRenderLive_ResolvedNoPB(t *testing.T) {
 		t.Errorf("resolved no-PB analysis should not show the pending placeholder:\n%s", out)
 	}
 }
+
+func TestRenderLive_SuggestedGearSentinelHidden(t *testing.T) {
+	live := stripANSI(RenderLive(LiveSnapshot{Status: "live", Frame: &LiveFrame{CurrentGear: 3, SuggestedGear: 15}}, 120, nil))
+	if strings.Contains(live, "shift") {
+		t.Errorf("suggested_gear 15 (no-suggestion sentinel) must not render a shift hint:\n%s", live)
+	}
+	real := stripANSI(RenderLive(LiveSnapshot{Status: "live", Frame: &LiveFrame{CurrentGear: 3, SuggestedGear: 5}}, 120, nil))
+	if !strings.Contains(real, "shift 5") {
+		t.Errorf("a genuine suggested gear should render a shift hint:\n%s", real)
+	}
+}
