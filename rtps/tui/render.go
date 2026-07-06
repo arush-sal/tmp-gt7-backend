@@ -129,9 +129,15 @@ func liveHeader(s LiveSnapshot) string {
 	if a := s.Enrichment.Analysis; a != nil && a.PredictedBest > 0 {
 		predicted = lap(a.PredictedBest)
 	}
+	// DELTA: live delta to the session-best reference lap. Negative = ahead of the reference,
+	// positive = behind. Nil (no reference lap yet) falls back to the dash placeholder.
+	delt := dash
+	if d := s.Enrichment.DeltaToBestNs; d != nil {
+		delt = delta(time.Duration(*d))
+	}
 	return headerStyle.Render(fmt.Sprintf(
 		"POS %s   LAP %d/%d   TRACK %s   DELTA %s   PREDICTED %s   BEST %s",
-		pos, f.CurrentLap, f.TotalLaps, dash, dash, predicted, lap(f.BestLap())))
+		pos, f.CurrentLap, f.TotalLaps, dash, delt, predicted, lap(f.BestLap())))
 }
 
 func leftTelemetry(f *LiveFrame) string {

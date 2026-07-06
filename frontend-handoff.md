@@ -15,8 +15,10 @@ collector uses; the frontend only touches the HTTP API below.
 - `GET /v1/live` (and `/` alias) — snapshot: `{served_at, status, frame, derived, enrichment}`.
   `frame` carries ALL canonical fields (snake_case); `derived` has `current_lap_time_ns`, `fuel_pct`,
   `source`; `enrichment` holds `session_id` (present once a session starts) plus correlated fields that
-  fill in as they resolve (`analysis` per lap; `car_name`/`track`/`delta_to_best_ns` reserved, null for
-  now).
+  fill in as they resolve: `analysis` per lap; `delta_to_best_ns` (int64 nanoseconds, nullable) — the
+  current lap's live delta to the session-best reference lap, negative when ahead of the reference and
+  positive when behind, `null` until a reference lap exists (needs one completed non-degenerate lap);
+  `car_name`/`track` remain reserved, null for now.
 - `GET /v1/live/stream` — Server-Sent Events, one `data:` JSON payload (the same snapshot shape) per
   frame at line rate. A fresh client also gets the current snapshot immediately on connect. Slow clients
   coalesce to the freshest frame. `: ping` heartbeat every 15s.

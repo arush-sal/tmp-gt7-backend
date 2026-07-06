@@ -9,9 +9,10 @@ import (
 
 // LiveSnapshot is the dashboard-rendered SUBSET of the /v1/live payload — it decodes only the fields
 // the TUI displays. Payload keys the dashboard doesn't use (served_at, and the reserved enrichment
-// fields car_name/track/delta_to_best_ns) are intentionally omitted; extra JSON keys are ignored on
-// unmarshal. Frame/Derived are nil in the idle state; Enrichment's fields are nil until they resolve
-// (progressive enrichment).
+// fields car_name/track) are intentionally omitted; extra JSON keys are ignored on unmarshal.
+// Frame/Derived are nil in the idle state; Enrichment's fields are nil until they resolve
+// (progressive enrichment). DeltaToBestNs in particular stays nil until a reference (best) lap
+// exists — there is no delta to report yet.
 type LiveSnapshot struct {
 	Status     string         `json:"status"`
 	Frame      *LiveFrame     `json:"frame"`
@@ -59,6 +60,10 @@ type LiveDerived struct {
 type LiveEnrichment struct {
 	SessionID string                    `json:"session_id"`
 	Analysis  *analysis.SessionAnalysis `json:"analysis"`
+	// DeltaToBestNs is the current lap's live delta to the session-best reference lap, in
+	// nanoseconds. Negative means ahead of the reference, positive means behind. Nil until a
+	// reference (best) lap exists.
+	DeltaToBestNs *int64 `json:"delta_to_best_ns"`
 }
 
 // ParseSnapshot unmarshals one SSE event's JSON body into a LiveSnapshot.

@@ -228,6 +228,30 @@ func TestRenderLive_HeaderPredictedDashWhenSuppressed(t *testing.T) {
 	}
 }
 
+// TestRenderLive_HeaderShowsDelta guards the header's DELTA slot: it must show the signed live
+// delta to the session-best reference lap when resolved, and fall back to the dash placeholder
+// (not a bogus "+0.000s") when no reference lap exists yet.
+func TestRenderLive_HeaderShowsDelta(t *testing.T) {
+	ahead := int64(-750 * time.Millisecond)
+	s := LiveSnapshot{
+		Status: "live", Frame: &LiveFrame{CarSpeed: 100, CurrentLap: 3},
+		Enrichment: LiveEnrichment{DeltaToBestNs: &ahead},
+	}
+	out := stripANSI(RenderLive(s, 120, nil))
+	if !strings.Contains(out, "DELTA -0.750s") {
+		t.Errorf("expected header DELTA slot to show the signed delta:\n%s", out)
+	}
+
+	noRef := LiveSnapshot{
+		Status: "live", Frame: &LiveFrame{CarSpeed: 100, CurrentLap: 3},
+		Enrichment: LiveEnrichment{DeltaToBestNs: nil},
+	}
+	outNoRef := stripANSI(RenderLive(noRef, 120, nil))
+	if !strings.Contains(outNoRef, "DELTA "+dash) {
+		t.Errorf("expected header DELTA slot to show the dash placeholder when no reference lap:\n%s", outNoRef)
+	}
+}
+
 func TestRenderLive_SuggestedGearSentinelHidden(t *testing.T) {
 	live := stripANSI(RenderLive(LiveSnapshot{Status: "live", Frame: &LiveFrame{CurrentGear: 3, SuggestedGear: 15}}, 120, nil))
 	if strings.Contains(live, "shift") {
