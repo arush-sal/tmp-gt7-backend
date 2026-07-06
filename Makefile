@@ -94,9 +94,9 @@ dist-joshua:
 	@mkdir -p bin/linux
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/linux/rtps ./cmd/rtps
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/linux/collector ./cmd/collector
+	ssh $(JOSHUA) 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 2; rm -f ~/rtps ~/collector' || true
 	scp bin/linux/rtps bin/linux/collector $(JOSHUA):~/
-	ssh $(JOSHUA) 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 1; \
-		nohup ~/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=0.0.0.0:8080 --ingest.addr=localhost:50051 --log.level=info >~/rtps.log 2>&1 & disown; \
+	ssh $(JOSHUA) 'nohup ~/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=0.0.0.0:8080 --ingest.addr=localhost:50051 --log.level=info >~/rtps.log 2>&1 & disown; \
 		sleep 2; \
 		nohup ~/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >~/collector.log 2>&1 & disown; \
 		echo "started rtps + collector on $(JOSHUA) (logs: ~/rtps.log ~/collector.log)"'
