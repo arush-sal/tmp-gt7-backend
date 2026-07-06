@@ -51,6 +51,7 @@ func loadPosGolden(t *testing.T, path string) []*telemetryv1.TelemetryFrame {
 		t.Fatalf("header: %v", err)
 	}
 	var frames []*telemetryv1.TelemetryFrame
+	var bestSoFar time.Duration // running GT7-style best_lap; the golden CSV has no best_lap column
 	for {
 		row, err := r.Read()
 		if err == io.EOF {
@@ -72,7 +73,17 @@ func loadPosGolden(t *testing.T, path string) []*telemetryv1.TelemetryFrame {
 			Source:        telemetryv1.Source_SOURCE_LIVE,
 		}
 		if ms := mi64(t, row[6]); ms >= 0 { // negative = GT7 "no lap time" sentinel -> leave nil
-			fr.LastLap = durationpb.New(time.Duration(ms) * time.Millisecond)
+			d := time.Duration(ms) * time.Millisecond
+			fr.LastLap = durationpb.New(d)
+			// Mirror GT7's own best_lap tracking so this synthesized stream exercises the analyzer's
+			// gt7Best threading the same way a real capture would (the CSV columns predate best_lap,
+			// so it isn't in the source data — derive it as the running min of completed lap times).
+			if bestSoFar == 0 || d < bestSoFar {
+				bestSoFar = d
+			}
+		}
+		if bestSoFar > 0 {
+			fr.BestLap = durationpb.New(bestSoFar)
 		}
 		frames = append(frames, fr)
 	}

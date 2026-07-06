@@ -64,7 +64,9 @@ Response `200`: array of **SessionSummary**
 ```
 
 ### `GET /v1/sessions/{id}/coaching`
-The coaching report for one session: deterministic analysis + a coaching layer.
+The coaching report for one session: deterministic analysis + a coaching layer. **Finished/abandoned
+sessions only** — an active session's stored best-lap is frozen at confirm-time, so this endpoint
+returns `409` while the session is still in progress; poll `/v1/live` instead for the live view.
 
 Response `200`: **Report**
 - `analysis` — **SessionAnalysis**
@@ -77,8 +79,8 @@ Response `200`: **Report**
 |---|---|---|
 | `session_id` | string | |
 | `has_pb` | bool | false when no valid lap (e.g. abandoned session) — then the rest is empty |
-| `pb_lap` | int | Personal-Best lap number |
-| `pb_time_ns` | int (ns) | PB lap time |
+| `pb_lap` | int | Personal-Best lap number; `0` when the GT7-authoritative best doesn't match any captured lap |
+| `pb_time_ns` | int (ns) | PB lap time (GT7's own authoritative best, not derived from captured laps) |
 | `laps` | LapAnalysis[] | one per valid lap |
 | `consistency` | Consistency | spread of valid laps |
 | `theoretical_best_ns` | int (ns) | Σ of the fastest sector times achieved (an optimal lap; ≤ PB) |
@@ -117,6 +119,7 @@ Non-2xx responses use a stable shape: `{ "error": "<message>" }`.
 | status | when |
 |---|---|
 | `404` | unknown session id (`GET /v1/sessions/{id}/coaching`) |
+| `409` | session still active (`GET /v1/sessions/{id}/coaching`) — use `/v1/live` instead |
 | `500` | analysis failure |
 
 ```json

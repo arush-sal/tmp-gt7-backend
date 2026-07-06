@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/analysis"
 )
@@ -13,14 +14,14 @@ type fakeAnalyzer struct {
 	err error
 }
 
-func (f fakeAnalyzer) AnalyzeSession(context.Context, string) (analysis.SessionAnalysis, error) {
+func (f fakeAnalyzer) AnalyzeSession(context.Context, string, time.Duration) (analysis.SessionAnalysis, error) {
 	return f.ret, f.err
 }
 
 // TestSessionReport_Passthrough: the report carries the analysis unchanged and tags coaching pending.
 func TestSessionReport_Passthrough(t *testing.T) {
 	a := analysis.SessionAnalysis{SessionID: "s1", HasPB: true, PBLap: 2, Recommendations: []string{"PB: lap 2"}}
-	rep, err := New(fakeAnalyzer{ret: a}).SessionReport(context.Background(), "s1")
+	rep, err := New(fakeAnalyzer{ret: a}).SessionReport(context.Background(), "s1", 90*time.Second)
 	if err != nil {
 		t.Fatalf("SessionReport: %v", err)
 	}
@@ -34,7 +35,7 @@ func TestSessionReport_Passthrough(t *testing.T) {
 
 // TestSessionReport_Error: an analysis error propagates.
 func TestSessionReport_Error(t *testing.T) {
-	_, err := New(fakeAnalyzer{err: errors.New("boom")}).SessionReport(context.Background(), "s1")
+	_, err := New(fakeAnalyzer{err: errors.New("boom")}).SessionReport(context.Background(), "s1", 90*time.Second)
 	if err == nil {
 		t.Error("want error from failing analyzer, got nil")
 	}

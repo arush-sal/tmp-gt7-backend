@@ -147,9 +147,21 @@ func TestPipeline_GoldenSectorsReconcile(t *testing.T) {
 		t.Fatalf("detected %d sessions, want 1", len(sessions))
 	}
 	id := sessions[0].ID
+	// This golden's frames don't carry a best_lap field (see loadPosGolden), so there is no GT7-
+	// authoritative best to read off the Record here; fall back to the fastest GT7-timed, complete lap
+	// the segmenter captured, which is what a real BestLap would equal on a clean capture.
+	var gt7Best time.Duration
+	for _, l := range lapStore.BySession(id) {
+		if l == nil || !l.Timed || !l.Complete {
+			continue
+		}
+		if gt7Best == 0 || l.Duration < gt7Best {
+			gt7Best = l.Duration
+		}
+	}
 
 	a := Analyzer{Laps: lapStore, Traces: traceStore, KB: reference.NewStaticKB(), FallbackSectors: 3}
-	res, err := a.AnalyzeSession(context.Background(), id)
+	res, err := a.AnalyzeSession(context.Background(), id, gt7Best)
 	if err != nil {
 		t.Fatalf("AnalyzeSession: %v", err)
 	}

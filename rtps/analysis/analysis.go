@@ -87,46 +87,37 @@ func theoreticalBest(perLap map[int32][]processing.SectorResult) (time.Duration,
 	return total, out
 }
 
-// PersonalBest returns the fastest PB-usable lap (Valid: timed, complete, gap-free). ok is false when
-// there is no valid lap (e.g. an abandoned session).
-func PersonalBest(laps []processing.Lap) (processing.Lap, bool) {
-	var best processing.Lap
-	found := false
-	for _, l := range laps {
-		if !l.Valid {
-			continue
-		}
-		if !found || l.Duration < best.Duration {
-			best, found = l, true
-		}
-	}
-	return best, found
-}
-
-// consistencyOf computes spread stats over the given valid-lap durations.
-func consistencyOf(laps []processing.Lap) Consistency {
+// consistencyOf summarizes lap-time spread over the racing laps. It counts a lap only when it is a
+// GT7-timed racing lap (Timed && Complete && not a wall-clock Fallback) and, when a best is known,
+// within a plausibility band of it (<= best * 3/2) — so off-track/pit/reset outliers and fallback-
+// duration laps don't corrupt the spread.
+func consistencyOf(laps []processing.Lap, best time.Duration) Consistency {
 	var c Consistency
 	var durs []time.Duration
 	for _, l := range laps {
-		if l.Valid {
-			durs = append(durs, l.Duration)
+		if !l.Timed || !l.Complete || l.Fallback {
+			continue
 		}
+		if best > 0 && l.Duration > best*3/2 {
+			continue
+		}
+		durs = append(durs, l.Duration)
 	}
 	c.Count = len(durs)
 	if c.Count == 0 {
 		return c
 	}
-	best, worst, sum := durs[0], durs[0], time.Duration(0)
+	best0, worst, sum := durs[0], durs[0], time.Duration(0)
 	for _, d := range durs {
-		if d < best {
-			best = d
+		if d < best0 {
+			best0 = d
 		}
 		if d > worst {
 			worst = d
 		}
 		sum += d
 	}
-	c.Best, c.Spread = best, worst-best
+	c.Best, c.Spread = best0, worst-best0
 	mean := sum / time.Duration(c.Count)
 	c.Mean = mean
 	var varSum float64

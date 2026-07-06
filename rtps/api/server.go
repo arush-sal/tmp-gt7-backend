@@ -85,14 +85,22 @@ func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleSessionCoaching: GET /v1/sessions/{id}/coaching -> the coaching report (analysis + placeholder
-// coaching) for one session.
+// coaching) for one session. Gated to finished/abandoned sessions: an active session's stored
+// Record.BestLap is frozen at confirm-time (attribute() only updates it while active), so serving a
+// "coaching" report built from it would silently show a stale PB for a session still in progress. Live
+// sessions have their own up-to-date view at /v1/live.
 func (s *Server) handleSessionCoaching(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := s.sessions.Get(id); !ok {
+	rec, ok := s.sessions.Get(id)
+	if !ok {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	report, err := s.coach.SessionReport(r.Context(), id)
+	if rec.Status == session.StatusActive {
+		writeError(w, http.StatusConflict, "session in progress; use /v1/live for the live view")
+		return
+	}
+	report, err := s.coach.SessionReport(r.Context(), id, rec.BestLap) // rec.BestLap = GT7 authoritative (final for a finished session)
 	if err != nil {
 		s.log.Error("coaching report failed", zap.String("session", id), zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "failed to produce coaching report")

@@ -50,7 +50,7 @@ func newFixtureAnalyzer(t *testing.T) Analyzer {
 // TestAnalyzeSession: PB selection, per-lap + per-sector deltas, recommendations.
 func TestAnalyzeSession(t *testing.T) {
 	a := newFixtureAnalyzer(t)
-	res, err := a.AnalyzeSession(context.Background(), "s1")
+	res, err := a.AnalyzeSession(context.Background(), "s1", 90*s)
 	if err != nil {
 		t.Fatalf("AnalyzeSession: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestAnalyzeSession_PartialTraceNotSectorAnalyzed(t *testing.T) {
 	kb.Add("p", tr, secs)
 	a := Analyzer{Laps: laps, Traces: traces, KB: kb, FallbackSectors: 3}
 
-	res, err := a.AnalyzeSession(context.Background(), "p")
+	res, err := a.AnalyzeSession(context.Background(), "p", 90*s)
 	if err != nil {
 		t.Fatalf("AnalyzeSession: %v", err)
 	}
@@ -167,6 +167,152 @@ func TestAnalyzeSession_PartialTraceNotSectorAnalyzed(t *testing.T) {
 	}
 }
 
+// traceForFracs is traceFor with caller-supplied distance fractions, so a test can shape *where*
+// within the lap the sector boundaries land in wall-clock time (traceFor always uses the mock
+// track's own 0/.4/.75/1 boundaries, which isn't enough to make one lap win a sector over another
+// when both laps have the same total Duration).
+func traceForFracs(session string, lap int32, base time.Time, dur time.Duration, fracs []float64) []processing.Sample {
+	dists := []float64{0, 40, 75, 100} // matches MockTrack's sector boundaries in % of lap distance
+	out := make([]processing.Sample, len(fracs))
+	for i := range fracs {
+		out[i] = processing.Sample{
+			SessionID: session,
+			LapNumber: lap,
+			Distance:  dists[i],
+			RecvTime:  base.Add(time.Duration(fracs[i] * float64(dur))),
+		}
+	}
+	return out
+}
+
+// TestAnalyzeSession_FallbackLapExcludedFromMatch guards matchLap's explicit l.Fallback exclusion.
+// A fallback lap's Duration is a wall-clock span (GT7 last_lap was unavailable), not an authoritative
+// time, so it can coincidentally land within matchLap's 2ms tolerance of gt7Best. Here the fallback
+// lap is the *only* lap within tolerance — the genuine lap sits 50ms away — so an unguarded matchLap
+// would return the fallback lap's number. With the guard, matchLap must skip it and report no match.
+func TestAnalyzeSession_FallbackLapExcludedFromMatch(t *testing.T) {
+	laps := processing.NewMemLapStore()
+	traces := processing.NewMemTraceStore()
+	base := time.Unix(1_700_000_000, 0)
+
+	// lap 1: genuine GT7-timed lap, but 50ms off gt7Best — outside matchLap's 2ms tolerance, so it
+	//        can never be the match itself. Its only role is to prove the fallback lap isn't picked.
+	// lap 2: a Fallback lap whose wall-clock Duration sits inside matchLap's 2ms tolerance of
+	//        gt7Best — the only candidate matchLap would pick if the Fallback guard were removed.
+	_ = laps.Save(&processing.Lap{SessionID: "f", LapNumber: 1, Duration: 90*s + 50*time.Millisecond, Timed: true, Complete: true, Valid: true})
+	_ = laps.Save(&processing.Lap{SessionID: "f", LapNumber: 2, Duration: 90*s + 1*time.Millisecond, Timed: true, Complete: true, Valid: true, Fallback: true})
+	_ = traces.SaveBatch(traceFor("f", 1, base, 90*s+50*time.Millisecond))
+	_ = traces.SaveBatch(traceFor("f", 2, base, 90*s+1*time.Millisecond))
+
+	kb := reference.NewStaticKB()
+	tr, secs := reference.MockTrack()
+	kb.Add("f", tr, secs)
+	a := Analyzer{Laps: laps, Traces: traces, KB: kb, FallbackSectors: 3}
+
+	res, err := a.AnalyzeSession(context.Background(), "f", 90*s)
+	if err != nil {
+		t.Fatalf("AnalyzeSession: %v", err)
+	}
+	if res.PBLap == 2 {
+		t.Fatalf("PBLap = %d, the fallback lap must never be selected as the matched lap", res.PBLap)
+	}
+	if res.PBLap != 0 {
+		t.Errorf("PBLap = %d, want 0 (no non-fallback lap is within tolerance of gt7Best)", res.PBLap)
+	}
+}
+
+// TestAnalyzeSession_FallbackLapExcludedFromSectors guards the sector loop's explicit l.Fallback
+// exclusion. Both laps here share the same total Duration (so both trivially pass sectorAnalyzable),
+// but the fallback lap's trace places its sector-1 boundary earlier in wall-clock time, making its
+// sector 1 genuinely faster than the genuine lap's sector 1. Absent the guard, the fallback lap would
+// win that BestSectors slot; with it, only the genuine lap may.
+func TestAnalyzeSession_FallbackLapExcludedFromSectors(t *testing.T) {
+	laps := processing.NewMemLapStore()
+	traces := processing.NewMemTraceStore()
+	base := time.Unix(1_700_000_000, 0)
+
+	// lap 1: genuine, even sector split (sector 1 = 0.4 of 90s = 36s).
+	// lap 2: fallback, same 90s total but sector 1 lands at 0.2 of the lap (18s) — strictly faster
+	//        than lap 1's sector 1, so it WOULD win that BestSectors slot if the guard were removed.
+	_ = laps.Save(&processing.Lap{SessionID: "h", LapNumber: 1, Duration: 90 * s, Timed: true, Complete: true, Valid: true})
+	_ = laps.Save(&processing.Lap{SessionID: "h", LapNumber: 2, Duration: 90 * s, Timed: true, Complete: true, Valid: true, Fallback: true})
+	_ = traces.SaveBatch(traceFor("h", 1, base, 90*s))
+	_ = traces.SaveBatch(traceForFracs("h", 2, base, 90*s, []float64{0, 0.2, 0.75, 1.0}))
+
+	kb := reference.NewStaticKB()
+	tr, secs := reference.MockTrack()
+	kb.Add("h", tr, secs)
+	a := Analyzer{Laps: laps, Traces: traces, KB: kb, FallbackSectors: 3}
+
+	res, err := a.AnalyzeSession(context.Background(), "h", 90*s)
+	if err != nil {
+		t.Fatalf("AnalyzeSession: %v", err)
+	}
+	for _, b := range res.BestSectors {
+		if b.LapNumber == 2 {
+			t.Errorf("fallback lap 2 supplied best sector %d — Fallback laps must not feed sector analysis", b.Index)
+		}
+	}
+	// Positive check (so this test can't pass vacuously on an empty BestSectors): sector 0 spans
+	// distance fraction 0-0.4, exactly the segment the fallback lap made artificially fast (its
+	// second sample lands at distance 40 but wall-clock 0.2*90s = 18s vs the genuine lap's 36s).
+	// With the guard in place, the genuine lap 1 is the only sector-0 candidate and must own it.
+	var sawSector0 bool
+	for _, b := range res.BestSectors {
+		if b.Index == 0 {
+			sawSector0 = true
+			if b.LapNumber != 1 {
+				t.Errorf("sector 0 best owned by lap %d, want lap 1 (the genuine lap)", b.LapNumber)
+			}
+		}
+	}
+	if !sawSector0 {
+		t.Fatal("BestSectors has no entry for sector 0 — expected the genuine lap to win it")
+	}
+}
+
+// TestAnalyzeSession_FallbackLapExcludedFromLapsList guards the res.Laps loop's explicit l.Fallback
+// exclusion (analyzer.go's second lap loop, distinct from the sector loop and matchLap). A fallback
+// lap's Duration is a wall-clock span, not an authoritative GT7 time, so it can still be Timed &&
+// Complete and land within the gt7Best*3/2 band that gates res.Laps — nothing else would keep it out.
+// Here the fallback lap sits well inside that band alongside a genuine lap; absent the guard it would
+// appear in res.Laps too.
+func TestAnalyzeSession_FallbackLapExcludedFromLapsList(t *testing.T) {
+	laps := processing.NewMemLapStore()
+	traces := processing.NewMemTraceStore()
+	base := time.Unix(1_700_000_000, 0)
+
+	// lap 1: genuine, matches gt7Best exactly (also serves as PB).
+	// lap 2: Fallback, 100s — comfortably inside the 135s (gt7Best*3/2) band that gates res.Laps, so
+	//        it WOULD be listed if the l.Fallback guard in the res.Laps loop were removed.
+	_ = laps.Save(&processing.Lap{SessionID: "j", LapNumber: 1, Duration: 90 * s, Timed: true, Complete: true, Valid: true})
+	_ = laps.Save(&processing.Lap{SessionID: "j", LapNumber: 2, Duration: 100 * s, Timed: true, Complete: true, Valid: true, Fallback: true})
+	_ = traces.SaveBatch(traceFor("j", 1, base, 90*s))
+
+	kb := reference.NewStaticKB()
+	tr, secs := reference.MockTrack()
+	kb.Add("j", tr, secs)
+	a := Analyzer{Laps: laps, Traces: traces, KB: kb, FallbackSectors: 3}
+
+	res, err := a.AnalyzeSession(context.Background(), "j", 90*s)
+	if err != nil {
+		t.Fatalf("AnalyzeSession: %v", err)
+	}
+
+	var sawGenuine bool
+	for _, l := range res.Laps {
+		if l.LapNumber == 2 {
+			t.Fatalf("fallback lap 2 appears in res.Laps — Fallback laps must not be listed")
+		}
+		if l.LapNumber == 1 {
+			sawGenuine = true
+		}
+	}
+	if !sawGenuine {
+		t.Fatal("genuine lap 1 missing from res.Laps")
+	}
+}
+
 // absDur is |d|; spanTol mirrors the analyzer's sector-analyzability tolerance for test assertions.
 func absDur(d time.Duration) time.Duration {
 	if d < 0 {
@@ -190,11 +336,35 @@ func TestAnalyzeSession_NoValidLap(t *testing.T) {
 	_ = laps.Save(&processing.Lap{SessionID: "q", LapNumber: 1, Duration: 60 * s, Valid: false})
 	a := Analyzer{Laps: laps, Traces: processing.NewMemTraceStore(), KB: reference.NewStaticKB(), FallbackSectors: 3}
 
-	res, err := a.AnalyzeSession(context.Background(), "q")
+	res, err := a.AnalyzeSession(context.Background(), "q", 0)
 	if err != nil {
 		t.Fatalf("AnalyzeSession: %v", err)
 	}
 	if res.HasPB || len(res.Laps) != 0 || len(res.Recommendations) != 1 {
 		t.Errorf("no-valid-lap: hasPB=%v laps=%d recs=%d, want false/0/1", res.HasPB, len(res.Laps), len(res.Recommendations))
+	}
+}
+
+// TestAnalyzeSession_TrustsGT7Best: when the GT7-reported best is faster than any captured lap (the
+// fastest lap was missed by the trace/lap store), PB is still the GT7 value, PBLap is 0 (no captured
+// lap matches it), and each lap's delta is computed relative to the GT7 best, not a captured lap.
+func TestAnalyzeSession_TrustsGT7Best(t *testing.T) {
+	laps := processing.NewMemLapStore()
+	_ = laps.Save(&processing.Lap{SessionID: "g", LapNumber: 2, Duration: 80090 * time.Millisecond, Timed: true, Complete: true})
+	a := Analyzer{Laps: laps, Traces: processing.NewMemTraceStore(), KB: reference.NewStaticKB(), FallbackSectors: 3}
+	res, err := a.AnalyzeSession(context.Background(), "g", 79858*time.Millisecond) // GT7 best faster than lap 2
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.HasPB || res.PBTime != 79858*time.Millisecond {
+		t.Fatalf("PBTime = %v (hasPB=%v), want 79.858s from GT7 best", res.PBTime, res.HasPB)
+	}
+	if res.PBLap != 0 {
+		t.Errorf("PBLap = %d, want 0 (no captured lap matches GT7 best)", res.PBLap)
+	}
+	for _, l := range res.Laps {
+		if l.LapNumber == 2 && l.DeltaToPB != 80090*time.Millisecond-79858*time.Millisecond {
+			t.Errorf("lap 2 delta = %v, want relative to GT7 best", l.DeltaToPB)
+		}
 	}
 }

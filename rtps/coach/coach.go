@@ -10,6 +10,7 @@ package coach
 
 import (
 	"context"
+	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/analysis"
 )
@@ -30,7 +31,7 @@ type Report struct {
 
 // analyzer is the slice of Analysis the coach needs (an interface so tests can inject a fake).
 type analyzer interface {
-	AnalyzeSession(ctx context.Context, sessionID string) (analysis.SessionAnalysis, error)
+	AnalyzeSession(ctx context.Context, sessionID string, gt7Best time.Duration) (analysis.SessionAnalysis, error)
 }
 
 // Coach produces coaching Reports from analysis.
@@ -45,9 +46,10 @@ func New(a analyzer) Coach { return Coach{analyzer: a} }
 const pendingNote = "Coaching layer not yet implemented; deterministic analysis is passed through. " +
 	"Corner-level, improvement-oriented coaching is TBD pending sufficient data (see D-B21)."
 
-// SessionReport runs the analysis for a session and wraps it in a coaching Report.
-func (c Coach) SessionReport(ctx context.Context, sessionID string) (Report, error) {
-	a, err := c.analyzer.AnalyzeSession(ctx, sessionID)
+// SessionReport runs the analysis for a session against the GT7-authoritative best lap time and wraps
+// it in a coaching Report.
+func (c Coach) SessionReport(ctx context.Context, sessionID string, gt7Best time.Duration) (Report, error) {
+	a, err := c.analyzer.AnalyzeSession(ctx, sessionID, gt7Best)
 	if err != nil {
 		return Report{}, err
 	}

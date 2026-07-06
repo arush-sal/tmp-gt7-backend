@@ -45,10 +45,13 @@ type Analyzer struct {
 	FallbackSectors int // equal mini-sector count used when the RKB can't identify the track
 }
 
-// AnalyzeSession computes the analysis for one session: pick the PB, then for each valid lap compute
-// its delta to PB and per-sector deltas (via the distance-normalized trace + RKB sectors), plus
-// consistency and recommendations.
-func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (SessionAnalysis, error) {
+// AnalyzeSession computes the analysis for one session against the authoritative GT7 best lap time
+// (gt7Best — the game's own record, immune to a dropped packet or a store miss on the actual fastest
+// lap). PB is always gt7Best; PBLap is the eligible captured lap whose duration matches it within
+// tolerance (0 when no captured lap matches — the fastest lap was not captured cleanly). For each
+// eligible lap this computes its delta to PB and per-sector deltas (via the distance-normalized trace +
+// RKB sectors), plus consistency and recommendations.
+func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best time.Duration) (SessionAnalysis, error) {
 	lapPtrs := a.Laps.BySession(sessionID)
 	laps := make([]processing.Lap, 0, len(lapPtrs))
 	for _, p := range lapPtrs {
@@ -57,17 +60,18 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 		}
 		laps = append(laps, *p)
 	}
-	res := SessionAnalysis{SessionID: sessionID, Consistency: consistencyOf(laps)}
+	res := SessionAnalysis{SessionID: sessionID, Consistency: consistencyOf(laps, gt7Best)}
 
-	pb, ok := PersonalBest(laps)
-	if !ok {
-		res.Recommendations = []string{"No valid (complete, timed, gap-free) lap in this session — no Personal Best to analyze."}
+	if gt7Best <= 0 {
+		res.Recommendations = []string{"No completed lap yet — no Personal Best to analyze."}
 		return res, nil
 	}
-	res.HasPB, res.PBLap, res.PBTime = true, pb.LapNumber, pb.Duration
+	res.HasPB = true
+	res.PBTime = gt7Best
+	res.PBLap = matchLap(laps, gt7Best) // 0 when no captured lap matches the authoritative best
 
-	// Compute each valid lap's sectors once; reuse for deltas + the theoretical best. A valid lap is
-	// only *sector-analyzable* if its trace faithfully covers it (see sectorAnalyzable): sector times
+	// Compute each duration-eligible lap's sectors once; reuse for deltas + the theoretical best. A lap
+	// is only *sector-analyzable* if its trace faithfully covers it (see sectorAnalyzable): sector times
 	// are derived from frame timestamps along the distance axis and telescope to the trace's wall-clock
 	// span, so a lap whose trace does not span its authoritative duration (a mid-race join lap, a
 	// standing-start spillover, a dropout splice) yields sector times that would corrupt every consumer
@@ -75,7 +79,7 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 	// no best sector and get no sector deltas.
 	perLap := make(map[int32][]processing.SectorResult)
 	for _, l := range laps {
-		if !l.Valid {
+		if !l.Timed || !l.Complete || l.Fallback { // duration-eligible; sector trust handled by sectorAnalyzable
 			continue
 		}
 		samples, err := a.Traces.ByLap(sessionID, l.LapNumber)
@@ -92,7 +96,7 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 		}
 		perLap[l.LapNumber] = secs
 	}
-	pbSectors := perLap[pb.LapNumber]
+	pbSectors := perLap[res.PBLap] // empty when PB lap unknown/unanalyzable
 
 	// Improvement view: theoretical best = sum of the fastest sector times; time on the table = how
 	// much the PB's sectors trail those bests (both sector-time based, so apples-to-apples).
@@ -105,19 +109,43 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string) (Session
 		res.TimeOnTable = pbSectorSum - res.TheoreticalBest
 	}
 
+	// Per-lap deltas relative to the authoritative PB; show the same duration-eligible + in-band laps
+	// consistencyOf counts, so laps[] and consistency agree on which laps are "racing" laps.
 	for _, l := range laps {
-		if !l.Valid {
+		if !l.Timed || !l.Complete || l.Fallback {
+			continue
+		}
+		if l.Duration > gt7Best*3/2 {
 			continue
 		}
 		res.Laps = append(res.Laps, LapAnalysis{
 			LapNumber:    l.LapNumber,
 			Duration:     l.Duration,
-			DeltaToPB:    l.Duration - pb.Duration,
+			DeltaToPB:    l.Duration - gt7Best,
 			SectorDeltas: sectorDeltas(perLap[l.LapNumber], pbSectors),
 		})
 	}
 	res.Recommendations = recommend(res)
 	return res, nil
+}
+
+// matchLap returns the lap number whose duration equals gt7Best within a small tolerance (both are
+// ms-precision GT7 times), or 0 when no captured lap matches (the fastest lap was not captured cleanly).
+func matchLap(laps []processing.Lap, gt7Best time.Duration) int32 {
+	const tol = 2 * time.Millisecond
+	for _, l := range laps {
+		if !l.Timed || !l.Complete || l.Fallback {
+			continue
+		}
+		d := l.Duration - gt7Best
+		if d < 0 {
+			d = -d
+		}
+		if d <= tol {
+			return l.LapNumber
+		}
+	}
+	return 0
 }
 
 // Sector-analyzability tolerance. A lap's trace is trusted for sector timing only when its wall-clock
@@ -160,7 +188,13 @@ func sectorAnalyzable(dur time.Duration, samples []processing.Sample) bool {
 // recommend turns the deltas into short, data-supported statements (no invented advice — this is the
 // deterministic layer; corner-level coaching comes when the trace supports it).
 func recommend(r SessionAnalysis) []string {
-	recs := []string{fmt.Sprintf("Personal Best: lap %d at %s.", r.PBLap, formatDuration(r.PBTime))}
+	var pbLine string
+	if r.PBLap > 0 {
+		pbLine = fmt.Sprintf("Personal Best: lap %d at %s.", r.PBLap, formatDuration(r.PBTime))
+	} else {
+		pbLine = fmt.Sprintf("Personal Best: %s.", formatDuration(r.PBTime))
+	}
+	recs := []string{pbLine}
 
 	if r.Consistency.Count >= 2 {
 		recs = append(recs, fmt.Sprintf("Consistency: %d valid laps, spread %+.3fs (std-dev %.3fs).",

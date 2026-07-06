@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/analysis"
 	"github.com/arush-sal/garage/backend/rtps/coach"
@@ -16,7 +17,7 @@ import (
 // fakeAnalyzer satisfies the (unexported) analyzer interface coach.New expects.
 type fakeAnalyzer struct{}
 
-func (fakeAnalyzer) AnalyzeSession(_ context.Context, id string) (analysis.SessionAnalysis, error) {
+func (fakeAnalyzer) AnalyzeSession(_ context.Context, id string, _ time.Duration) (analysis.SessionAnalysis, error) {
 	return analysis.SessionAnalysis{SessionID: id, HasPB: true, PBLap: 1, Recommendations: []string{"PB: lap 1"}}, nil
 }
 
@@ -57,6 +58,25 @@ func TestAPI_SessionCoaching(t *testing.T) {
 	}
 	if rep.Analysis.SessionID != "s1" || rep.Coaching.Status != "pending" {
 		t.Errorf("report = %+v, want analysis s1 + coaching pending", rep)
+	}
+}
+
+// TestAPI_SessionCoaching_ActiveConflict: an active session's coaching report is gated off (409) —
+// its stored Record.BestLap is frozen at confirm-time, so serving from it would show a stale PB while
+// the session is still live. The live view at /v1/live is the right place for an in-progress session.
+func TestAPI_SessionCoaching_ActiveConflict(t *testing.T) {
+	srv, store := testServer()
+	_ = store.Save(&session.Record{ID: "active-1", CarID: 1384, Status: session.StatusActive})
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/active-1/coaching", nil))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rr.Code)
+	}
+	var e errorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &e); err != nil || e.Error == "" {
+		t.Errorf("error body = %q err=%v, want non-empty error shape", rr.Body.String(), err)
 	}
 }
 

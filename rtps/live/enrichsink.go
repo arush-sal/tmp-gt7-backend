@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/rtps/analysis"
@@ -53,10 +54,11 @@ type EnrichSink struct {
 	onErr    func(error)
 
 	mu      sync.Mutex
-	lap     map[string]int32    // last seen current_lap per session, to detect boundaries
-	pending map[string]struct{} // sessions awaiting a recompute (per-session coalescing)
-	active  map[string]uint64   // session id -> current generation; fences stale/colliding publishes
-	gen     uint64              // monotonic generation counter, bumped on every OnSessionStart
+	lap     map[string]int32         // last seen current_lap per session, to detect boundaries
+	bestLap map[string]time.Duration // latest GT7-authoritative best_lap per session, from frames
+	pending map[string]struct{}      // sessions awaiting a recompute (per-session coalescing)
+	active  map[string]uint64        // session id -> current generation; fences stale/colliding publishes
+	gen     uint64                   // monotonic generation counter, bumped on every OnSessionStart
 	stopped bool
 
 	notify chan struct{} // 1-deep wakeup for the worker
@@ -72,7 +74,8 @@ func NewEnrichSink(analyzer analysis.Analyzer, state *EnrichmentState, onErr fun
 	}
 	e := &EnrichSink{
 		analyzer: analyzer, state: state, onErr: onErr,
-		lap: map[string]int32{}, pending: map[string]struct{}{}, active: map[string]uint64{},
+		lap: map[string]int32{}, bestLap: map[string]time.Duration{},
+		pending: map[string]struct{}{}, active: map[string]uint64{},
 		notify: make(chan struct{}, 1), stop: make(chan struct{}),
 	}
 	e.wg.Add(1)
@@ -101,20 +104,24 @@ func (e *EnrichSink) worker() {
 // generation for that id at publish time.
 func (e *EnrichSink) drain() {
 	type work struct {
-		id  string
-		gen uint64
+		id   string
+		gen  uint64
+		best time.Duration
 	}
 	e.mu.Lock()
 	todo := make([]work, 0, len(e.pending))
 	for id := range e.pending {
 		if g, ok := e.active[id]; ok { // only recompute still-active sessions
-			todo = append(todo, work{id: id, gen: g})
+			// Capture the best INTO the work item under the same mu lock as gen — a generation-fence:
+			// re-reading e.bestLap[id] after AnalyzeSession returns would risk observing a value written
+			// by a colliding newer generation for the same id (see the type doc comment on gen).
+			todo = append(todo, work{id: id, gen: g, best: e.bestLap[id]})
 		}
 	}
 	e.pending = map[string]struct{}{}
 	e.mu.Unlock()
 	for _, w := range todo {
-		a, err := e.analyzer.AnalyzeSession(context.Background(), w.id)
+		a, err := e.analyzer.AnalyzeSession(context.Background(), w.id, w.best)
 		if err != nil {
 			e.onErr(fmt.Errorf("enrich analyze %s: %w", w.id, err))
 			continue
@@ -149,18 +156,23 @@ func (e *EnrichSink) request(sessionID string) {
 func (e *EnrichSink) OnSessionStart(rec *session.Record) {
 	e.mu.Lock()
 	e.lap[rec.ID] = rec.CurrentLap
+	e.bestLap[rec.ID] = 0
 	e.gen++
 	e.active[rec.ID] = e.gen
 	e.mu.Unlock()
 	e.state.Set(Enrichment{SessionID: rec.ID})
 }
 
-// OnFrame detects lap boundaries (current_lap increasing) and requests an async recompute.
+// OnFrame detects lap boundaries (current_lap increasing) and requests an async recompute. It also
+// tracks the frame's GT7-authoritative best_lap under mu, so drain can thread it into AnalyzeSession
+// as the session's Personal Best (the game's own record, not a value we'd have to infer from stored
+// laps).
 func (e *EnrichSink) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) {
 	e.mu.Lock()
 	last, ok := e.lap[sessionID]
 	boundary := ok && f.GetCurrentLap() > last
 	e.lap[sessionID] = f.GetCurrentLap()
+	e.bestLap[sessionID] = f.GetBestLap().AsDuration() // nil-safe: yields 0 when unset
 	e.mu.Unlock()
 	if boundary {
 		e.request(sessionID)
@@ -175,6 +187,7 @@ func (e *EnrichSink) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) {
 func (e *EnrichSink) OnSessionEnd(rec *session.Record) {
 	e.mu.Lock()
 	delete(e.lap, rec.ID)
+	delete(e.bestLap, rec.ID)
 	delete(e.active, rec.ID)
 	delete(e.pending, rec.ID)
 	e.state.Set(Enrichment{}) // clear under mu so it can't be reordered after a stale worker publish
