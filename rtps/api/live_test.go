@@ -18,7 +18,7 @@ func TestLiveSnapshot_AliasAndFields(t *testing.T) {
 	// coach.Coach is a struct (not an interface), so the brief's literal `nil` for this arg does
 	// not compile; the handler under test (handleLive) never touches s.coach, so the zero value is
 	// sufficient. session.Store IS an interface, so nil is valid there.
-	srv := NewServer(coach.Coach{}, nil, hub, enrich, nil)
+	srv := NewServer(coach.Coach{}, nil, hub, enrich, nil, nil)
 	h := srv.Handler()
 
 	// idle first

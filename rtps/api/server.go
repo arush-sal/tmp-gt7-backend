@@ -21,13 +21,17 @@ type Server struct {
 	sessions session.Store
 	live     *live.Hub
 	enrich   *live.EnrichmentState
+	delta    *live.DeltaTracker
 	log      *zap.Logger
 }
 
 // NewServer wires the API server. Nil live dependencies are replaced with safe empties (a no-op
 // logger, an empty Hub, an empty EnrichmentState) so the live handlers never nil-deref. The coach and
-// session store are NOT guarded — the session routes require them and will fault if they are nil.
-func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, log *zap.Logger) *Server {
+// session store are NOT guarded — the session routes require them and will fault if they are nil. delta
+// is left nil when not supplied (rather than constructing a fresh DeltaTracker): a detached tracker
+// never receives ingest frames, so it would silently and permanently report ok=false; nil is the
+// honest "no delta overlay" state, and liveEnrichment skips it cleanly.
+func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, delta *live.DeltaTracker, log *zap.Logger) *Server {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -37,7 +41,20 @@ func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *liv
 	if enrich == nil {
 		enrich = live.NewEnrichmentState()
 	}
-	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, log: log}
+	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, delta: delta, log: log}
+}
+
+// liveEnrichment returns the current enrichment snapshot with the live per-frame delta overlaid, when a
+// DeltaTracker is wired. s.enrich.Get() returns a value copy, so setting DeltaToBestNs here mutates only
+// that local copy, never the shared EnrichmentState (see Enrichment's immutability invariant).
+func (s *Server) liveEnrichment() live.Enrichment {
+	en := s.enrich.Get()
+	if s.delta != nil {
+		if ns, ok := s.delta.Delta(); ok {
+			en.DeltaToBestNs = &ns
+		}
+	}
+	return en
 }
 
 // Handler returns the HTTP routes (Go 1.22+ method+wildcard patterns; no router dependency).
@@ -112,7 +129,7 @@ func (s *Server) handleSessionCoaching(w http.ResponseWriter, r *http.Request) {
 // handleLive: GET /v1/live (and / alias) -> the current frame + progressive-enrichment snapshot.
 func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
 	frame, lapStart, ok := s.live.Latest()
-	body, err := live.BuildPayload(frame, lapStart, ok, s.enrich.Get())
+	body, err := live.BuildPayload(frame, lapStart, ok, s.liveEnrichment())
 	if err != nil {
 		s.log.Error("live payload encode failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "failed to encode live payload")
@@ -166,7 +183,7 @@ func (s *Server) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 // emit writes the current live payload as one SSE data event.
 func (s *Server) emit(w http.ResponseWriter, flusher http.Flusher) {
 	frame, lapStart, ok := s.live.Latest()
-	body, err := live.BuildPayload(frame, lapStart, ok, s.enrich.Get())
+	body, err := live.BuildPayload(frame, lapStart, ok, s.liveEnrichment())
 	if err != nil {
 		return // skip a bad frame rather than kill the stream
 	}

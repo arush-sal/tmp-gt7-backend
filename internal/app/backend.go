@@ -64,6 +64,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	// storage writes off the ingest goroutine; the enrich sink refreshes live analysis per lap.
 	hub := live.New()
 	enrich := live.NewEnrichmentState()
+	delta := live.NewDeltaTracker() // live per-frame gap-to-best-lap, fed on the ingest goroutine below
 
 	traceStore = live.NewAsyncTraceStore(traceStore, 256, func(dropped int) {
 		log.Warn("trace batch dropped (storage back-pressure)", zap.Int("dropped", dropped))
@@ -88,13 +89,13 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
 	ingestSrv := ingest.NewServer(sessStore, sink, detCfg, log)
-	ingestSrv.Publisher = hub // publish-first egress
+	ingestSrv.Publisher = live.NewMultiPublisher(hub, delta) // publish-first egress, fanned out to the Hub and the DeltaTracker
 
 	gs := grpc.NewServer()
 	telemetryv1.RegisterTelemetryServer(gs, ingestSrv)
 
 	// Read side: Analysis -> Coaching -> HTTP API.
-	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, log)
+	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, log)
 	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	// Bind the ingest listener only once we're committed to serving (after storage init), so a failed

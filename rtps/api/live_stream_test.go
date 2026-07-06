@@ -19,7 +19,7 @@ func TestLiveStream_EmitsOnPublish(t *testing.T) {
 	hub := live.New()
 	// coach.Coach is a struct (not an interface) so the brief's nil literal doesn't compile here;
 	// the zero value is fine since this test never exercises the coaching handler.
-	srv := NewServer(coach.Coach{}, nil, hub, live.NewEnrichmentState(), nil)
+	srv := NewServer(coach.Coach{}, nil, hub, live.NewEnrichmentState(), nil, nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
