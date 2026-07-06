@@ -14,6 +14,7 @@ var (
 	headerStyle   = lipgloss.NewStyle().Bold(true)
 	selectedStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
 	dimStyle      = lipgloss.NewStyle().Faint(true)
+	errorStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 )
 
 // RenderSessions renders the session list with the selected row highlighted.
@@ -87,14 +88,22 @@ func RenderReport(rep coach.Report) string {
 // dash is the placeholder for a value that is not yet resolved (RKB-deferred or enrichment pending).
 const dash = "—"
 
-// RenderLive renders the live pit-wall dashboard from one snapshot. width<=0 uses 120.
-func RenderLive(s LiveSnapshot, width int) string {
+// RenderLive renders the live pit-wall dashboard from one snapshot. width<=0 uses 120. connErr, if
+// non-nil, is a live-stream connection failure (dial failure, non-OK HTTP status). In the idle
+// branch it replaces the "waiting" line; in the live branch the last-known frame is still rendered
+// (staying useful during a reconnect) but the footer is swapped for a stale-data warning so the
+// dashboard never looks healthy while the stream is actually down.
+func RenderLive(s LiveSnapshot, width int, connErr error) string {
 	if width <= 0 {
 		width = 120
 	}
 	if s.Status != "live" || s.Frame == nil {
+		idleLine := dimStyle.Render("Waiting for telemetry… (idle — no live session)")
+		if connErr != nil {
+			idleLine = errorStyle.Render(fmt.Sprintf("Connection problem (retrying): %v", connErr))
+		}
 		return titleStyle.Render("GARAGE — Live") + "\n\n" +
-			dimStyle.Render("Waiting for telemetry… (idle — no live session)") + "\n\n" +
+			idleLine + "\n\n" +
 			dimStyle.Render("s: sessions · q: quit")
 	}
 	f := s.Frame
@@ -102,8 +111,12 @@ func RenderLive(s LiveSnapshot, width int) string {
 	left := leftTelemetry(f)
 	right := rightColumn(s)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
-	return header + "\n\n" + body + "\n\n" +
-		dimStyle.Render("streaming · s: sessions · q: quit")
+	footer := dimStyle.Render("streaming · s: sessions · q: quit")
+	if connErr != nil {
+		footer = errorStyle.Render(fmt.Sprintf("⚠ stream lost, reconnecting (showing last data): %v", connErr)) +
+			dimStyle.Render("  ·  s: sessions · q: quit")
+	}
+	return header + "\n\n" + body + "\n\n" + footer
 }
 
 func liveHeader(s LiveSnapshot) string {

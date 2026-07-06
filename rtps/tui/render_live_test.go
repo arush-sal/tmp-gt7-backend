@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -24,7 +25,7 @@ func TestRenderLive_ShowsDirectMetrics(t *testing.T) {
 		},
 		Derived: &LiveDerived{CurrentLapTimeNs: 77210000000, FuelPct: 23.7},
 	}
-	out := stripANSI(RenderLive(s, 120))
+	out := stripANSI(RenderLive(s, 120, nil))
 	for _, want := range []string{"214", "GEAR", "P3/16", "LAP", "8/20"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("live render missing %q\n%s", want, out)
@@ -40,9 +41,49 @@ func TestRenderLive_ShowsDirectMetrics(t *testing.T) {
 }
 
 func TestRenderLive_Idle(t *testing.T) {
-	out := stripANSI(RenderLive(LiveSnapshot{Status: "idle"}, 120))
+	out := stripANSI(RenderLive(LiveSnapshot{Status: "idle"}, 120, nil))
 	if !strings.Contains(strings.ToLower(out), "waiting") && !strings.Contains(strings.ToLower(out), "idle") {
 		t.Errorf("idle render should indicate no telemetry:\n%s", out)
+	}
+}
+
+// TestRenderLive_IdleWithConnError guards against a permanent stream failure (backend down, 404)
+// looking identical to a normal idle "no live session yet" state — a real connection error must
+// surface distinctly, and must not also print the plain idle text.
+func TestRenderLive_IdleWithConnError(t *testing.T) {
+	connErr := errors.New("GET http://localhost:8080/live: 404 Not Found")
+	out := stripANSI(RenderLive(LiveSnapshot{Status: "idle"}, 120, connErr))
+	if !strings.Contains(out, connErr.Error()) {
+		t.Errorf("idle+connErr render should surface the error text:\n%s", out)
+	}
+	if strings.Contains(out, "Waiting for telemetry") {
+		t.Errorf("idle+connErr render should not show the plain idle text:\n%s", out)
+	}
+}
+
+// TestRenderLive_LiveWithConnError guards against the "permanent failure looks healthy" bug on the
+// live path: once a live frame has arrived, m.latest.Status stays "live" even after the stream
+// drops (a later stream error only sets the model's lastErr, it does not revert the snapshot to
+// idle). RenderLive must still show the last-known telemetry (useful — no need to blank the
+// dashboard) but must flag it as stale via the footer, not silently render the plain "streaming"
+// footer as if the connection were healthy.
+func TestRenderLive_LiveWithConnError(t *testing.T) {
+	connErr := errors.New("GET http://localhost:8080/live: 404 Not Found")
+	s := LiveSnapshot{
+		Status: "live",
+		Frame: &LiveFrame{
+			CarSpeed: 214, CurrentGear: 4, Rpm: 7200, CurrentLap: 8, TotalLaps: 20,
+		},
+	}
+	out := stripANSI(RenderLive(s, 120, connErr))
+	if !strings.Contains(out, "reconnecting") && !strings.Contains(out, "stream lost") {
+		t.Errorf("live+connErr render should surface a reconnecting/stale banner:\n%s", out)
+	}
+	if !strings.Contains(out, "214") {
+		t.Errorf("live+connErr render should still show the last-known telemetry (speed):\n%s", out)
+	}
+	if strings.Contains(out, "streaming · s: sessions · q: quit") {
+		t.Errorf("live+connErr render should not show the plain healthy streaming footer:\n%s", out)
 	}
 }
 
@@ -54,7 +95,7 @@ func TestRenderLive_PedalBarsNormalizeToPercent(t *testing.T) {
 		Status: "live",
 		Frame:  &LiveFrame{CarSpeed: 100, Throttle: 50, Brake: 0},
 	}
-	out := stripANSI(RenderLive(half, 120))
+	out := stripANSI(RenderLive(half, 120, nil))
 	lines := strings.Split(out, "\n")
 	var throtLine string
 	for _, l := range lines {
@@ -78,7 +119,7 @@ func TestRenderLive_PedalBarsNormalizeToPercent(t *testing.T) {
 		Status: "live",
 		Frame:  &LiveFrame{CarSpeed: 100, Throttle: 100, Brake: 0},
 	}
-	outFull := stripANSI(RenderLive(full, 120))
+	outFull := stripANSI(RenderLive(full, 120, nil))
 	for _, l := range strings.Split(outFull, "\n") {
 		if strings.HasPrefix(l, "THROT") {
 			if strings.Count(l, "#") != 20 {
@@ -97,7 +138,7 @@ func TestRenderLive_WithEnrichment(t *testing.T) {
 			HasPB: true, PBLap: 2, Recommendations: []string{"Personal Best: lap 2 at 1:57.842."},
 		}},
 	}
-	out := stripANSI(RenderLive(s, 120))
+	out := stripANSI(RenderLive(s, 120, nil))
 	if !strings.Contains(out, "Personal Best") {
 		t.Errorf("expected PB recommendation surfaced:\n%s", out)
 	}
@@ -118,7 +159,7 @@ func TestRenderLive_ResolvedNoPB(t *testing.T) {
 			},
 		}},
 	}
-	out := stripANSI(RenderLive(s, 120))
+	out := stripANSI(RenderLive(s, 120, nil))
 	if !strings.Contains(out, "No valid") {
 		t.Errorf("expected resolved no-PB recommendation surfaced:\n%s", out)
 	}

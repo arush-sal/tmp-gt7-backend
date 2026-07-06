@@ -30,8 +30,8 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	snaps, _ := client.StreamLive(ctx)
-	if _, err := tea.NewProgram(newLiveModel(client, snaps), tea.WithAltScreen()).Run(); err != nil {
+	snaps, errs := client.StreamLive(ctx)
+	if _, err := tea.NewProgram(newLiveModel(client, snaps, errs), tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)
 	}

@@ -29,14 +29,17 @@ type model struct {
 	err      error
 	reqID    int // increments per fetch; async results with a stale id are ignored
 
-	snaps  <-chan tui.LiveSnapshot
-	latest tui.LiveSnapshot
-	width  int
+	snaps   <-chan tui.LiveSnapshot
+	latest  tui.LiveSnapshot
+	width   int
+	errs    <-chan error // SSE live-stream connection errors (nil allowed for tests)
+	lastErr error        // most recent connection error; cleared by the next successful snapshot
 }
 
-// newLiveModel starts in the live dashboard, fed by the snaps channel (nil is allowed for tests).
-func newLiveModel(c *tui.Client, snaps <-chan tui.LiveSnapshot) model {
-	return model{client: c, view: viewLive, snaps: snaps, reqID: 1, width: 120}
+// newLiveModel starts in the live dashboard, fed by the snaps channel and the errs channel (both
+// nil is allowed for tests).
+func newLiveModel(c *tui.Client, snaps <-chan tui.LiveSnapshot, errs <-chan error) model {
+	return model{client: c, view: viewLive, snaps: snaps, errs: errs, reqID: 1, width: 120}
 }
 
 // Messages returned by async fetches; id ties a result to the request that started it.
@@ -54,6 +57,11 @@ type reportMsg struct {
 // liveMsg carries one snapshot from the SSE live stream.
 type liveMsg struct{ snap tui.LiveSnapshot }
 
+// liveErrMsg carries a connection error from the SSE live stream (dial failure, non-OK HTTP
+// status). The stream keeps retrying after emitting one, so this is a transient-looking condition
+// that can persist indefinitely — the view is responsible for surfacing it distinctly from idle.
+type liveErrMsg struct{ err error }
+
 // waitForSnapshot blocks on the next streamed snapshot and delivers it as a liveMsg. Re-armed after
 // each liveMsg so the dashboard updates continuously.
 func waitForSnapshot(snaps <-chan tui.LiveSnapshot) tea.Cmd {
@@ -66,6 +74,22 @@ func waitForSnapshot(snaps <-chan tui.LiveSnapshot) tea.Cmd {
 			return nil // stream closed (shutdown)
 		}
 		return liveMsg{snap: s}
+	}
+}
+
+// waitForError blocks on the next connection error from the SSE live stream and delivers it as a
+// liveErrMsg. Re-armed after each liveErrMsg so subsequent (or repeated) connection failures keep
+// updating the view instead of being silently dropped after the first one.
+func waitForError(errs <-chan error) tea.Cmd {
+	if errs == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		err, ok := <-errs
+		if !ok {
+			return nil // stream closed (shutdown)
+		}
+		return liveErrMsg{err: err}
 	}
 }
 
@@ -83,13 +107,19 @@ func fetchReport(c *tui.Client, id int, sessionID string) tea.Cmd {
 	}
 }
 
-func (m model) Init() tea.Cmd { return waitForSnapshot(m.snaps) }
+func (m model) Init() tea.Cmd {
+	return tea.Batch(waitForSnapshot(m.snaps), waitForError(m.errs))
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case liveMsg:
 		m.latest = msg.snap
+		m.lastErr = nil                    // a fresh snapshot means the stream is healthy again
 		return m, waitForSnapshot(m.snaps) // re-arm
+	case liveErrMsg:
+		m.lastErr = msg.err
+		return m, waitForError(m.errs) // re-arm
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
@@ -170,7 +200,7 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	if m.view == viewLive {
-		return tui.RenderLive(m.latest, m.width)
+		return tui.RenderLive(m.latest, m.width, m.lastErr)
 	}
 	if m.loading {
 		return "loading…  (q to quit)"
