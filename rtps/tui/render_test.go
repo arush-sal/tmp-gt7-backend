@@ -28,7 +28,7 @@ func TestRenderReport(t *testing.T) {
 			HasPB:           true,
 			PBLap:           2,
 			PBTime:          90 * time.Second,
-			TheoreticalBest: 88 * time.Second,
+			PredictedBest:   88 * time.Second,
 			TimeOnTable:     2 * time.Second,
 			Consistency:     analysis.Consistency{Count: 3, Best: 90 * time.Second},
 			Laps:            []analysis.LapAnalysis{{LapNumber: 2, Duration: 90 * time.Second}},
@@ -37,7 +37,7 @@ func TestRenderReport(t *testing.T) {
 		Coaching: coach.Coaching{Status: "pending"},
 	}
 	out := RenderReport(rep)
-	for _, want := range []string{"Session s1", "Personal Best", "1:30.000", "Theoretical best", "Recommendations", "pending"} {
+	for _, want := range []string{"Session s1", "Personal Best", "1:30.000", "Predicted best", "Recommendations", "pending"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q:\n%s", want, out)
 		}

@@ -94,7 +94,7 @@ func TestAnalyzeSession(t *testing.T) {
 // less wall-clock than the lap's authoritative GT7 duration) must be kept out of the sector-based
 // analysis. Because contiguous mini-sectors telescope (Σ sector times == trace wall-clock span), an
 // unguarded partial lap contributes tiny sector times that win every "best sector" and collapse the
-// theoretical best to nonsense (observed live: a 94s PB reporting a 16.88s theoretical best). The lap
+// predicted best to nonsense (observed live: a 94s PB reporting a 16.88s predicted best). The lap
 // must still count for PB/consistency (duration-based) but carry no sector deltas.
 func TestAnalyzeSession_PartialTraceNotSectorAnalyzed(t *testing.T) {
 	laps := processing.NewMemLapStore()
@@ -126,12 +126,12 @@ func TestAnalyzeSession_PartialTraceNotSectorAnalyzed(t *testing.T) {
 	if res.PBLap != 1 || res.PBTime != 90*s {
 		t.Fatalf("PB = lap %d @ %v, want lap 1 @ 90s", res.PBLap, res.PBTime)
 	}
-	// Theoretical best must stay plausible: bounded by the PB and NOT collapsed to the partial lap.
-	if res.TheoreticalBest > res.PBTime {
-		t.Errorf("theoretical best %v > PB %v", res.TheoreticalBest, res.PBTime)
+	// Predicted best must stay plausible: bounded by the PB and NOT collapsed to the partial lap.
+	if res.PredictedBest > res.PBTime {
+		t.Errorf("predicted best %v > PB %v", res.PredictedBest, res.PBTime)
 	}
-	if res.TheoreticalBest < res.PBTime/2 {
-		t.Errorf("theoretical best %v implausibly small vs PB %v — partial-trace lap leaked in", res.TheoreticalBest, res.PBTime)
+	if res.PredictedBest < res.PBTime/2 {
+		t.Errorf("predicted best %v implausibly small vs PB %v — partial-trace lap leaked in", res.PredictedBest, res.PBTime)
 	}
 	// The partial lap must own no best sector.
 	for _, b := range res.BestSectors {
@@ -366,5 +366,59 @@ func TestAnalyzeSession_TrustsGT7Best(t *testing.T) {
 		if l.LapNumber == 2 && l.DeltaToPB != 80090*time.Millisecond-79858*time.Millisecond {
 			t.Errorf("lap 2 delta = %v, want relative to GT7 best", l.DeltaToPB)
 		}
+	}
+}
+
+// TestAnalyzeSession_PredictedBestSuppressedWithoutPBLap guards BUG-4: PredictedBest is built from
+// perLap, a pool the PB lap may not belong to (unmatched here, as in TestAnalyzeSession_TrustsGT7Best
+// above — PBLap == 0). Without a guard, the sector-best sum can legitimately exceed the untracked PB
+// lap's real sector split, publishing an impossible "prediction" faster than the PB it's supposed to
+// bound. When the PB lap isn't in the analyzable pool, PredictedBest/BestSectors/TimeOnTable must be
+// suppressed to zero/nil rather than published as an out-of-bounds number.
+func TestAnalyzeSession_PredictedBestSuppressedWithoutPBLap(t *testing.T) {
+	laps := processing.NewMemLapStore()
+	traces := processing.NewMemTraceStore()
+	base := time.Unix(1_700_000_000, 0)
+
+	// lap 1 is a captured, sector-analyzable lap, but its duration (95s) does not match gt7Best (90s)
+	// within matchLap's tolerance, so PBLap stays 0 — the PB lap's own sectors are never in perLap.
+	_ = laps.Save(&processing.Lap{SessionID: "k", LapNumber: 1, Duration: 95 * s, Timed: true, Complete: true, Valid: true})
+	_ = traces.SaveBatch(traceFor("k", 1, base, 95*s))
+
+	kb := reference.NewStaticKB()
+	tr, secs := reference.MockTrack()
+	kb.Add("k", tr, secs)
+	a := Analyzer{Laps: laps, Traces: traces, KB: kb, FallbackSectors: 3}
+
+	res, err := a.AnalyzeSession(context.Background(), "k", 90*s)
+	if err != nil {
+		t.Fatalf("AnalyzeSession: %v", err)
+	}
+	if res.PBLap != 0 {
+		t.Fatalf("PBLap = %d, want 0 (no captured lap matches gt7Best) — test setup invalid", res.PBLap)
+	}
+	if res.PredictedBest != 0 || res.BestSectors != nil || res.TimeOnTable != 0 {
+		t.Errorf("PredictedBest/BestSectors/TimeOnTable = %v/%v/%v, want 0/nil/0 (suppressed: PB lap not in the analyzable pool)",
+			res.PredictedBest, res.BestSectors, res.TimeOnTable)
+	}
+}
+
+// TestAnalyzeSession_PredictedBestBoundedByPB guards the positive side of BUG-4's invariant: when the
+// PB lap IS in the analyzable pool (TestAnalyzeSession above matches lap 1 == PB), PredictedBest must
+// be published, strictly positive, and never exceed PBTime.
+func TestAnalyzeSession_PredictedBestBoundedByPB(t *testing.T) {
+	a := newFixtureAnalyzer(t)
+	res, err := a.AnalyzeSession(context.Background(), "s1", 90*s)
+	if err != nil {
+		t.Fatalf("AnalyzeSession: %v", err)
+	}
+	if res.PBLap == 0 {
+		t.Fatal("PBLap = 0, want a matched PB lap — test setup invalid")
+	}
+	if res.PredictedBest <= 0 {
+		t.Errorf("PredictedBest = %v, want > 0 (PB lap is analyzable)", res.PredictedBest)
+	}
+	if res.PredictedBest > res.PBTime {
+		t.Errorf("PredictedBest %v > PBTime %v, want <= PB", res.PredictedBest, res.PBTime)
 	}
 }

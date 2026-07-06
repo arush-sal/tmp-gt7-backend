@@ -42,7 +42,7 @@ func RenderSessions(sessions []SessionSummary, selected int) string {
 	return b.String()
 }
 
-// RenderReport renders a session's coaching report: PB, theoretical best, consistency, per-lap and
+// RenderReport renders a session's coaching report: PB, predicted best, consistency, per-lap and
 // per-sector deltas, and recommendations.
 func RenderReport(rep coach.Report) string {
 	a := rep.Analysis
@@ -53,9 +53,9 @@ func RenderReport(rep coach.Report) string {
 		b.WriteString(dimStyle.Render("No valid lap — no Personal Best to analyze.") + "\n\n")
 	} else {
 		b.WriteString(headerStyle.Render("Personal Best") + "  " + pbLabel(a.PBLap, a.PBTime) + "\n")
-		if a.TheoreticalBest > 0 {
-			b.WriteString(headerStyle.Render("Theoretical best") + fmt.Sprintf("  %s  (%s on the table)\n",
-				lap(a.TheoreticalBest), delta(a.TimeOnTable)))
+		if a.PredictedBest > 0 {
+			b.WriteString(headerStyle.Render("Predicted best") + fmt.Sprintf("  %s  (%s on the table)\n",
+				lap(a.PredictedBest), delta(a.TimeOnTable)))
 		}
 		c := a.Consistency
 		b.WriteString(headerStyle.Render("Consistency") + fmt.Sprintf("  %d laps · best %s · mean %s · spread %s · sd %s\n\n",
@@ -125,9 +125,13 @@ func liveHeader(s LiveSnapshot) string {
 	if f.TotalPositions > 0 && f.CurrentPosition > 0 {
 		pos = fmt.Sprintf("P%d/%d", f.CurrentPosition, f.TotalPositions)
 	}
+	predicted := dash
+	if a := s.Enrichment.Analysis; a != nil && a.PredictedBest > 0 {
+		predicted = lap(a.PredictedBest)
+	}
 	return headerStyle.Render(fmt.Sprintf(
 		"POS %s   LAP %d/%d   TRACK %s   DELTA %s   PREDICTED %s   BEST %s",
-		pos, f.CurrentLap, f.TotalLaps, dash, dash, dash, lap(f.BestLap())))
+		pos, f.CurrentLap, f.TotalLaps, dash, dash, predicted, lap(f.BestLap())))
 }
 
 func leftTelemetry(f *LiveFrame) string {
@@ -177,9 +181,6 @@ func rightColumn(s LiveSnapshot) string {
 		b.WriteString(dimStyle.Render("  "+dash+" no analysis yet (needs a completed lap)") + "\n")
 	case a.HasPB:
 		fmt.Fprintf(&b, "  PB %s\n", pbLabel(a.PBLap, a.PBTime))
-		if a.TheoreticalBest > 0 {
-			fmt.Fprintf(&b, "  theoretical %s\n", lap(a.TheoreticalBest))
-		}
 		for _, r := range a.Recommendations {
 			b.WriteString(dimStyle.Render("  • "+r) + "\n")
 		}

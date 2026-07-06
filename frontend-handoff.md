@@ -83,8 +83,8 @@ Response `200`: **Report**
 | `pb_time_ns` | int (ns) | PB lap time (GT7's own authoritative best, not derived from captured laps) |
 | `laps` | LapAnalysis[] | one per valid lap |
 | `consistency` | Consistency | spread of valid laps |
-| `theoretical_best_ns` | int (ns) | Σ of the fastest sector times achieved (an optimal lap; ≤ PB) |
-| `time_on_table_ns` | int (ns) | PB sector-sum − theoretical best (achievable gain the driver has shown piece-by-piece) |
+| `predicted_best_ns` | int (ns) | the fastest lap achievable from the driver's own best sector times (≤ PB; suppressed/0 when the PB lap's sectors aren't captured). A reference-derived "theoretical" best is future work. |
+| `time_on_table_ns` | int (ns) | PB sector-sum − predicted best (achievable gain the driver has shown piece-by-piece; 0 when predicted best is suppressed) |
 | `best_sectors` | SectorBest[] | the fastest sector times + which lap set each |
 | `recommendations` | string[] | human-readable, data-supported statements |
 
@@ -104,7 +104,7 @@ slower than PB in that sector).
        "sector_deltas":[{"index":0,"lap_time_ns":9657639900,"pb_time_ns":9657639900,"delta_to_pb_ns":0}]}
     ],
     "consistency": {"count":1,"best_ns":9657639900,"mean_ns":9657639900,"std_dev_ns":0,"spread_ns":0},
-    "theoretical_best_ns": 9657639900, "time_on_table_ns": 0,
+    "predicted_best_ns": 9657639900, "time_on_table_ns": 0,
     "best_sectors": [{"index":0,"duration_ns":9657639900,"lap_number":1}],
     "recommendations": ["Personal Best: lap 1 at 0:09.658."]
   },
@@ -130,7 +130,7 @@ Non-2xx responses use a stable shape: `{ "error": "<message>" }`.
 
 - **Coaching is a placeholder** (`status:"pending"`). Real, corner-level, improvement-oriented coaching
   (mistakes/priorities/drills) is deferred until there's enough data; for now the UI should surface
-  the `analysis` (PB, deltas, theoretical best, consistency, recommendations) and show coaching as
+  the `analysis` (PB, deltas, predicted best, consistency, recommendations) and show coaching as
   pending.
 - **Sectors** are currently equal-distance mini-sectors (the RKB that supplies real track/named sectors
   is not wired yet). Sector indices are `0..N-1`, not named turns.

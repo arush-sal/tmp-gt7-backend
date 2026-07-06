@@ -191,6 +191,43 @@ func TestRenderLive_ResolvedNoPB(t *testing.T) {
 	}
 }
 
+// TestRenderLive_HeaderShowsPredictedBest guards the header's PREDICTED slot: it must show the
+// enrichment analysis's predicted-best lap time when resolved and positive, and the ANALYSIS panel
+// must not duplicate it with its own "theoretical"/"predicted" line (that line moved to the header).
+func TestRenderLive_HeaderShowsPredictedBest(t *testing.T) {
+	s := LiveSnapshot{
+		Status: "live", Frame: &LiveFrame{CarSpeed: 100, CurrentLap: 3},
+		Derived: &LiveDerived{},
+		Enrichment: LiveEnrichment{SessionID: "sess-1", Analysis: &analysis.SessionAnalysis{
+			HasPB: true, PBLap: 2, PBTime: 90 * time.Second, PredictedBest: 88 * time.Second,
+			TimeOnTable: 2 * time.Second, Recommendations: []string{"Personal Best: lap 2 at 1:30.000."},
+		}},
+	}
+	out := stripANSI(RenderLive(s, 120, nil))
+	if !strings.Contains(out, "PREDICTED 1:28.000") {
+		t.Errorf("expected header PREDICTED slot to show the predicted-best lap time:\n%s", out)
+	}
+	if strings.Contains(out, "theoretical") {
+		t.Errorf("ANALYSIS panel should not duplicate the predicted best as a 'theoretical' line:\n%s", out)
+	}
+}
+
+// TestRenderLive_HeaderPredictedDashWhenSuppressed guards the BUG-4 suppression case: when the
+// analysis has resolved but PredictedBest is 0 (suppressed — PB lap not sector-analyzable), the header
+// must fall back to the dash placeholder, not render a bogus "0:00.000".
+func TestRenderLive_HeaderPredictedDashWhenSuppressed(t *testing.T) {
+	s := LiveSnapshot{
+		Status: "live", Frame: &LiveFrame{CarSpeed: 100, CurrentLap: 3},
+		Enrichment: LiveEnrichment{SessionID: "sess-1", Analysis: &analysis.SessionAnalysis{
+			HasPB: true, PBLap: 0, PBTime: 90 * time.Second, PredictedBest: 0,
+		}},
+	}
+	out := stripANSI(RenderLive(s, 120, nil))
+	if !strings.Contains(out, "PREDICTED "+dash) {
+		t.Errorf("expected header PREDICTED slot to show the dash placeholder when suppressed:\n%s", out)
+	}
+}
+
 func TestRenderLive_SuggestedGearSentinelHidden(t *testing.T) {
 	live := stripANSI(RenderLive(LiveSnapshot{Status: "live", Frame: &LiveFrame{CurrentGear: 3, SuggestedGear: 15}}, 120, nil))
 	if strings.Contains(live, "shift") {

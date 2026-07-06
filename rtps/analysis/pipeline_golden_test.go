@@ -173,15 +173,13 @@ func TestPipeline_GoldenSectorsReconcile(t *testing.T) {
 	if res.PBTime < 30*time.Second || res.PBTime > 5*time.Minute {
 		t.Errorf("PB time %v implausible for a race lap", res.PBTime)
 	}
-	// Theoretical best is bounded by the PB and never collapses to a partial lap. The bound carries one
-	// span-tolerance of slack: theoretical best is a sum of trace-derived sector times while PB is GT7's
-	// game-clock lap duration, so even a clean lap's sector sum differs from its duration by the ~tens
-	// of ms boundary jitter (the next lap's first frame, which GT7 times the lap from, is not in-trace).
-	if res.TheoreticalBest <= 0 || res.TheoreticalBest > res.PBTime+spanTol(res.PBTime) {
-		t.Errorf("theoretical best %v out of range (want 0 < tb <= PB %v + jitter)", res.TheoreticalBest, res.PBTime)
+	// Predicted best is bounded by the PB (BUG-4 invariant, enforced by suppression) and never collapses
+	// to a partial lap.
+	if res.PredictedBest <= 0 || res.PredictedBest > res.PBTime {
+		t.Errorf("predicted best %v out of range (want 0 < pb <= PB %v)", res.PredictedBest, res.PBTime)
 	}
-	if res.TheoreticalBest < res.PBTime/2 {
-		t.Errorf("theoretical best %v implausibly small vs PB %v — a mis-traced lap leaked in", res.TheoreticalBest, res.PBTime)
+	if res.PredictedBest < res.PBTime/2 {
+		t.Errorf("predicted best %v implausibly small vs PB %v — a mis-traced lap leaked in", res.PredictedBest, res.PBTime)
 	}
 
 	// THE invariant: for every lap that carries sector deltas, its own per-sector times sum to its

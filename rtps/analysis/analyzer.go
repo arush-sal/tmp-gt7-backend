@@ -27,9 +27,10 @@ type SessionAnalysis struct {
 	Laps      []LapAnalysis `json:"laps"`
 	// Consistency = how repeatable the valid laps are (own-PB comparison).
 	Consistency Consistency `json:"consistency"`
-	// Improvement view: the theoretical-best lap (sum of the fastest sector times the driver has
-	// achieved) and how much time that leaves on the table vs the PB's sectors.
-	TheoreticalBest time.Duration `json:"theoretical_best_ns"`
+	// Improvement view: the predicted-best lap (sum of the fastest sector times the driver has
+	// achieved — the fastest lap achievable given observed performance, not an idealized/reference-
+	// derived "theoretical" best) and how much time that leaves on the table vs the PB's sectors.
+	PredictedBest   time.Duration `json:"predicted_best_ns"`
 	TimeOnTable     time.Duration `json:"time_on_table_ns"`
 	BestSectors     []SectorBest  `json:"best_sectors"`
 	Recommendations []string      `json:"recommendations"`
@@ -70,7 +71,7 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best 
 	res.PBTime = gt7Best
 	res.PBLap = matchLap(laps, gt7Best) // 0 when no captured lap matches the authoritative best
 
-	// Compute each duration-eligible lap's sectors once; reuse for deltas + the theoretical best. A lap
+	// Compute each duration-eligible lap's sectors once; reuse for deltas + the predicted best. A lap
 	// is only *sector-analyzable* if its trace faithfully covers it (see sectorAnalyzable): sector times
 	// are derived from frame timestamps along the distance axis and telescope to the trace's wall-clock
 	// span, so a lap whose trace does not span its authoritative duration (a mid-race join lap, a
@@ -98,15 +99,44 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best 
 	}
 	pbSectors := perLap[res.PBLap] // empty when PB lap unknown/unanalyzable
 
-	// Improvement view: theoretical best = sum of the fastest sector times; time on the table = how
+	// Improvement view: predicted best = sum of the fastest sector times; time on the table = how
 	// much the PB's sectors trail those bests (both sector-time based, so apples-to-apples).
-	res.TheoreticalBest, res.BestSectors = theoreticalBest(perLap)
+	res.PredictedBest, res.BestSectors = predictedBest(perLap)
 	var pbSectorSum time.Duration
 	for _, sd := range pbSectors {
 		pbSectorSum += sd.Duration
 	}
-	if pbSectorSum > res.TheoreticalBest {
-		res.TimeOnTable = pbSectorSum - res.TheoreticalBest
+	if pbSectorSum > res.PredictedBest {
+		res.TimeOnTable = pbSectorSum - res.PredictedBest
+	}
+
+	// BUG-4 guard: predicted best is only meaningful when it is <= the authoritative PB. It is built
+	// from perLap, a pool that may not include the PB lap itself (unmatched or unanalyzable), so the
+	// summed sector-bests can exceed the PB time — an impossible "prediction" faster in pieces than a
+	// whole it never demonstrated together in a comparable way. When the PB lap's sectors aren't in the
+	// pool, or the computed prediction would exceed PB, suppress it entirely rather than publish a
+	// misleading number: we cannot produce a valid <= PB prediction without the PB lap's own sectors.
+	_, pbAnalyzable := perLap[res.PBLap]
+	switch {
+	case res.PBLap == 0, !pbAnalyzable:
+		// No PB-lap sectors to anchor the prediction to at all — can't produce a trustworthy <= PB
+		// number, so suppress outright.
+		res.PredictedBest, res.BestSectors, res.TimeOnTable = 0, nil, 0
+	case res.PredictedBest > res.PBTime+sectorJitterTol(res.PBTime):
+		// Exceeds PB by more than trace-timestamp jitter can explain (see sectorAnalyzable) — the
+		// prediction is untrustworthy, not just imprecise. Suppress rather than publish it.
+		res.PredictedBest, res.BestSectors, res.TimeOnTable = 0, nil, 0
+	case res.PredictedBest > res.PBTime:
+		// Within the same wall-clock jitter band sectorAnalyzable already tolerates when admitting a
+		// lap's sectors (a sum of real timestamps essentially never lands exactly on GT7's game-clock
+		// duration, even for the very lap that produced it). Clamp to PB rather than suppress, so the
+		// PredictedBest <= PBTime invariant holds exactly without discarding a trustworthy prediction.
+		res.PredictedBest = res.PBTime
+		if pbSectorSum > res.PredictedBest {
+			res.TimeOnTable = pbSectorSum - res.PredictedBest
+		} else {
+			res.TimeOnTable = 0
+		}
 	}
 
 	// Per-lap deltas relative to the authoritative PB; show the same duration-eligible + in-band laps
@@ -165,7 +195,7 @@ const (
 // sector times reconcile with the lap's authoritative duration. It rejects traces that are empty, have
 // no usable distance axis, or whose wall-clock span diverges from the lap duration beyond the tolerance
 // — the join-lap / standing-start / splice cases whose sector times would otherwise collapse the
-// theoretical best.
+// predicted best.
 func sectorAnalyzable(dur time.Duration, samples []processing.Sample) bool {
 	if dur <= 0 || len(samples) < 2 {
 		return false
@@ -174,15 +204,26 @@ func sectorAnalyzable(dur time.Duration, samples []processing.Sample) bool {
 		return false
 	}
 	span := samples[len(samples)-1].RecvTime.Sub(samples[0].RecvTime)
-	tol := sectorSpanAbsTol
-	if p := time.Duration(sectorSpanPctTol * float64(dur)); p > tol {
-		tol = p
-	}
 	diff := span - dur
 	if diff < 0 {
 		diff = -diff
 	}
-	return diff <= tol
+	return diff <= sectorJitterTol(dur)
+}
+
+// sectorJitterTol is the wall-clock jitter band trace-derived sector times are allowed to diverge from
+// a lap's authoritative GT7 duration by (see sectorAnalyzable's doc comment for why this exists —
+// contiguous mini-sectors telescope to the trace span, and the trace span never lands exactly on the
+// game-clock duration even for a clean lap). Shared with the BUG-4 PredictedBest<=PBTime guard: a
+// predicted best built from the PB lap's own sectors carries the same jitter, so it must be judged
+// against the same tolerance sectorAnalyzable already uses to admit that lap's sectors in the first
+// place — not a hard zero-tolerance comparison, which would suppress essentially every prediction.
+func sectorJitterTol(dur time.Duration) time.Duration {
+	tol := sectorSpanAbsTol
+	if p := time.Duration(sectorSpanPctTol * float64(dur)); p > tol {
+		tol = p
+	}
+	return tol
 }
 
 // recommend turns the deltas into short, data-supported statements (no invented advice — this is the
@@ -202,10 +243,10 @@ func recommend(r SessionAnalysis) []string {
 	}
 
 	// Improvement pointer from own data (no external reference needed).
-	if r.TheoreticalBest > 0 && r.TimeOnTable > 0 {
+	if r.PredictedBest > 0 && r.TimeOnTable > 0 {
 		recs = append(recs, fmt.Sprintf(
-			"Theoretical best %s — %+.3fs on the table across your best sectors (each driven faster before, just not together).",
-			formatDuration(r.TheoreticalBest), r.TimeOnTable.Seconds()))
+			"Predicted best %s — %+.3fs on the table across your best sectors (each driven faster before, just not together).",
+			formatDuration(r.PredictedBest), r.TimeOnTable.Seconds()))
 	}
 
 	// The lap furthest off PB, and where it lost the most.

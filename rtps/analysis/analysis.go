@@ -41,18 +41,20 @@ type Consistency struct {
 }
 
 // SectorBest is the fastest time seen for one sector across a session's valid laps, and which lap set
-// it. The theoretical-best lap is the sum of these.
+// it. The predicted-best lap is the sum of these.
 type SectorBest struct {
 	Index     int           `json:"index"`
 	Duration  time.Duration `json:"duration_ns"`
 	LapNumber int32         `json:"lap_number"` // the lap that owns this best sector
 }
 
-// theoreticalBest computes the optimal lap the driver has *demonstrated piece-by-piece*: for each
+// predictedBest computes the optimal lap the driver has *demonstrated piece-by-piece*: for each
 // sector, the fastest time across all their valid laps. Returns the summed optimal time and the
 // per-sector bests (ordered by sector index). This is improvement guidance from own data — a target
-// that beats any single actual lap, yet every piece has already been achieved.
-func theoreticalBest(perLap map[int32][]processing.SectorResult) (time.Duration, []SectorBest) {
+// that beats any single actual lap, yet every piece has already been achieved. It is a PREDICTED best
+// (fastest achievable given observed performance), not a "theoretical" best derived from an external
+// reference — that is future work.
+func predictedBest(perLap map[int32][]processing.SectorResult) (time.Duration, []SectorBest) {
 	// Iterate laps in ascending order so a tie for a sector's best time is resolved deterministically
 	// (lowest lap number wins) — map iteration order would otherwise make SectorBest.LapNumber flaky.
 	lapNums := make([]int32, 0, len(perLap))

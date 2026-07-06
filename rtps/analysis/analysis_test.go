@@ -49,22 +49,22 @@ func TestConsistency_ExcludesFallbackAndOutliers(t *testing.T) {
 	}
 }
 
-// TestTheoreticalBest: per-sector fastest across laps -> optimal time; each best notes its source lap.
-func TestTheoreticalBest(t *testing.T) {
+// TestPredictedBest: per-sector fastest across laps -> optimal time; each best notes its source lap.
+func TestPredictedBest(t *testing.T) {
 	perLap := map[int32][]processing.SectorResult{
 		1: {{Index: 0, Duration: 30 * s}, {Index: 1, Duration: 32 * s}}, // lap1: S1 best
 		2: {{Index: 0, Duration: 29 * s}, {Index: 1, Duration: 34 * s}}, // lap2: S0 best
 	}
-	total, best := theoreticalBest(perLap)
+	total, best := predictedBest(perLap)
 	if total != 61*s { // 29 (S0, lap2) + 32 (S1, lap1)
-		t.Errorf("theoretical best = %v, want 61s", total)
+		t.Errorf("predicted best = %v, want 61s", total)
 	}
 	if len(best) != 2 || best[0].LapNumber != 2 || best[1].LapNumber != 1 {
 		t.Errorf("best sectors = %+v, want S0<-lap2, S1<-lap1", best)
 	}
-	// A lap sums to 62s (30+32) and 63s (29+34); theoretical best 61s beats both.
+	// A lap sums to 62s (30+32) and 63s (29+34); predicted best 61s beats both.
 	if total >= 62*s {
-		t.Errorf("theoretical best %v should beat every actual lap", total)
+		t.Errorf("predicted best %v should beat every actual lap", total)
 	}
 }
 
