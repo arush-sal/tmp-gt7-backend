@@ -52,7 +52,7 @@ func RenderReport(rep coach.Report) string {
 	if !a.HasPB {
 		b.WriteString(dimStyle.Render("No valid lap — no Personal Best to analyze.") + "\n\n")
 	} else {
-		b.WriteString(headerStyle.Render("Personal Best") + fmt.Sprintf("  lap %d  %s\n", a.PBLap, lap(a.PBTime)))
+		b.WriteString(headerStyle.Render("Personal Best") + "  " + pbLabel(a.PBLap, a.PBTime) + "\n")
 		if a.TheoreticalBest > 0 {
 			b.WriteString(headerStyle.Render("Theoretical best") + fmt.Sprintf("  %s  (%s on the table)\n",
 				lap(a.TheoreticalBest), delta(a.TimeOnTable)))
@@ -176,7 +176,7 @@ func rightColumn(s LiveSnapshot) string {
 	case a == nil: // enrichment not resolved yet
 		b.WriteString(dimStyle.Render("  "+dash+" no analysis yet (needs a completed lap)") + "\n")
 	case a.HasPB:
-		fmt.Fprintf(&b, "  PB lap %d  %s\n", a.PBLap, lap(a.PBTime))
+		fmt.Fprintf(&b, "  PB %s\n", pbLabel(a.PBLap, a.PBTime))
 		if a.TheoreticalBest > 0 {
 			fmt.Fprintf(&b, "  theoretical %s\n", lap(a.TheoreticalBest))
 		}
@@ -207,6 +207,16 @@ func bar(v float32, width int) string {
 	}
 	n := int(float32(width)*v + 0.5)
 	return "[" + strings.Repeat("#", n) + strings.Repeat("·", width-n) + "]"
+}
+
+// pbLabel formats a Personal-Best value with its lap number when concretely known ("lap N  M:SS.mmm"),
+// and without it when the lap is unknown ("M:SS.mmm"). PBLap is 0 when the GT7-authoritative best time
+// didn't match any captured lap — show the real best time, but omit the lap rather than print "lap 0".
+func pbLabel(pbLap int32, pbTime time.Duration) string {
+	if pbLap > 0 {
+		return fmt.Sprintf("lap %d  %s", pbLap, lap(pbTime))
+	}
+	return lap(pbTime)
 }
 
 // lap formats a lap time as M:SS.mmm.

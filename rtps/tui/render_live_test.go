@@ -5,9 +5,32 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/analysis"
 )
+
+// TestRenderLive_PBLapDynamic: the ANALYSIS PB line shows the lap number only when concretely known
+// (PBLap > 0); when the GT7-authoritative best didn't match a captured lap (PBLap == 0) it shows the
+// time without a bogus "lap 0".
+func TestRenderLive_PBLapDynamic(t *testing.T) {
+	mk := func(pbLap int32, pb time.Duration) string {
+		return stripANSI(RenderLive(LiveSnapshot{
+			Status: "live", Frame: &LiveFrame{CarSpeed: 1},
+			Enrichment: LiveEnrichment{Analysis: &analysis.SessionAnalysis{HasPB: true, PBLap: pbLap, PBTime: pb}},
+		}, 120, nil))
+	}
+	unknown := mk(0, 79858*time.Millisecond)
+	if strings.Contains(unknown, "lap 0") {
+		t.Errorf("PBLap 0 must omit the lap number, not render 'lap 0':\n%s", unknown)
+	}
+	if !strings.Contains(unknown, "PB 1:19.858") {
+		t.Errorf("PBLap 0 should still show the PB time:\n%s", unknown)
+	}
+	if known := mk(24, 80485*time.Millisecond); !strings.Contains(known, "lap 24") {
+		t.Errorf("PBLap 24 should render 'lap 24':\n%s", known)
+	}
+}
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
