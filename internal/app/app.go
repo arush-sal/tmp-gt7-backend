@@ -25,7 +25,13 @@ const reportInterval = 10 * time.Second
 // bottom-up (publisher -> pipeline -> receiver); shutdown order is the reverse and enforced here:
 // the receiver stops first (no new packets), then the publisher winds down, and finally the raw
 // dump is flushed and closed.
-func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
+//
+// reconfigure is an optional (nil-safe) channel of live heartbeat-interval updates: the config
+// hot-reload watcher in main sends on it when heartbeat.interval changes, and Run forwards each
+// value into the Receiver's SetHeartbeatInterval without needing a restart. A nil channel disables
+// this (callers who don't want hot-reload just pass nil; a nil channel blocks forever in a select,
+// which is exactly "never fires").
+func Run(ctx context.Context, cfg config.Config, log *zap.Logger, reconfigure <-chan time.Duration) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -69,6 +75,7 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 		defer cancel()
 		return recv.Run(gctx)
 	})
+	g.Go(func() error { applyHeartbeatReconfigures(gctx, recv, reconfigure); return nil })
 
 	runErr := g.Wait()
 
@@ -95,6 +102,24 @@ func Run(ctx context.Context, cfg config.Config, log *zap.Logger) error {
 		return nil
 	}
 	return runErr
+}
+
+// applyHeartbeatReconfigures forwards live heartbeat-interval updates from the config hot-reload
+// watcher into the Receiver until ctx is cancelled. A nil reconfigure channel makes the receive
+// case permanently block, so this goroutine just parks until shutdown — the nil-channel-disables
+// pattern the doc comment on Run promises.
+func applyHeartbeatReconfigures(ctx context.Context, recv *ingest.Receiver, reconfigure <-chan time.Duration) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case d, ok := <-reconfigure:
+			if !ok {
+				return
+			}
+			recv.SetHeartbeatInterval(d)
+		}
+	}
 }
 
 // report periodically logs the pipeline counters and drop counts at INFO. It runs on its own

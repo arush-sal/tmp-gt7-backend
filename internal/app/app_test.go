@@ -83,7 +83,7 @@ func TestAppSmoke(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- app.Run(ctx, cfg, zap.NewNop()) }()
+	go func() { done <- app.Run(ctx, cfg, zap.NewNop(), nil) }()
 
 	sender, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: recvPort})
 	if err != nil {

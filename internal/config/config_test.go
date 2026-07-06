@@ -149,3 +149,126 @@ func TestLoadBackend_APIAddr(t *testing.T) {
 		t.Error("empty api.addr: want error, got nil")
 	}
 }
+
+// TestConfig_ReloadDiffClassification checks ClassifyBackendReload/ClassifyCollectorReload bucket
+// each changed field into either the live-appliable set (log.level [+ heartbeat.interval for the
+// collector]) or the restart-required set (everything else).
+func TestConfig_ReloadDiffClassification(t *testing.T) {
+	old := BackendConfig{APIAddr: "a", LogLevel: "info"}
+	next := BackendConfig{APIAddr: "b", LogLevel: "debug"}
+	live, restart := ClassifyBackendReload(old, next)
+	if _, ok := live["log.level"]; !ok {
+		t.Error("log.level should be live-appliable")
+	}
+	if _, ok := restart["api.addr"]; !ok {
+		t.Error("api.addr change should be restart-required")
+	}
+	if len(live) != 1 {
+		t.Errorf("live = %v, want exactly log.level", live)
+	}
+	if len(restart) != 1 {
+		t.Errorf("restart = %v, want exactly api.addr", restart)
+	}
+}
+
+// TestConfig_ReloadDiffClassification_BackendNoChange checks that unchanged fields produce no
+// entries at all.
+func TestConfig_ReloadDiffClassification_BackendNoChange(t *testing.T) {
+	c := BackendConfig{APIAddr: "a", LogLevel: "info", IngestAddr: "x", Storage: "memory"}
+	live, restart := ClassifyBackendReload(c, c)
+	if len(live) != 0 || len(restart) != 0 {
+		t.Errorf("no-change: live=%v restart=%v, want both empty", live, restart)
+	}
+}
+
+// TestConfig_ReloadDiffClassification_BackendAllRestartFields checks every restart-required
+// BackendConfig field is bucketed correctly when changed.
+func TestConfig_ReloadDiffClassification_BackendAllRestartFields(t *testing.T) {
+	old := BackendConfig{IngestAddr: "a", APIAddr: "a", Storage: "memory", DBDSN: "a"}
+	next := BackendConfig{IngestAddr: "b", APIAddr: "b", Storage: "postgres", DBDSN: "b"}
+	_, restart := ClassifyBackendReload(old, next)
+	for _, key := range []string{"ingest.addr", "api.addr", "storage", "db.dsn"} {
+		if _, ok := restart[key]; !ok {
+			t.Errorf("restart missing key %q: %v", key, restart)
+		}
+	}
+}
+
+// TestConfig_ReloadDiffClassification_Collector checks the collector's heartbeat.interval is
+// live-appliable while everything else (including log.level, which is live too) is bucketed
+// correctly, and unrelated changes land in restart.
+func TestConfig_ReloadDiffClassification_Collector(t *testing.T) {
+	old := Config{PS5IP: "1.1.1.1", RecvPort: 33740, LogLevel: "info", HeartbeatInterval: time.Second}
+	next := Config{PS5IP: "1.1.1.1", RecvPort: 33741, LogLevel: "debug", HeartbeatInterval: 2 * time.Second}
+	live, restart := ClassifyCollectorReload(old, next)
+	if _, ok := live["log.level"]; !ok {
+		t.Error("log.level should be live-appliable")
+	}
+	if _, ok := live["heartbeat.interval"]; !ok {
+		t.Error("heartbeat.interval should be live-appliable for the collector")
+	}
+	if _, ok := restart["udp.recv_port"]; !ok {
+		t.Error("udp.recv_port change should be restart-required")
+	}
+	if len(live) != 2 {
+		t.Errorf("live = %v, want exactly log.level + heartbeat.interval", live)
+	}
+	if len(restart) != 1 {
+		t.Errorf("restart = %v, want exactly udp.recv_port", restart)
+	}
+}
+
+// TestConfig_ReloadDiffClassification_CollectorAllRestartFields checks every restart-required
+// collector Config field is bucketed correctly when changed.
+func TestConfig_ReloadDiffClassification_CollectorAllRestartFields(t *testing.T) {
+	old := Config{
+		PS5IP: "1.1.1.1", RecvPort: 1, SendPort: 1, RTPSAddr: "a",
+		RawDumpEnabled: false, RawDumpDir: "a", LiveBufferSize: 1, RawBufferSize: 1,
+	}
+	next := Config{
+		PS5IP: "2.2.2.2", RecvPort: 2, SendPort: 2, RTPSAddr: "b",
+		RawDumpEnabled: true, RawDumpDir: "b", LiveBufferSize: 2, RawBufferSize: 2,
+	}
+	_, restart := ClassifyCollectorReload(old, next)
+	for _, key := range []string{
+		"ps5.ip", "udp.recv_port", "udp.send_port", "rtps.addr",
+		"rawdump.enabled", "rawdump.dir", "live_buffer.size", "raw_buffer.size",
+	} {
+		if _, ok := restart[key]; !ok {
+			t.Errorf("restart missing key %q: %v", key, restart)
+		}
+	}
+}
+
+// TestWatch_InvokesOnChangeOnFileWrite checks that Watch fires onChange when the watched config
+// file is rewritten. It polls with a timeout because fsnotify delivery is asynchronous.
+func TestWatch_InvokesOnChangeOnFileWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(path, []byte("log:\n  level: info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fired := make(chan struct{}, 1)
+	stop, err := Watch(path, func() {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer stop()
+
+	// Give the watcher a moment to start, then rewrite the file.
+	time.Sleep(100 * time.Millisecond)
+	if err := os.WriteFile(path, []byte("log:\n  level: debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-fired:
+	case <-time.After(3 * time.Second):
+		t.Fatal("onChange was not invoked after config file write")
+	}
+}
