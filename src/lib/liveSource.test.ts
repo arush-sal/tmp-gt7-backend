@@ -55,5 +55,5 @@ describe("subscribeLive", () => {
   }));
 
   it("exposes the default stream url", () =>
-    expect(DEFAULT_STREAM_URL).toBe("http://localhost:8080/v1/live/stream"));
+    expect(DEFAULT_STREAM_URL).toBe("/v1/live/stream"));
 });

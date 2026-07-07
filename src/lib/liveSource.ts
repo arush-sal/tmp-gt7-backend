@@ -9,7 +9,7 @@ export type LiveHandlers = {
 /** A subscription factory: opens a source, pushes validated snapshots, returns an unsubscribe fn. */
 export type LiveSource = (url: string, handlers: LiveHandlers) => () => void;
 
-export const DEFAULT_STREAM_URL = "http://localhost:8080/v1/live/stream";
+export const DEFAULT_STREAM_URL = "/v1/live/stream";
 
 /** Default LiveSource: a browser EventSource over the SSE stream. Events are unnamed (onmessage). */
 export const subscribeLive: LiveSource = (url, { onSnapshot, onError }) => {
