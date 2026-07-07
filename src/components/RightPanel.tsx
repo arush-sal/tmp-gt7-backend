@@ -1,40 +1,21 @@
-import type { DashboardSnapshot } from "../contract/dashboard";
+import type { LiveView } from "../lib/liveView";
 import type { Corner, CornerAnalysis } from "../mock/snapshot";
-import { formatLapTime, formatDelta, standingClass } from "../lib/format";
 
 interface Props {
-  snapshot: DashboardSnapshot;
+  view: LiveView | null;
   corners: Corner[];
   selectedCornerId: number | null;
   onCornerSelect: (id: number | null) => void;
   selectedCornerDetail: CornerAnalysis | null;
 }
 
-const COMPOUND_COLOR: Record<string, string> = {
-  RS: "#e10600", RM: "#f5d020", RH: "#d0d0d8", IM: "#2ed16a", W: "#1e6fd9",
-};
-const COMPOUND_TEXT: Record<string, string> = {
-  RS: "#fff", RM: "#15171c", RH: "#15171c", IM: "#14361f", W: "#fff",
-};
-
-function wearColor(wear: number): string {
-  if (wear >= 85) return "#2ed16a";
-  if (wear >= 60) return "#f5d020";
-  return "#e10600";
-}
-
 export default function RightPanel({
-  snapshot, corners, selectedCornerId, onCornerSelect, selectedCornerDetail,
+  view, corners, selectedCornerId, onCornerSelect, selectedCornerDetail,
 }: Props) {
-  const { sectors, lap, tyres, fuel, coach } = snapshot;
-
   const opportunities = [...corners]
     .filter(c => c.delta > 0.05)
     .sort((a, b) => b.delta - a.delta)
     .slice(0, 3);
-
-  const hotTyre = tyres.find(t => t.temp > 90);
-  const compound = tyres[0]?.compound ?? "RS";
 
   const activeCoach = selectedCornerDetail ?? null;
 
@@ -44,39 +25,23 @@ export default function RightPanel({
       {/* ── Sector times ── */}
       <div className="section">
         <div className="label" style={{ marginBottom: 6 }}>Sector Times</div>
-        {sectors.map(s => (
-          <div key={s.number} className="data-row">
-            <span className="body-text" style={{ width: 20 }}>S{s.number}</span>
-            <span className={`mono ${standingClass(s.previousSectorStanding)}`}>
-              {(s.finishTime / 1000).toFixed(3)}
-            </span>
-            <span className={s.liveDelta > 0 ? "pill-red" : "pill-green"}>
-              {formatDelta(s.liveDelta)}
-            </span>
-          </div>
-        ))}
+        <div className="data-row"><span className="text-muted">sector data pending</span><span className="mono text-muted">—</span></div>
       </div>
 
       {/* ── Lap history ── */}
       <div className="section">
         <div className="label" style={{ marginBottom: 6 }}>Lap History</div>
         <div className="data-row">
-          <span className="text-muted">Current · L{lap.number}</span>
-          <span className="mono text-muted">in progress</span>
+          <span className="text-muted">Current</span>
+          <span className="mono text-muted">{view ? view.currentLapTime : "—"}</span>
         </div>
-        {lap.previousLapTime != null && (
-          <div className="data-row">
-            <span className="text-muted">Previous</span>
-            <span className={`mono ${standingClass(lap.previousLapStanding)}`}>
-              {formatLapTime(lap.previousLapTime)}
-            </span>
-          </div>
-        )}
-        <div className="data-row" style={{ borderBottom: "none" }}>
+        <div className="data-row">
+          <span className="text-muted">Previous</span>
+          <span className="mono">{view ? view.lastLap : "—"}</span>
+        </div>
+        <div className="data-row row--best" style={{ borderBottom: "none" }}>
           <span className="text-muted">Best lap</span>
-          <span className={`mono ${standingClass(lap.bestLapStanding)}`}>
-            {formatLapTime(lap.bestLapTime)}
-          </span>
+          <span className="mono text-blue">{view ? view.bestLap : "—"}</span>
         </div>
       </div>
 
@@ -107,7 +72,7 @@ export default function RightPanel({
             {activeCoach ? `AI Coaching — ${activeCoach.name}` : "AI Coaching Card"}
           </span>
           <span className="confidence-badge confidence-badge--high">
-            {activeCoach ? activeCoach.coaching.confidence : "High"}
+            {activeCoach ? activeCoach.coaching.confidence : "pending"}
           </span>
         </div>
 
@@ -123,20 +88,15 @@ export default function RightPanel({
           </>
         ) : (
           <>
-            <div className="coaching-title">
-              Turn {coach.turn.count}{coach.turn.name ? ` ${coach.turn.name}` : ""}
-            </div>
-            <div className="label label--red" style={{ marginTop: 4, marginBottom: 2 }}>Problem</div>
-            <p className="body-text">{coach.problem}</p>
-            <div className="label label--green" style={{ marginTop: 4, marginBottom: 2 }}>Action</div>
-            <p className="body-text">{coach.action}</p>
+            <div className="coaching-title text-muted">Coaching pending</div>
+            <p className="body-text text-muted">Corner-level coaching is not available yet.</p>
           </>
         )}
 
         <div className="data-row" style={{ borderBottom: "none", marginTop: 6 }}>
           <span className="text-muted">Expected gain</span>
           <span className="mono text-green" style={{ fontWeight: 700, fontSize: 14 }}>
-            {(activeCoach ? activeCoach.coaching.expectedGain : coach.expectedGain).toFixed(2)}s
+            {activeCoach ? `${activeCoach.coaching.expectedGain.toFixed(2)}s` : "—"}
           </span>
         </div>
       </div>
@@ -147,63 +107,35 @@ export default function RightPanel({
         {/* Tyre */}
         <div className="section" style={{ flex: 1.5 }}>
           <div className="section__row" style={{ marginBottom: 8 }}>
-            <span className="label">Tyre · wear &amp; temp</span>
-            <div
-              className="tyre-compound"
-              style={{
-                background: COMPOUND_COLOR[compound],
-                color: COMPOUND_TEXT[compound],
-              }}
-              title={compound}
-            >
-              {compound}
-            </div>
+            <span className="label">Tyre · temp</span>
+            <div className="tyre-compound tyre-compound--na" title="compound unavailable">—</div>
           </div>
-
           <div style={{ display: "flex", justifyContent: "space-between" }}>
-            {tyres.map(t => (
-              <div key={t.position} className="tyre-col">
-                <span className="label" style={{ fontSize: 9 }}>{t.position}</span>
-                <div className="tyre-bar">
-                  <div
-                    className="tyre-fill"
-                    style={{ height: `${t.wear}%`, background: wearColor(t.wear) }}
-                  />
+            {(["fl","fr","rl","rr"] as const).map(pos => {
+              const t = view ? view.tyreTemps[pos] : { value: "—", tone: "none" as const };
+              return (
+                <div key={pos} className="tyre-col">
+                  <span className="label" style={{ fontSize: 9 }}>{pos.toUpperCase()}</span>
+                  <div className="tyre-bar"><div className="tyre-fill tyre-fill--na" /></div>
+                  <span className="mono" style={{ fontSize: 9 }}>—</span>
+                  <span className={`mono tyre-${t.tone}`} style={{ fontSize: 9 }}>{t.value}</span>
                 </div>
-                <span className="mono" style={{ fontSize: 9, fontWeight: 600 }}>{t.wear}%</span>
-                <span
-                  className={`mono ${t.temp > 90 ? "text-red" : "text-muted"}`}
-                  style={{ fontSize: 9 }}
-                >
-                  {t.temp}°
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
-
-          {hotTyre && (
-            <div className="data-row" style={{ borderBottom: "none", marginTop: 5, fontSize: 9 }}>
-              <span className="text-red">⚠ {hotTyre.position} hot</span>
-              <span className="mono text-red">{hotTyre.temp}°C</span>
-            </div>
-          )}
         </div>
 
         {/* Fuel */}
         <div className="section" style={{ flex: 1 }}>
           <div className="label" style={{ marginBottom: 5 }}>Fuel</div>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
-            <span className="mono" style={{ fontSize: 15, fontWeight: 600 }}>{fuel.remaining}L</span>
-            <span className="label">map {fuel.map}</span>
+            <span className={`mono fuel-${view ? view.fuelTone : "none"}`} style={{ fontSize: 15, fontWeight: 600 }}>
+              {view ? view.fuelPct : "—"}
+            </span>
+            <span className="label">map —</span>
           </div>
-          <div className="data-row">
-            <span className="text-muted">Used/lap</span>
-            <span className="mono">1.9L</span>
-          </div>
-          <div className="data-row" style={{ borderBottom: "none" }}>
-            <span className="text-muted">Laps left</span>
-            <span className="mono">{fuel.worthLap}</span>
-          </div>
+          <div className="data-row"><span className="text-muted">Used/lap</span><span className="mono text-muted">—</span></div>
+          <div className="data-row" style={{ borderBottom: "none" }}><span className="text-muted">Laps left</span><span className="mono text-muted">—</span></div>
         </div>
 
       </div>

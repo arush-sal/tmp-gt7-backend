@@ -146,6 +146,16 @@ body {
   overflow: hidden;
 }
 
+.conn-banner {
+  padding: 6px 12px;
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--amber-dark);
+  background: rgba(245,208,32,.1);
+  border-bottom: 1px solid var(--border);
+}
+
 .left-panel {
   width: 270px;
   flex-shrink: 0;
@@ -615,6 +625,15 @@ body {
   font-size: 10px;
   font-weight: 700;
 }
+
+.tyre-hot, .fuel-red    { color: var(--red); }
+.tyre-warm, .fuel-yellow{ color: var(--amber-dark); }
+.tyre-cold              { color: var(--blue); }
+.fuel-green             { color: var(--green-dark); }
+.tyre-none, .fuel-none  { color: var(--text-muted); }
+.row--best              { background: color-mix(in srgb, var(--blue) 14%, transparent); border-radius: 6px; }
+.tyre-fill--na          { height: 0; }
+.tyre-compound--na      { background: var(--text-muted); color: #fff; }
 
 /* ── Onboarding ──────────────────────────────────────────────────────────── */
 

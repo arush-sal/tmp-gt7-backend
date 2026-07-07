@@ -1,17 +1,15 @@
-import type { DashboardSnapshot } from "../contract/dashboard";
-import type { SessionMeta, CornerAnalysis } from "../mock/snapshot";
-import { formatLapTime, formatDelta } from "../lib/format";
+import type { LiveView } from "../lib/liveView";
+import type { CornerAnalysis } from "../mock/snapshot";
 
 interface Props {
-  snapshot: DashboardSnapshot;
-  meta: SessionMeta;
-  predictedLapMs: number;
+  view: LiveView | null;
   selectedCorner: CornerAnalysis | null;
 }
 
-export default function SessionHeader({ snapshot, meta, predictedLapMs, selectedCorner }: Props) {
-  const { position, lap } = snapshot;
-  const deltaClass = lap.liveDelta <= 0 ? "text-green" : "text-red";
+export default function SessionHeader({ view, selectedCorner }: Props) {
+  const ph = "—";
+  const deltaClass =
+    view?.deltaTone === "blue" ? "text-blue" : view?.deltaTone === "red" ? "text-red" : "text-muted";
 
   return (
     <header className="session-header">
@@ -19,21 +17,17 @@ export default function SessionHeader({ snapshot, meta, predictedLapMs, selected
 
         <div className="header-cell">
           <span className="label">Position</span>
-          <span className="mono header-val">
-            P{position.current}<span className="muted">/{position.total}</span>
-          </span>
+          <span className="mono header-val">{view ? view.position : ph}</span>
         </div>
 
         <div className="header-cell">
           <span className="label">Lap</span>
-          <span className="mono header-val">
-            {lap.number}<span className="muted">/{lap.total}</span>
-          </span>
+          <span className="mono header-val">{view ? view.lap : ph}</span>
         </div>
 
         <div className="header-cell header-cell--wide">
           <span className="label">Track / Layout</span>
-          <span className="header-val">{meta.trackName} — {meta.trackLayout}</span>
+          <span className="header-val text-muted">{ph}</span>
         </div>
 
         {selectedCorner ? (
@@ -44,33 +38,25 @@ export default function SessionHeader({ snapshot, meta, predictedLapMs, selected
             </div>
             <div className="header-cell">
               <span className="label">Corner delta</span>
-              <span className="mono header-val text-red">
-                +{selectedCorner.delta.toFixed(3)}s
-              </span>
+              <span className="mono header-val text-red">+{selectedCorner.delta.toFixed(3)}s</span>
             </div>
           </>
         ) : (
           <>
             <div className="header-cell">
               <span className="label">Live delta</span>
-              <span className={`mono header-val ${deltaClass}`}>
-                {formatDelta(lap.liveDelta)}
-              </span>
+              <span className={`mono header-val ${deltaClass}`}>{view ? view.delta : ph}</span>
             </div>
             <div className="header-cell">
               <span className="label">Predicted</span>
-              <span className="mono header-val text-purple">
-                {formatLapTime(predictedLapMs)}
-              </span>
+              <span className="mono header-val text-purple">{ph}</span>
             </div>
           </>
         )}
 
         <div className="header-cell">
           <span className="label">Best lap</span>
-          <span className={`mono header-val ${lap.bestLapStanding === "gridFastest" ? "text-purple" : "text-blue"}`}>
-            {formatLapTime(lap.bestLapTime)}
-          </span>
+          <span className="mono header-val text-blue">{view ? view.bestLap : ph}</span>
         </div>
 
       </div>
