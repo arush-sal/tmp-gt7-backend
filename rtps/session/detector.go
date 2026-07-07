@@ -131,6 +131,7 @@ func (d *Detector) open(f *telemetryv1.TelemetryFrame, ts time.Time) {
 		ID:             d.cfg.NewID(),
 		StartTime:      ts,
 		CarID:          f.GetCarId(),
+		CarName:        f.GetCarName(),
 		Source:         f.GetSource(),
 		FirstPackageID: f.GetPackageId(),
 		Status:         StatusActive,

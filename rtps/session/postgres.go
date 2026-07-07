@@ -28,15 +28,15 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 const upsertSQL = `
 INSERT INTO sessions
  (id, start_time, end_time, car_id, source, frame_count, gap_count,
-  first_package_id, last_package_id, current_lap, total_laps, best_lap_ns, last_lap_ns, status)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+  first_package_id, last_package_id, current_lap, total_laps, best_lap_ns, last_lap_ns, status, car_name)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
  ON CONFLICT (id) DO UPDATE SET
    start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, car_id=EXCLUDED.car_id,
    source=EXCLUDED.source, frame_count=EXCLUDED.frame_count, gap_count=EXCLUDED.gap_count,
    first_package_id=EXCLUDED.first_package_id, last_package_id=EXCLUDED.last_package_id,
    current_lap=EXCLUDED.current_lap, total_laps=EXCLUDED.total_laps,
    best_lap_ns=EXCLUDED.best_lap_ns, last_lap_ns=EXCLUDED.last_lap_ns,
-   status=EXCLUDED.status, updated_at=now()`
+   status=EXCLUDED.status, car_name=EXCLUDED.car_name, updated_at=now()`
 
 // Save upserts the record. Counts (uint64) and package ids (uint32) widen to bigint; durations store
 // as nanoseconds; a zero EndTime (active session) is written as SQL NULL. The uint64->int64 cast is
@@ -53,7 +53,7 @@ func (s *PostgresStore) Save(rec *Record) error {
 		int64(rec.FrameCount), int64(rec.GapCount),
 		int64(rec.FirstPackageID), int64(rec.LastPackageID),
 		rec.CurrentLap, rec.TotalLaps,
-		rec.BestLap.Nanoseconds(), rec.LastLap.Nanoseconds(), string(rec.Status))
+		rec.BestLap.Nanoseconds(), rec.LastLap.Nanoseconds(), string(rec.Status), rec.CarName)
 	if err != nil {
 		return fmt.Errorf("session: save %s: %w", rec.ID, err)
 	}
@@ -61,7 +61,7 @@ func (s *PostgresStore) Save(rec *Record) error {
 }
 
 const selectCols = `id, start_time, end_time, car_id, source, frame_count, gap_count,
- first_package_id, last_package_id, current_lap, total_laps, best_lap_ns, last_lap_ns, status`
+ first_package_id, last_package_id, current_lap, total_laps, best_lap_ns, last_lap_ns, status, car_name`
 
 // Get returns the record for id; found is false when absent.
 func (s *PostgresStore) Get(id string) (*Record, bool) {
@@ -117,7 +117,7 @@ func scanRecord(row rowScanner) (*Record, error) {
 	if err := row.Scan(
 		&rec.ID, &rec.StartTime, &endTime, &rec.CarID, &source,
 		&frameCount, &gapCount, &firstPackageID, &lastPackage,
-		&rec.CurrentLap, &rec.TotalLaps, &bestNs, &lastNs, &status,
+		&rec.CurrentLap, &rec.TotalLaps, &bestNs, &lastNs, &status, &rec.CarName,
 	); err != nil {
 		return nil, err
 	}

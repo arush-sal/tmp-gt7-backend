@@ -30,8 +30,10 @@ func RenderSessions(sessions []SessionSummary, selected int) string {
 		if s.EndTime.After(s.StartTime) {
 			elapsed = dur(s.EndTime.Sub(s.StartTime))
 		}
-		line := fmt.Sprintf("%-14s car %-6d %-9s laps %d/%d  %s",
-			s.ID, s.CarID, s.Status, s.CurrentLap, s.TotalLaps, elapsed)
+		// Show the human-readable car name (resolved by the collector), truncated to keep the row
+		// aligned; the numeric car_id remains available on the JSON API for debugging.
+		line := fmt.Sprintf("%-14s %-30.30s %-9s laps %d/%d  %s",
+			s.ID, s.CarName, s.Status, s.CurrentLap, s.TotalLaps, elapsed)
 		if i == selected {
 			b.WriteString(selectedStyle.Render("> "+line) + "\n")
 		} else {

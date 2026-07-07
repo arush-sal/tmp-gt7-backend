@@ -18,6 +18,7 @@ import (
 type SessionSummary struct {
 	ID         string    `json:"id"`
 	CarID      int32     `json:"car_id"`
+	CarName    string    `json:"car_name"`
 	Status     string    `json:"status"`
 	StartTime  time.Time `json:"start_time"`
 	EndTime    time.Time `json:"end_time"`

@@ -175,6 +175,23 @@ func TestDetector_CarChangeSplits(t *testing.T) {
 	}
 }
 
+// TestDetector_CapturesCarName: the human-readable car_name resolved by the collector is snapshotted
+// onto the Record when the session opens, alongside the numeric car id.
+func TestDetector_CapturesCarName(t *testing.T) {
+	const want = "Nissan Fairlady Z Version S (Z33)"
+	frames := inRaceRun(0, 100, 12, 1384, 1, 2, 2)
+	for _, f := range frames {
+		f.CarName = want
+	}
+	sink, _ := feed(testCfg(), frames...)
+	if len(sink.starts) != 1 {
+		t.Fatalf("starts=%d, want 1", len(sink.starts))
+	}
+	if got := sink.starts[0].CarName; got != want {
+		t.Errorf("Record.CarName = %q, want %q", got, want)
+	}
+}
+
 // TestDetector_StreamEndFinalizes: if the stream ends (Close) while a session is still active, the
 // session is finalized rather than lost.
 func TestDetector_StreamEndFinalizes(t *testing.T) {

@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 type sessionSummary struct {
 	ID         string    `json:"id"`
 	CarID      int32     `json:"car_id"`
+	CarName    string    `json:"car_name"`
 	Status     string    `json:"status"`
 	StartTime  time.Time `json:"start_time"`
 	EndTime    time.Time `json:"end_time"`
@@ -84,7 +85,7 @@ type sessionSummary struct {
 
 func summaryOf(r *session.Record) sessionSummary {
 	return sessionSummary{
-		ID: r.ID, CarID: r.CarID, Status: string(r.Status),
+		ID: r.ID, CarID: r.CarID, CarName: r.CarName, Status: string(r.Status),
 		StartTime: r.StartTime, EndTime: r.EndTime,
 		FrameCount: r.FrameCount, GapCount: r.GapCount,
 		CurrentLap: r.CurrentLap, TotalLaps: r.TotalLaps,

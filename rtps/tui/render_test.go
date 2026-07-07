@@ -10,8 +10,8 @@ import (
 )
 
 func TestRenderSessions(t *testing.T) {
-	out := RenderSessions([]SessionSummary{{ID: "s1", CarID: 1384, Status: "finished", CurrentLap: 3, TotalLaps: 2}}, 0)
-	for _, want := range []string{"Sessions", "s1", "1384", "finished"} {
+	out := RenderSessions([]SessionSummary{{ID: "s1", CarID: 1384, CarName: "Nissan Fairlady Z Version S (Z33)", Status: "finished", CurrentLap: 3, TotalLaps: 2}}, 0)
+	for _, want := range []string{"Sessions", "s1", "Nissan Fairlady", "finished"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("session list missing %q:\n%s", want, out)
 		}
