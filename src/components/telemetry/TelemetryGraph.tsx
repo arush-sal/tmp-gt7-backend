@@ -32,6 +32,7 @@ interface Props {
   channels: Channel[];
   label: string;
   unit?: string;
+  id?: string; // applied to the body root so the card's toggle can aria-controls it (no extra wrapper)
 }
 
 /**
@@ -45,7 +46,7 @@ interface Props {
  *    teardown/remount window can't call setData on an already-destroyed instance.
  *  - cleanup always runs: cancelAnimationFrame -> ro.disconnect -> u.destroy.
  */
-export default function TelemetryGraph({ store, channels, label, unit }: Props) {
+export default function TelemetryGraph({ store, channels, label, unit, id }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const uRef = useRef<uPlot | null>(null);
 
@@ -129,7 +130,7 @@ export default function TelemetryGraph({ store, channels, label, unit }: Props) 
   }, []);
 
   return (
-    <div className="telemetry-graph__body">
+    <div className="telemetry-graph__body" id={id}>
       <div
         className="telemetry-graph__canvas"
         ref={containerRef}

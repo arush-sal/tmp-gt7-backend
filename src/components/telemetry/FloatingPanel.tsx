@@ -1,6 +1,6 @@
 import { Rnd } from "react-rnd";
 import { useRef, type ReactNode } from "react";
-import { loadGeom, saveGeom, type PanelGeom } from "../../lib/panelGeometry";
+import { loadGeom, saveGeom, clampGeom, type PanelGeom } from "../../lib/panelGeometry";
 
 interface Props {
   storageKey: string;
@@ -18,7 +18,9 @@ export default function FloatingPanel({
 }: Props) {
   // Live geometry in a ref (NOT recomputed from render-time closure) so onDragStop always saves the
   // CURRENT width/height (set by the last resize) instead of a stale pre-resize size, and vice-versa.
-  const geom = useRef<PanelGeom>(loadGeom(storageKey, defaultGeom));
+  const geom = useRef<PanelGeom>(
+    clampGeom(loadGeom(storageKey, defaultGeom), window.innerWidth, window.innerHeight, minWidth, minHeight)
+  );
   const persist = (g: PanelGeom) => { geom.current = g; saveGeom(storageKey, g); };
   return (
     <Rnd

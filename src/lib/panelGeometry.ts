@@ -22,3 +22,13 @@ export function saveGeom(key: string, geom: PanelGeom): void {
     /* storage disabled/full — non-fatal */
   }
 }
+
+// A restored/default geometry can land off-screen (react-rnd's `bounds` only constrains
+// live drag/resize, not the initial `default`). Pull it back into the viewport before use.
+export function clampGeom(g: PanelGeom, vw: number, vh: number, minW: number, minH: number): PanelGeom {
+  const width = Math.min(Math.max(g.width, minW), vw);
+  const height = Math.min(Math.max(g.height, minH), vh);
+  const x = Math.min(Math.max(g.x, 0), Math.max(0, vw - width));
+  const y = Math.min(Math.max(g.y, 0), Math.max(0, vh - 40)); // keep >=40px of the header grabbable
+  return { x, y, width, height };
+}

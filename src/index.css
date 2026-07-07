@@ -156,20 +156,6 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-.left-panel {
-  width: 270px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.telemetry-layout-toggle {
-  align-self: flex-start;
-  margin-bottom: 6px;
-  flex-shrink: 0;
-}
-
 .right-panel-wrap {
   width: 318px;
   flex-shrink: 0;
@@ -268,6 +254,7 @@ body {
 .chip--green  { border-color: rgba(46,209,106,.5);  color: var(--green-dark); background: rgba(46,209,106,.08); }
 .chip--red    { border-color: rgba(225,6,0,.35);    color: var(--red);        background: rgba(225,6,0,.07); }
 .chip--amber  { border-color: rgba(245,208,32,.6);  color: var(--amber-dark); background: rgba(245,208,32,.1); }
+.chip--dim    { opacity: .4; }
 
 .chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
 
@@ -449,50 +436,36 @@ body {
   justify-content: space-between;
 }
 .accordion-tab:hover { background: var(--surface-3); }
-.accordion-tab--open { background: var(--surface); border-bottom: 1px solid var(--border); }
 
-.accordion-body   { padding: 10px 12px; }
+.graph-legend  { display: flex; gap: 6px; margin-top: 8px; flex-shrink: 0; padding: 0 10px 8px; }
 
-.graph-ph {
-  height: 82px;
-  background: repeating-linear-gradient(135deg, var(--surface-3) 0 7px, var(--surface-2) 7px 14px);
-  border: 1px dashed var(--border);
-  border-radius: 7px;
+/* ── Floating panel shell (react-rnd) ───────────────────────────────────────
+   Rnd sets inline position/size on this element directly; we only style its
+   look (surface, border, shadow) and make it a column-flex container so the
+   height it's given actually flows down into the graphs (see flex chain below). */
+.floating-panel {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
 }
-.graph-ph__sub { font-family: var(--data); font-size: 9px; color: var(--text-muted); }
-.graph-legend  { display: flex; gap: 6px; margin-top: 8px; }
+/* A child that carries its own .card chrome (e.g. CornerDetailPanel) must not double the
+   floating-panel's border/shadow/bg — the float already provides the surface. Descendant
+   selector because react-rnd may wrap the children in its own content div. */
+.floating-panel .card { border: none; box-shadow: none; background: transparent; }
 
-.accordion-add {
-  background: none;
-  border: 1px dashed var(--border);
-  border-radius: 9px;
-  padding: 9px 12px;
-  width: 100%;
-  text-align: left;
-  font-family: var(--ui);
-  font-size: 12.5px;
-  color: var(--text-muted);
-  cursor: pointer;
-  margin-top: 2px;
-}
-.accordion-add:hover { background: var(--surface-2); }
-
-/* ── Telemetry panel (uPlot graphs) — panel + floating-overlay layouts ──────── */
+/* ── Telemetry panel (uPlot graphs) — single-metric accordion cards, floating ── */
 
 .telemetry-panel {
   flex: 1;
+  height: 100%; /* fill react-rnd's sized box even if that box isn't itself a flex parent */
   display: flex;
   flex-direction: column;
   padding: 13px;
-  overflow-y: auto;
   min-height: 0;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
 }
 
 .telemetry-panel__header {
@@ -501,30 +474,35 @@ body {
   justify-content: space-between;
   margin-bottom: 10px;
   flex-shrink: 0;
+  cursor: move; /* react-rnd drag handle */
 }
 
-.telemetry-panel__list { display: flex; flex-direction: column; gap: 5px; }
-
-/* Floating variant: absolutely positioned over the (position:relative) center
-   track-map area. Translucent surface so the map/canvas shows through around it. */
-.telemetry-panel--overlay {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 5;
-  max-width: 300px;
-  max-height: calc(100% - 20px);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  pointer-events: auto;
-  flex: none;
+/* Flex chain (1/4): the list is the scroll container and grows to fill the
+   panel — without flex:1 + min-height:0 here, a resized floating-panel would
+   just add blank space instead of handing height down to the cards. */
+.telemetry-panel__list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .telemetry-graph {
   border: 1px solid var(--border);
   border-radius: 9px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Flex chain (2/4): only an EXPANDED card claims the list's spare height —
+   a collapsed card (header only) stays its natural content height. */
+.telemetry-graph--expanded {
+  flex: 1 0 auto;
 }
 
 .telemetry-graph__tab {
@@ -539,6 +517,7 @@ body {
   cursor: pointer;
   display: flex;
   justify-content: space-between;
+  flex-shrink: 0;
 }
 .telemetry-graph__tab:hover { background: var(--surface-3); }
 
@@ -548,10 +527,19 @@ body {
   color: var(--text-muted);
 }
 
-.telemetry-graph__body { padding: 8px 10px 10px; }
+/* Flex chain (3/4): the graph body fills the rest of the expanded card. */
+.telemetry-graph__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  padding: 8px 10px 10px;
+}
 
+/* Flex chain (4/4): the uPlot host — was a fixed 82px, now grows with the
+   panel so a resize actually yields a taller chart, not just a taller card. */
 .telemetry-graph__canvas {
-  height: 82px;
+  flex: 1;
+  min-height: 110px; /* floor so the ResizeObserver always sees non-zero -> uPlot constructs; flex:1 grows it on resize */
   width: 100%;
 }
 
