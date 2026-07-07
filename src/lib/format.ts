@@ -80,3 +80,32 @@ export function standingClass(standing: string | undefined): string {
   if (standing === "personalBest") return "pill-blue";
   return "mono";
 }
+
+/** Placeholder rendered wherever a live/enrichment value is not yet available. */
+export const PLACEHOLDER = "—"; // em dash —
+
+/**
+ * Parses a protobuf-JSON Duration string ("77.210s", "0s", "1.000340012s") to integer
+ * nanoseconds. Rejects negatives and >9 fractional digits. Throws on any malformed input.
+ * Shared by validateLive (accept/reject) and liveView (display) so there is one parser.
+ */
+export function parseDuration(s: string): number {
+  const m = /^(\d+)(?:\.(\d{1,9}))?s$/.exec(s);
+  if (!m) throw new Error(`invalid duration string: ${JSON.stringify(s)}`);
+  const secs = Number(m[1]);
+  const frac = m[2] ? m[2].padEnd(9, "0") : "000000000";
+  const ns = secs * 1_000_000_000 + Number(frac);
+  if (!Number.isSafeInteger(ns)) throw new Error(`duration ${JSON.stringify(s)}: ns exceeds safe integer range`);
+  return ns;
+}
+
+/** Nanoseconds -> "M:SS.mmm" (millisecond display precision), reusing formatLapTime. Assumes ns >= 0 (callers pass parseDuration output or non-negative derived ns). */
+export function nsToClock(ns: number): string {
+  return formatLapTime(Math.round(ns / 1_000_000));
+}
+
+/** Nanoseconds delta -> "+0.910s" / "−0.910s" (Unicode minus, 3dp + trailing s). */
+export function nsToDeltaSeconds(ns: number): string {
+  const sign = ns >= 0 ? "+" : "−";
+  return `${sign}${(Math.abs(ns) / 1_000_000_000).toFixed(3)}s`;
+}
