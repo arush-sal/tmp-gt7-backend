@@ -1,8 +1,11 @@
 // src/lib/validateLive.test.ts
 import { describe, it, expect } from "vitest";
 import { validateLive } from "./validateLive";
+import type { Frame, Derived, Enrichment } from "../contract/live";
 
-const frame = {
+// Typed fixtures so tests can mutate fields to their full contract types
+// (e.g. best_lap -> null, delta_to_best_ns -> number) and still typecheck.
+const frame: Frame = {
   car_speed: 214.3, current_gear: 4, suggested_gear: 5, rpm: 7200,
   throttle: 1, brake: 0, clutch: 0, boost: 1.2,
   current_fuel: 14.2, fuel_capacity: 60,
@@ -10,8 +13,8 @@ const frame = {
   current_lap: 8, total_laps: 20, current_position: 3, total_positions: 16,
   best_lap: "77.210s", last_lap: "78.004s", in_race: true, is_paused: false,
 };
-const derived = { current_lap_time_ns: 77210000000, fuel_pct: 23.7, source: "LIVE" };
-const enrichment = { analysis: null, car_name: null, track: null, delta_to_best_ns: null };
+const derived: Derived = { current_lap_time_ns: 77210000000, fuel_pct: 23.7, source: "LIVE" };
+const enrichment: Enrichment = { analysis: null, car_name: null, track: null, delta_to_best_ns: null };
 const live = () => ({ served_at: "2026-07-07T00:00:00Z", status: "live", frame: { ...frame }, derived: { ...derived }, enrichment: { ...enrichment } });
 const idle = () => ({ served_at: "2026-07-07T00:00:00Z", status: "idle", frame: null, derived: null, enrichment: { ...enrichment } });
 
