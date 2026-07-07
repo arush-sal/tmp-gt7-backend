@@ -1,5 +1,3 @@
-import type { DashboardSnapshot } from "../contract/dashboard";
-
 // ---------------------------------------------------------------------------
 // Extended types needed by the UI that aren't (yet) in the backend contract.
 //
@@ -7,14 +5,6 @@ import type { DashboardSnapshot } from "../contract/dashboard";
 // per-corner analysis data is a future task. For now these types live here
 // alongside the mock data they describe.
 // ---------------------------------------------------------------------------
-
-/** Session-level metadata — not yet in DashboardSnapshot. */
-export interface SessionMeta {
-  trackName: string;
-  trackLayout: string;
-  carName: string;
-  pp: number;
-}
 
 /** A corner as it appears on the track map (SVG coords + delta summary). */
 export interface Corner {
@@ -52,47 +42,6 @@ export interface CornerAnalysis extends Corner {
 // ---------------------------------------------------------------------------
 // Mock data
 // ---------------------------------------------------------------------------
-
-export const mockMeta: SessionMeta = {
-  trackName: "Suzuka Circuit",
-  trackLayout: "Full",
-  carName: "Ferrari 296 GT3",
-  pp: 620,
-};
-
-export const mockSnapshot: DashboardSnapshot = {
-  position: { current: 3, total: 16 },
-  lap: {
-    number: 8,
-    total: 20,
-    liveDelta: -910,
-    newLap: false,
-    previousLapTime: 117_660,
-    bestLapTime: 117_842,
-    bestLapStanding: "personalBest",
-  },
-  sectors: [
-    { number: 1, liveDelta:  122, newSector: false, finishTime: 32_421 },
-    { number: 2, liveDelta:  -54, newSector: false, finishTime: 41_008, previousSectorStanding: "personalBest" },
-    { number: 3, liveDelta:  211, newSector: false, finishTime: 38_774 },
-  ],
-  tyres: [
-    { position: "FL", temp: 88, wear: 88, compound: "RS" },
-    { position: "FR", temp: 96, wear: 59, compound: "RS" },
-    { position: "RL", temp: 82, wear: 92, compound: "RS" },
-    { position: "RR", temp: 90, wear: 86, compound: "RS" },
-  ],
-  fuel: { map: 4, remaining: 14.2, worthLap: 7 },
-  coach: {
-    turn: { count: 3, name: "Hairpin" },
-    problem: "Braking too early, rotating too late.",
-    action: "Brake 12m later, trail-brake longer, target a later apex.",
-    expectedGain: 0.18,
-  },
-};
-
-/** Derived: predicted lap = best + live delta */
-export const predictedLapMs = mockSnapshot.lap.bestLapTime + mockSnapshot.lap.liveDelta;
 
 export const mockCorners: Corner[] = [
   { id: 1, name: "T1 Chicane",    sector: 1, delta:  0.204, cx: 498, cy: 360 },

@@ -1,5 +1,6 @@
 import type { LiveView } from "../lib/liveView";
 import type { Corner, CornerAnalysis } from "../mock/snapshot";
+import { PLACEHOLDER } from "../lib/format";
 
 interface Props {
   view: LiveView | null;
@@ -18,6 +19,7 @@ export default function RightPanel({
     .slice(0, 3);
 
   const activeCoach = selectedCornerDetail ?? null;
+  const hasBest = !!view && view.bestLap !== PLACEHOLDER;
 
   return (
     <div className="right-panel">
@@ -39,9 +41,9 @@ export default function RightPanel({
           <span className="text-muted">Previous</span>
           <span className="mono">{view ? view.lastLap : "—"}</span>
         </div>
-        <div className="data-row row--best" style={{ borderBottom: "none" }}>
+        <div className={`data-row ${hasBest ? "row--best" : ""}`} style={{ borderBottom: "none" }}>
           <span className="text-muted">Best lap</span>
-          <span className="mono text-blue">{view ? view.bestLap : "—"}</span>
+          <span className={`mono ${hasBest ? "text-blue" : "text-muted"}`}>{view ? view.bestLap : "—"}</span>
         </div>
       </div>
 

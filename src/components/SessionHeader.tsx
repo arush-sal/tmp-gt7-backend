@@ -1,5 +1,6 @@
 import type { LiveView } from "../lib/liveView";
 import type { CornerAnalysis } from "../mock/snapshot";
+import { PLACEHOLDER } from "../lib/format";
 
 interface Props {
   view: LiveView | null;
@@ -10,6 +11,7 @@ export default function SessionHeader({ view, selectedCorner }: Props) {
   const ph = "—";
   const deltaClass =
     view?.deltaTone === "blue" ? "text-blue" : view?.deltaTone === "red" ? "text-red" : "text-muted";
+  const hasBest = !!view && view.bestLap !== PLACEHOLDER;
 
   return (
     <header className="session-header">
@@ -56,7 +58,7 @@ export default function SessionHeader({ view, selectedCorner }: Props) {
 
         <div className="header-cell">
           <span className="label">Best lap</span>
-          <span className="mono header-val text-blue">{view ? view.bestLap : ph}</span>
+          <span className={`mono header-val ${hasBest ? "text-blue" : "text-muted"}`}>{view ? view.bestLap : ph}</span>
         </div>
 
       </div>
