@@ -7,12 +7,19 @@ import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import { validateLive } from "../lib/validateLive";
 import { liveSample } from "../mock/liveSample";
 
-function fakeSource(): { source: LiveSource; push: () => void; fail: (m: string) => void } {
+function fakeSource(): { source: LiveSource; push: () => void; pushIdle: () => void; fail: (m: string) => void } {
   let handlers: LiveHandlers | undefined;
   const source: LiveSource = (_url, h) => { handlers = h; return () => {}; };
   return {
     source,
     push: () => handlers!.onSnapshot(validateLive(liveSample)),
+    pushIdle: () => handlers!.onSnapshot(validateLive({
+      served_at: "2026-07-07T00:00:00Z",
+      status: "idle",
+      frame: null,
+      derived: null,
+      enrichment: { analysis: null, car_name: null, track: null, delta_to_best_ns: null },
+    })),
     fail: (m: string) => handlers!.onError(new Error(m)),
   };
 }
@@ -43,5 +50,13 @@ describe("Dashboard (live)", () => {
     act(() => fail("boom"));
     expect(screen.getByText("P1/20")).toBeTruthy();               // last-good retained
     expect(screen.getByText(/stream error: boom/i)).toBeTruthy(); // error surfaced over live data
+  });
+
+  it("shows a waiting-for-telemetry banner when the backend is idle", () => {
+    const { source, pushIdle } = fakeSource();
+    render(<Dashboard source={source} />);
+    act(() => pushIdle());
+    // idle-specific copy (the connecting banner also contains "waiting for telemetry")
+    expect(screen.getByText(/start a session in GT7/i)).toBeTruthy();
   });
 });

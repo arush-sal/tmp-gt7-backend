@@ -21,8 +21,14 @@ export default function Dashboard({ source = subscribeLive }: { source?: LiveSou
 
   return (
     <>
-      {(!snapshot || error) && (
-        <div className="conn-banner">{error ? `stream error: ${error.message}` : "connecting — waiting for telemetry…"}</div>
+      {(!snapshot || error || snapshot.status === "idle") && (
+        <div className="conn-banner">
+          {error
+            ? `stream error: ${error.message}`
+            : !snapshot
+              ? "connecting — waiting for telemetry…"
+              : "waiting for telemetry — start a session in GT7"}
+        </div>
       )}
 
       <SessionHeader view={view} selectedCorner={selectedCornerDetail} />

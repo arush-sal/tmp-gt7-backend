@@ -20,7 +20,6 @@ export default function TelemetryAccordion() {
     <div className="telemetry card">
       <div className="telemetry__header">
         <span className="heading">Telemetry</span>
-        <span className="label">accordion</span>
       </div>
 
       <div className="telemetry__list">

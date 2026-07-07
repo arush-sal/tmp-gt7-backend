@@ -303,7 +303,7 @@ body {
   flex-shrink: 0;
 }
 .header-cell:last-child { border-right: none; }
-.header-cell--wide { flex: 1; }
+.header-cell--wide { flex: 1; align-items: center; text-align: center; }
 .header-cell--corner {
   background: rgba(225,6,0,.04);
   border-radius: 8px;
@@ -631,7 +631,7 @@ body {
 .tyre-cold              { color: var(--blue); }
 .fuel-green             { color: var(--green-dark); }
 .tyre-none, .fuel-none  { color: var(--text-muted); }
-.row--best              { background: color-mix(in srgb, var(--blue) 14%, transparent); border-radius: 6px; }
+.lap-best-hl            { background: color-mix(in srgb, var(--blue) 14%, transparent); border-radius: 6px; padding: 1px 6px; }
 .tyre-fill--na          { height: 0; }
 .tyre-compound--na      { background: var(--text-muted); color: #fff; }
 

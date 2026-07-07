@@ -41,9 +41,9 @@ export default function RightPanel({
           <span className="text-muted">Previous</span>
           <span className="mono">{view ? view.lastLap : "—"}</span>
         </div>
-        <div className={`data-row ${hasBest ? "row--best" : ""}`} style={{ borderBottom: "none" }}>
+        <div className="data-row" style={{ borderBottom: "none" }}>
           <span className="text-muted">Best lap</span>
-          <span className={`mono ${hasBest ? "text-blue" : "text-muted"}`}>{view ? view.bestLap : "—"}</span>
+          <span className={`mono ${hasBest ? "text-blue lap-best-hl" : "text-muted"}`}>{view ? view.bestLap : "—"}</span>
         </div>
       </div>
 

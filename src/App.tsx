@@ -16,6 +16,7 @@ type AppPhase =
 // Persist onboarding prefs client-side so a refresh skips setup. localStorage
 // (not a cookie): it stays in the browser and isn't sent on every request.
 const PREFS_KEY = "gt7:onboarding-prefs";
+const THEME_KEY = "gt7:theme";
 
 function loadPrefs(): OnboardingPrefs | null {
   try {
@@ -46,7 +47,14 @@ function savePrefs(p: OnboardingPrefs): void {
 }
 
 export default function App() {
-  const [theme, setTheme] = useState<Theme>("light");
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      const t = localStorage.getItem(THEME_KEY);
+      return t === "dark" || t === "light" ? t : "light";
+    } catch {
+      return "light"; // storage disabled/blocked — non-fatal, fall back to light
+    }
+  });
   // Lazy initialiser runs once: resume the dashboard if prefs were saved.
   const [phase, setPhase] = useState<AppPhase>(() => {
     const saved = loadPrefs();
@@ -56,6 +64,7 @@ export default function App() {
   // useLayoutEffect applies the theme before the browser paints → no flash.
   useLayoutEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem(THEME_KEY, theme); } catch { /* storage disabled */ }
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === "light" ? "dark" : "light"));
