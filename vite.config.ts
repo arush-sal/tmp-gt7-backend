@@ -25,5 +25,6 @@ export default defineConfig({
     // The React hook tests opt into 'jsdom' per-file via a `// @vitest-environment jsdom` docblock.
     environment: 'node',
     passWithNoTests: true,   // suites are added task-by-task; empty run must not fail the gate
+    setupFiles: ['./src/test-setup.ts'],
   },
 })

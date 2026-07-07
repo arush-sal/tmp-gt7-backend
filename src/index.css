@@ -164,6 +164,12 @@ body {
   min-height: 0;
 }
 
+.telemetry-layout-toggle {
+  align-self: flex-start;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
 .right-panel-wrap {
   width: 318px;
   flex-shrink: 0;
@@ -328,6 +334,17 @@ body {
   min-height: 0;
 }
 
+/* Wraps TrackMap in Dashboard so the floating telemetry-panel overlay variant has a
+   positioned ancestor to anchor to (the center canvas area). */
+.center-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
 .track-map__header {
   display: flex;
   align-items: center;
@@ -464,6 +481,79 @@ body {
   margin-top: 2px;
 }
 .accordion-add:hover { background: var(--surface-2); }
+
+/* ── Telemetry panel (uPlot graphs) — panel + floating-overlay layouts ──────── */
+
+.telemetry-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 13px;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.telemetry-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.telemetry-panel__list { display: flex; flex-direction: column; gap: 5px; }
+
+/* Floating variant: absolutely positioned over the (position:relative) center
+   track-map area. Translucent surface so the map/canvas shows through around it. */
+.telemetry-panel--overlay {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  max-width: 300px;
+  max-height: calc(100% - 20px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+  flex: none;
+}
+
+.telemetry-graph {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.telemetry-graph__tab {
+  width: 100%;
+  background: var(--surface-2);
+  border: none;
+  padding: 9px 12px;
+  text-align: left;
+  font-family: var(--ui);
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+}
+.telemetry-graph__tab:hover { background: var(--surface-3); }
+
+.telemetry-graph__unit-tag {
+  font-family: var(--data);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.telemetry-graph__body { padding: 8px 10px 10px; }
+
+.telemetry-graph__canvas {
+  height: 82px;
+  width: 100%;
+}
 
 /* ── Corner detail panel ─────────────────────────────────────────────────── */
 

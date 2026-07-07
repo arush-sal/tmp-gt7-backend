@@ -7,20 +7,24 @@ import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import { validateLive } from "../lib/validateLive";
 import { liveSample } from "../mock/liveSample";
 
+// Dashboard opens two independent subscriptions on this same injected `source` (useSession
+// for the header/panels, useHistory for the telemetry-graph buffer — deferred single-
+// subscription fan-out is a later pass per the P3 plan). A real SSE endpoint fans the same
+// events out to every listener, so the fake tracks every subscriber and broadcasts to all.
 function fakeSource(): { source: LiveSource; push: () => void; pushIdle: () => void; fail: (m: string) => void } {
-  let handlers: LiveHandlers | undefined;
-  const source: LiveSource = (_url, h) => { handlers = h; return () => {}; };
+  const subscribers: LiveHandlers[] = [];
+  const source: LiveSource = (_url, h) => { subscribers.push(h); return () => {}; };
   return {
     source,
-    push: () => handlers!.onSnapshot(validateLive(liveSample)),
-    pushIdle: () => handlers!.onSnapshot(validateLive({
+    push: () => subscribers.forEach(h => h.onSnapshot(validateLive(liveSample))),
+    pushIdle: () => subscribers.forEach(h => h.onSnapshot(validateLive({
       served_at: "2026-07-07T00:00:00Z",
       status: "idle",
       frame: null,
       derived: null,
       enrichment: { analysis: null, car_name: null, track: null, delta_to_best_ns: null },
-    })),
-    fail: (m: string) => handlers!.onError(new Error(m)),
+    }))),
+    fail: (m: string) => subscribers.forEach(h => h.onError(new Error(m))),
   };
 }
 
