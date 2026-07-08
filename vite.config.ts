@@ -9,6 +9,19 @@ const apiTarget = /^https?:\/\//i.test(rtps) ? rtps : `http://${rtps}`
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    // react-draggable (via react-rnd) reads `process.env.DRAGGABLE_DEBUG` at runtime
+    // (its only bare `process` reference). The browser has no `process` global, so the
+    // reference throws "process is not defined" inside the drag-start handler -> drag
+    // never begins. This single entry is sufficient in BOTH modes and must not be
+    // broadened: prod gets a build-time text substitution from esbuild; dev gets a real
+    // `globalThis.process.env.DRAGGABLE_DEBUG` set by Vite's /@vite/client env.mjs
+    // (from resolved `define`) before any dep runs -- so the unrewritten dep source is
+    // fine. Do NOT add `optimizeDeps.esbuildOptions.define`: in Vite 5.x it overrides
+    // rather than merges the optimizer's own NODE_ENV replacement. If react-rnd is
+    // bumped, re-grep react-draggable for new bare `process.*` refs.
+    'process.env.DRAGGABLE_DEBUG': 'false',
+  },
   server: {
     proxy: {
       // Forward the live API to the backend so the browser EventSource is same-origin in dev.
