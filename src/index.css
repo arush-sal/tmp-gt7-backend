@@ -556,6 +556,16 @@ body {
 }
 .telemetry-graph__tabrow .telemetry-graph__tab { flex: 1; }
 
+.telemetry-graph__drag {
+  background: none;
+  border: 0;
+  cursor: grab;
+  color: var(--muted, #9095a0);
+  padding: 0 6px;
+  touch-action: none;
+}
+.telemetry-graph__drag:active { cursor: grabbing; }
+
 .telemetry-graph__remove,
 .graph-picker__close {
   background: var(--surface-2);

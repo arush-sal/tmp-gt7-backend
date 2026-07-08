@@ -5,8 +5,33 @@ import { loadCardConfig, saveCardConfig, defaultCardConfig, type PanelConfig, ty
 import TelemetryGraph from "./TelemetryGraph";
 import GraphLegend from "./GraphLegend";
 import GraphPicker from "./GraphPicker";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 interface Props { store: HistoryStore; storageKey?: string; }
+
+/** Moves `activeKey` to `overKey`'s index; no-op on unknown/equal keys. */
+export function reorder(order: string[], activeKey: string, overKey: string): string[] {
+  const from = order.indexOf(activeKey), to = order.indexOf(overKey);
+  if (from === -1 || to === -1 || from === to) return order;
+  const next = [...order];
+  next.splice(to, 0, next.splice(from, 1)[0]);
+  return next;
+}
 
 function TelemetryCard({
   card, store, state, onToggleCollapse, onToggleSeries, onRemove,
@@ -16,9 +41,24 @@ function TelemetryCard({
 }) {
   const isMulti = card.kind === "multi";
   const collapsed = state.collapsed;
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: card.key });
+  const style = { transform: CSS.Transform.toString(transform), transition };
   return (
-    <div className={`telemetry-graph accordion-item ${!collapsed ? "telemetry-graph--expanded" : ""}`}>
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`telemetry-graph accordion-item ${!collapsed ? "telemetry-graph--expanded" : ""}`}
+    >
       <div className="telemetry-graph__tabrow">
+        <button
+          type="button"
+          className="telemetry-graph__drag"
+          aria-label={`drag ${card.title}`}
+          {...attributes}
+          {...listeners}
+        >
+          ⠿
+        </button>
         <button
           type="button"
           className="telemetry-graph__tab accordion-tab"
@@ -100,6 +140,17 @@ export default function TelemetryPanel({ store, storageKey = "gt7:telemetry-card
     commit({ ...cur, cards: { ...cur.cards, [key]: { ...s, hidden } } });
   };
 
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const cur = cfgRef.current;
+    commit({ ...cur, order: reorder(cur.order, String(active.id), String(over.id)) });
+  };
+
   const cards = cfg.order.map(getCard).filter((c): c is CardDef => !!c);
 
   return (
@@ -108,17 +159,21 @@ export default function TelemetryPanel({ store, storageKey = "gt7:telemetry-card
         <span className="heading">Telemetry</span>
       </div>
       <div className="telemetry-panel__list">
-        {cards.map(card => (
-          <TelemetryCard
-            key={card.key}
-            card={card}
-            store={store}
-            state={cardState(card.key)}
-            onToggleCollapse={() => toggleCollapse(card.key)}
-            onToggleSeries={sk => toggleSeries(card.key, sk)}
-            onRemove={() => remove(card.key)}
-          />
-        ))}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={cfg.order} strategy={verticalListSortingStrategy}>
+            {cards.map(card => (
+              <TelemetryCard
+                key={card.key}
+                card={card}
+                store={store}
+                state={cardState(card.key)}
+                onToggleCollapse={() => toggleCollapse(card.key)}
+                onToggleSeries={sk => toggleSeries(card.key, sk)}
+                onRemove={() => remove(card.key)}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
       </div>
       <div className="telemetry-panel__footer">
         <button type="button" className="telemetry-panel__add" onClick={() => setPicking(true)}>+ Add graph</button>
