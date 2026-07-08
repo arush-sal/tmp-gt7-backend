@@ -1,3 +1,7 @@
+// jest-dom matchers (toBeInTheDocument, toBeDisabled, toHaveAttribute, ...) used by
+// component tests (e.g. GraphLegend.test.tsx).
+import "@testing-library/jest-dom/vitest";
+
 // Test-only polyfills for jsdom, which doesn't implement everything the browser does.
 // Guarded so this file is also safe to load under the default 'node' environment
 // (where `window` doesn't exist at all).

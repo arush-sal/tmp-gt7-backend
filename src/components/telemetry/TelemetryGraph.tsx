@@ -20,6 +20,7 @@ const CHANNEL_COLOR: Record<Channel, string> = {
   tyreRR: "#2ed16a", // green
   fuel: "#2ed16a",   // green
 };
+const MEDIAN_COLOR = "#9095a0";
 
 // uPlot's TS types declare AlignedData as tuples of number[] | TypedArray. columns() returns
 // [xs, ...perChannel]; a channel value can be NaN (historyStore uses NaN for a missing sample,
@@ -38,6 +39,8 @@ interface Props {
   label: string;
   unit?: string;
   id?: string; // applied to the body root so the card's toggle can aria-controls it (no extra wrapper)
+  median?: boolean;      // single-series only: draw a median trace
+  hidden?: string[];     // series keys turned off
 }
 
 /**
@@ -51,7 +54,7 @@ interface Props {
  *    teardown/remount window can't call setData on an already-destroyed instance.
  *  - cleanup always runs: cancelAnimationFrame -> ro.disconnect -> u.destroy.
  */
-export default function TelemetryGraph({ store, channels, label, unit, id }: Props) {
+export default function TelemetryGraph({ store, channels, label, unit, id, median, hidden }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const uRef = useRef<uPlot | null>(null);
 
@@ -61,6 +64,31 @@ export default function TelemetryGraph({ store, channels, label, unit, id }: Pro
   storeRef.current = store;
   const channelsRef = useRef(channels);
   channelsRef.current = channels;
+  const medianRef = useRef(median);
+  medianRef.current = median;
+  const hiddenRef = useRef(hidden ?? []);
+  hiddenRef.current = hidden ?? [];
+
+  // Returns [{key, stroke, dash}] in the order their data columns appear.
+  const seriesSpec = () => {
+    const chs = channelsRef.current;
+    if (medianRef.current && chs.length === 1) {
+      return [
+        { key: "actual", stroke: CHANNEL_COLOR[chs[0]], dash: undefined as number[] | undefined },
+        { key: "median", stroke: MEDIAN_COLOR, dash: [4, 4] },
+      ];
+    }
+    return chs.map(c => ({ key: c as string, stroke: CHANNEL_COLOR[c], dash: undefined as number[] | undefined }));
+  };
+
+  const dataCols = () => {
+    const chs = channelsRef.current;
+    const cols = storeRef.current.columns(chs); // [xs, ...actuals]
+    if (medianRef.current && chs.length === 1) {
+      return [cols[0], cols[1], storeRef.current.medianColumn(chs[0])];
+    }
+    return cols;
+  };
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -78,11 +106,13 @@ export default function TelemetryGraph({ store, channels, label, unit, id }: Pro
       cursor: { show: false },
       series: [
         {},
-        ...channelsRef.current.map(c => ({
-          label: c,
-          stroke: CHANNEL_COLOR[c],
+        ...seriesSpec().map(s => ({
+          label: s.key,
+          stroke: s.stroke,
+          dash: s.dash,
           width: 1.5,
           points: { show: false },
+          show: !hiddenRef.current.includes(s.key),
         })),
       ],
       axes: [
@@ -95,7 +125,7 @@ export default function TelemetryGraph({ store, channels, label, unit, id }: Pro
       if (uRef.current) return;
       const u = new uPlot(
         buildOptions(width, height),
-        toAligned(storeRef.current.columns(channelsRef.current)),
+        toAligned(dataCols()),
         container,
       );
       uRef.current = u;
@@ -104,7 +134,7 @@ export default function TelemetryGraph({ store, channels, label, unit, id }: Pro
         if (!mounted) return;
         // resetScales left at default (true) so the x/y axes auto-follow the growing buffer;
         // passing false froze the scale at the empty seed range -> the line rendered off-view.
-        u.setData(toAligned(storeRef.current.columns(channelsRef.current)));
+        u.setData(toAligned(dataCols()));
         rafId = requestAnimationFrame(tick);
       };
       rafId = requestAnimationFrame(tick);
@@ -133,6 +163,16 @@ export default function TelemetryGraph({ store, channels, label, unit, id }: Pro
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reflect `hidden` onto the built chart without rebuilding it.
+  useLayoutEffect(() => {
+    const u = uRef.current;
+    if (!u) return;
+    const spec = medianRef.current && channelsRef.current.length === 1
+      ? ["actual", "median"]
+      : channelsRef.current.map(c => c as string);
+    spec.forEach((key, i) => u.setSeries(i + 1, { show: !(hidden ?? []).includes(key) }));
+  }, [hidden]);
 
   return (
     <div className="telemetry-graph__body" id={id}>
