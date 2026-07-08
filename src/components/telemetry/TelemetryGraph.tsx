@@ -6,6 +6,12 @@ import { CHANNEL_COLOR, MEDIAN_COLOR } from "./graphColors";
 // REFERENCE_COLOR (cyan, see graphColors.ts) is the intended stroke for the reference series
 // once it ships from the backend RKB. Not imported here — no reference data column exists yet.
 
+// Shared cursor-sync group: every telemetry chart joins it (same key) and syncs on the x scale
+// only, so hovering one card lines up the crosshair + value readout at the same lap-time x on all
+// cards. y is NOT synced (each metric has its own y-range). Module-level singleton = one group for
+// the whole telemetry panel.
+const CURSOR_SYNC = uPlot.sync("gt7-telemetry");
+
 // uPlot's TS types declare AlignedData as tuples of number[] | TypedArray. columns() returns
 // [xs, ...perChannel]; a channel value can be NaN (historyStore uses NaN for a missing sample,
 // e.g. delta before a reference lap). uPlot's gap marker is null, and NaN would poison its
@@ -132,6 +138,9 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
       const pad = 10;
       const ow = u.over.clientWidth, oh = u.over.clientHeight;
       const tw = tip.offsetWidth, th = tip.offsetHeight;
+      // On sync RECEIVER cards (not under the mouse) y isn't synced, so `top` is uPlot's
+      // proportional mirror of the source card's mouse-height ratio, not this card's data point —
+      // fine for placing the box (x is what's meaningful); the row VALUES are the card's own.
       const ty0 = top ?? 0;
       let tx = left + pad; if (tx + tw > ow) tx = left - tw - pad; if (tx < 0) tx = 0;
       let ty = ty0 + pad; if (ty + th > oh) ty = ty0 - th - pad; if (ty < 0) ty = 0;
@@ -146,8 +155,13 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
       scales: { x: { time: false } },
       legend: { show: false },
       // Crosshair on hover; drag-zoom disabled (the rAF loop auto-rescales a live chart, so a
-      // drag-zoom would just snap back and feel broken).
-      cursor: { show: true, drag: { x: false, y: false } },
+      // drag-zoom would just snap back and feel broken). `sync` links every card's cursor on the
+      // x scale so all readouts track the same lap-time position (see CURSOR_SYNC).
+      cursor: {
+        show: true,
+        drag: { x: false, y: false },
+        sync: { key: CURSOR_SYNC.key, scales: ["x", null], setSeries: false },
+      },
       hooks: { setCursor: [onCursor] },
       series: [
         {},
