@@ -549,6 +549,27 @@ body {
   width: 100%;
 }
 
+/* Hover readout box (see TelemetryGraph onCursor). Lives inside uPlot's u.over, positioned by
+   cursor.left/top; pointer-events:none so it never steals the hover it's reporting. */
+.telemetry-graph__tip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-1);
+  box-shadow: var(--shadow);
+  white-space: nowrap;
+}
+.telemetry-graph__tip-x { display: block; color: var(--text-2); font-size: 10px; margin-bottom: 2px; }
+.telemetry-graph__tip-row { display: flex; align-items: center; gap: 5px; }
+.telemetry-graph__tip-row i { width: 9px; height: 2px; border-radius: 1px; display: inline-block; flex-shrink: 0; }
+
 /* ── Custom Graphs: add-picker + per-card remove (Task 6) ────────────────── */
 
 .telemetry-graph__tabrow {

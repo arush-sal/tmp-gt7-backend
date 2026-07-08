@@ -17,6 +17,12 @@ function toAligned(cols: number[][]): uPlot.AlignedData {
   return clean as unknown as uPlot.AlignedData;
 }
 
+// Hover-tooltip value formatting: gear (no unit) reads as an integer; everything else to 1 dp.
+function fmtTipValue(v: number, unit: string): string {
+  const n = unit === "" ? String(Math.round(v)) : v.toFixed(1);
+  return unit ? `${n} ${unit}` : n;
+}
+
 interface Props {
   store: HistoryStore;
   channels: Channel[];
@@ -52,6 +58,8 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
   medianRef.current = median;
   const hiddenRef = useRef(hidden ?? []);
   hiddenRef.current = hidden ?? [];
+  const unitRef = useRef(unit ?? "");
+  unitRef.current = unit ?? "";
 
   // Returns [{key, stroke, dash}] in the order their data columns appear.
   const seriesSpec = () => {
@@ -81,13 +89,66 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
     let mounted = true;
     let rafId = 0;
     let ro: ResizeObserver | null = null;
+    let tip: HTMLDivElement | null = null; // hover readout, created in init(), attached to u.over
+
+    // Fills/positions the hover tooltip from the cursor's data index. Values are read from the
+    // live data columns, so the readout is exact for whatever the rAF loop last plotted.
+    const onCursor = (u: uPlot) => {
+      if (!tip) return;
+      const { idx, left, top } = u.cursor;
+      if (idx == null || left == null || left < 0) { tip.style.display = "none"; return; }
+      const xv = u.data[0][idx];
+      if (xv == null) { tip.style.display = "none"; return; }
+      // Build with safe DOM methods (no innerHTML): all text goes through textContent, so even
+      // though every value here is our own trusted palette/label/number, there is no HTML sink.
+      const frag = document.createDocumentFragment();
+      const xEl = document.createElement("span");
+      xEl.className = "telemetry-graph__tip-x";
+      xEl.textContent = `${(xv as number).toFixed(1)}s`;
+      frag.appendChild(xEl);
+      let any = false;
+      for (let i = 1; i < u.series.length; i++) {
+        const s = u.series[i];
+        if (!s.show) continue;
+        const v = u.data[i]?.[idx];
+        if (v == null || !Number.isFinite(v)) continue;
+        any = true;
+        const row = document.createElement("span");
+        row.className = "telemetry-graph__tip-row";
+        const sw = document.createElement("i");
+        if (typeof s.stroke === "string") sw.style.background = s.stroke;
+        row.appendChild(sw);
+        // The actual series' internal key is "actual" but the legend labels it "current" — match it.
+        const dispLabel = s.label === "actual" ? "current" : (s.label ?? "");
+        row.appendChild(document.createTextNode(`${dispLabel} ${fmtTipValue(v as number, unitRef.current)}`));
+        frag.appendChild(row);
+      }
+      if (!any) { tip.style.display = "none"; return; }
+      tip.replaceChildren(frag);
+      tip.style.display = "block";
+      // Measure the rendered box and clamp on BOTH axes so it never clips against the card's
+      // overflow:hidden — place to the cursor's right/below by default, flip left/above near an
+      // edge, then hard-clamp into u.over. (offsetWidth read forces a reflow, negligible here.)
+      const pad = 10;
+      const ow = u.over.clientWidth, oh = u.over.clientHeight;
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      const ty0 = top ?? 0;
+      let tx = left + pad; if (tx + tw > ow) tx = left - tw - pad; if (tx < 0) tx = 0;
+      let ty = ty0 + pad; if (ty + th > oh) ty = ty0 - th - pad; if (ty < 0) ty = 0;
+      tip.style.transform = "none";
+      tip.style.left = `${tx}px`;
+      tip.style.top = `${ty}px`;
+    };
 
     const buildOptions = (width: number, height: number): uPlot.Options => ({
       width,
       height,
       scales: { x: { time: false } },
       legend: { show: false },
-      cursor: { show: false },
+      // Crosshair on hover; drag-zoom disabled (the rAF loop auto-rescales a live chart, so a
+      // drag-zoom would just snap back and feel broken).
+      cursor: { show: true, drag: { x: false, y: false } },
+      hooks: { setCursor: [onCursor] },
       series: [
         {},
         ...seriesSpec().map(s => ({
@@ -113,6 +174,13 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
         container,
       );
       uRef.current = u;
+
+      // Hover readout: a positioned box inside uPlot's overlay (u.over), so cursor.left/top map
+      // directly to its coordinates. Torn down automatically when u.destroy() removes u.over.
+      tip = document.createElement("div");
+      tip.className = "telemetry-graph__tip";
+      tip.style.display = "none";
+      u.over.appendChild(tip);
 
       const tick = () => {
         if (!mounted) return;
