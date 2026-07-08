@@ -441,7 +441,7 @@ body {
 }
 .accordion-tab:hover { background: var(--surface-3); }
 
-.graph-legend  { display: flex; gap: 6px; margin-top: 8px; flex-shrink: 0; padding: 0 10px 8px; }
+.graph-legend  { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; flex-shrink: 0; padding: 0 10px 8px; }
 
 /* ── Floating panel shell (react-rnd) ───────────────────────────────────────
    Rnd sets inline position/size on this element directly; we only style its
