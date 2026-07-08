@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { Channel, HistoryStore } from "../../lib/historyStore";
@@ -163,6 +163,17 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Dev guard: series are built once at mount; changing channels/median without a remount
+  // (new key) would desync series metadata from the per-frame data columns.
+  const builtKey = useRef<string | null>(null);
+  useEffect(() => {
+    const k = `${channels.join(",")}|${median ? 1 : 0}`;
+    if (builtKey.current === null) builtKey.current = k;
+    else if (builtKey.current !== k && import.meta.env?.DEV) {
+      console.warn(`TelemetryGraph: channels/median changed after mount (${builtKey.current} -> ${k}). Key this component by its card to force a remount.`);
+    }
+  }, [channels, median]);
 
   // Reflect `hidden` onto the built chart without rebuilding it.
   useLayoutEffect(() => {
