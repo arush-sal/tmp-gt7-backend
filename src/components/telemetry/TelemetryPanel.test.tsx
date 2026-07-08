@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, fireEvent } from "@testing-library/react";
 import TelemetryPanel from "./TelemetryPanel";
 import { createHistoryStore } from "../../lib/historyStore";
 
@@ -28,5 +28,30 @@ describe("TelemetryPanel", () => {
   it("gives single-series cards a median chip", () => {
     render(<TelemetryPanel store={createHistoryStore()} />);
     expect(screen.getAllByRole("button", { name: /median/i }).length).toBeGreaterThan(0);
+  });
+
+  it("persists a removed card across remount", () => {
+    const KEY = "gt7:test-panel";
+    localStorage.clear();
+    const store = createHistoryStore();
+    const { unmount } = render(<TelemetryPanel store={store} storageKey={KEY} />);
+    fireEvent.click(screen.getByRole("button", { name: /remove Speed/i }));
+    expect(screen.queryByText(/^Speed$/)).toBeNull();
+    unmount();
+    render(<TelemetryPanel store={store} storageKey={KEY} />);
+    expect(screen.queryByText(/^Speed$/)).toBeNull();
+  });
+
+  it("adds a card from the picker and persists it across remount", () => {
+    const KEY = "gt7:test-panel-add";
+    localStorage.clear();
+    const store = createHistoryStore();
+    const { unmount } = render(<TelemetryPanel store={store} storageKey={KEY} />);
+    fireEvent.click(screen.getByRole("button", { name: /add graph/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^RPM$/i }));
+    expect(screen.getByText(/^RPM$/)).toBeInTheDocument();
+    unmount();
+    render(<TelemetryPanel store={store} storageKey={KEY} />);
+    expect(screen.getByText(/^RPM$/)).toBeInTheDocument(); // survived reload
   });
 });

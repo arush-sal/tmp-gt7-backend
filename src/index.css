@@ -463,6 +463,7 @@ body {
 /* ── Telemetry panel (uPlot graphs) — single-metric accordion cards, floating ── */
 
 .telemetry-panel {
+  position: relative; /* anchors the .graph-picker overlay */
   flex: 1;
   height: 100%; /* fill react-rnd's sized box even if that box isn't itself a flex parent */
   display: flex;
@@ -544,6 +545,94 @@ body {
   flex: 1;
   min-height: 110px; /* floor so the ResizeObserver always sees non-zero -> uPlot constructs; flex:1 grows it on resize */
   width: 100%;
+}
+
+/* ── Custom Graphs: add-picker + per-card remove (Task 6) ────────────────── */
+
+.telemetry-graph__tabrow {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.telemetry-graph__tabrow .telemetry-graph__tab { flex: 1; }
+
+.telemetry-graph__remove,
+.graph-picker__close {
+  background: var(--surface-2);
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 12px;
+  align-self: stretch;
+}
+.telemetry-graph__remove:hover,
+.graph-picker__close:hover { background: var(--surface-3); color: var(--text-2); }
+
+.telemetry-panel__footer {
+  flex-shrink: 0;
+  padding-top: 5px;
+}
+
+.telemetry-panel__add {
+  width: 100%;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  font-family: var(--ui);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.telemetry-panel__add:hover { background: var(--surface-2); color: var(--text-2); }
+
+.graph-picker {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-1, var(--bg));
+  overflow: auto;
+  z-index: 2;
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-picker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.graph-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+}
+.graph-picker__list li button {
+  width: 100%;
+  text-align: left;
+  background: var(--surface-2);
+  border: none;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-family: var(--ui);
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.graph-picker__list li button:hover:not([disabled]) { background: var(--surface-3); }
+.graph-picker__list li button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--text-muted);
 }
 
 /* ── Corner detail panel ─────────────────────────────────────────────────── */
