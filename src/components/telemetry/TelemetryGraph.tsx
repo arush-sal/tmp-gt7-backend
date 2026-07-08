@@ -14,6 +14,11 @@ const CHANNEL_COLOR: Record<Channel, string> = {
   speed: "#1e6fd9",      // blue
   boost: "#b14fff",      // purple
   delta: "#f5d020",      // amber
+  tyreFL: "#e10600", // red    (compound-agnostic per-corner colours)
+  tyreFR: "#f5d020", // amber
+  tyreRL: "#1e6fd9", // blue
+  tyreRR: "#2ed16a", // green
+  fuel: "#2ed16a",   // green
 };
 
 // uPlot's TS types declare AlignedData as tuples of number[] | TypedArray. columns() returns
