@@ -2,25 +2,9 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { Channel, HistoryStore } from "../../lib/historyStore";
-
-// Palette per-channel stroke colours (literal hex — matches the wireframe colour key,
-// theme-invariant like the rest of the delta palette).
-const CHANNEL_COLOR: Record<Channel, string> = {
-  throttle: "#2ed16a", // green
-  brake: "#e10600",    // red
-  clutch: "#f5d020",   // amber
-  rpm: "#1e6fd9",       // blue
-  gear: "#b14fff",      // purple
-  speed: "#1e6fd9",      // blue
-  boost: "#b14fff",      // purple
-  delta: "#f5d020",      // amber
-  tyreFL: "#e10600", // red    (compound-agnostic per-corner colours)
-  tyreFR: "#f5d020", // amber
-  tyreRL: "#1e6fd9", // blue
-  tyreRR: "#2ed16a", // green
-  fuel: "#2ed16a",   // green
-};
-const MEDIAN_COLOR = "#9095a0";
+import { CHANNEL_COLOR, MEDIAN_COLOR } from "./graphColors";
+// REFERENCE_COLOR (cyan, see graphColors.ts) is the intended stroke for the reference series
+// once it ships from the backend RKB. Not imported here — no reference data column exists yet.
 
 // uPlot's TS types declare AlignedData as tuples of number[] | TypedArray. columns() returns
 // [xs, ...perChannel]; a channel value can be NaN (historyStore uses NaN for a missing sample,
@@ -75,7 +59,7 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
     if (medianRef.current && chs.length === 1) {
       return [
         { key: "actual", stroke: CHANNEL_COLOR[chs[0]], dash: undefined as number[] | undefined },
-        { key: "median", stroke: MEDIAN_COLOR, dash: [4, 4] },
+        { key: "median", stroke: MEDIAN_COLOR, dash: undefined as number[] | undefined },
       ];
     }
     return chs.map(c => ({ key: c as string, stroke: CHANNEL_COLOR[c], dash: undefined as number[] | undefined }));
@@ -112,7 +96,7 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
           dash: s.dash,
           width: 1.5,
           points: { show: false },
-          show: !hiddenRef.current.includes(s.key),
+          show: s.key === "actual" ? true : !hiddenRef.current.includes(s.key),
         })),
       ],
       axes: [
@@ -182,7 +166,7 @@ export default function TelemetryGraph({ store, channels, label, unit, id, media
     const spec = medianRef.current && channelsRef.current.length === 1
       ? ["actual", "median"]
       : channelsRef.current.map(c => c as string);
-    spec.forEach((key, i) => u.setSeries(i + 1, { show: !(hidden ?? []).includes(key) }));
+    spec.forEach((key, i) => u.setSeries(i + 1, { show: key === "actual" ? true : !(hidden ?? []).includes(key) }));
   }, [hidden]);
 
   return (

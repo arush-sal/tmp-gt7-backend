@@ -3,11 +3,22 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import GraphLegend from "./GraphLegend";
 
 describe("GraphLegend — single-series", () => {
-  it("renders actual/median/reference and toggles a clicked series", () => {
+  it("renders median as a toggle button and calls onToggle('median') on click", () => {
     const onToggle = vi.fn();
     render(<GraphLegend variant="single" channels={["speed"]} hidden={[]} referenceAvailable={false} onToggle={onToggle} />);
     fireEvent.click(screen.getByRole("button", { name: /median/i }));
     expect(onToggle).toHaveBeenCalledWith("median");
+  });
+
+  it("does not render 'current' as a button, but its label is present", () => {
+    render(<GraphLegend variant="single" channels={["speed"]} hidden={[]} referenceAvailable={false} onToggle={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /current/i })).toBeNull();
+    expect(screen.getByText(/current/i)).toBeInTheDocument();
+  });
+
+  it("colours the median chip to match its line", () => {
+    render(<GraphLegend variant="single" channels={["speed"]} hidden={[]} referenceAvailable={false} onToggle={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /median/i }).style.color).toBe("rgb(255, 140, 0)");
   });
 
   it("disables the reference chip until reference is available", () => {

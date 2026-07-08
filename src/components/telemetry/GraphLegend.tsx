@@ -1,4 +1,5 @@
 import type { Channel } from "../../lib/historyStore";
+import { CHANNEL_COLOR, MEDIAN_COLOR, REFERENCE_COLOR } from "./graphColors";
 
 interface Props {
   variant: "single" | "multi";
@@ -9,15 +10,17 @@ interface Props {
 }
 
 // A clickable legend. Single-series cards show actual/median/reference; multi-series cards show
-// one chip per channel. Reference is disabled (no data) until the backend ships it.
+// one chip per channel. Reference is disabled (no data) until the backend ships it. "current" is
+// compulsory (always visible) so it renders as a static, non-interactive chip rather than a toggle.
 export default function GraphLegend({ variant, channels, hidden, referenceAvailable, onToggle }: Props) {
-  const chip = (key: string, text: string, extra = "", disabled = false) => {
+  const chip = (key: string, text: string, color: string, disabled = false) => {
     const off = hidden.includes(key);
     return (
       <button
         key={key}
         type="button"
-        className={`chip ${extra} ${off ? "chip--off" : ""}`.trim()}
+        className={`chip ${off ? "chip--off" : ""}`.trim()}
+        style={{ color }}
         aria-pressed={disabled ? undefined : !off}
         aria-disabled={disabled || undefined}
         disabled={disabled}
@@ -28,14 +31,20 @@ export default function GraphLegend({ variant, channels, hidden, referenceAvaila
     );
   };
 
+  const staticChip = (key: string, text: string, color: string) => (
+    <span key={key} className="chip chip--static" style={{ color }}>
+      {text}
+    </span>
+  );
+
   if (variant === "multi") {
-    return <div className="graph-legend">{channels.map(c => chip(c, c))}</div>;
+    return <div className="graph-legend">{channels.map(c => chip(c, c, CHANNEL_COLOR[c]))}</div>;
   }
   return (
     <div className="graph-legend">
-      {chip("actual", "— current")}
-      {chip("median", "·· median", "chip--dashed chip--dim")}
-      {chip("reference", "— reference", "chip--dim", !referenceAvailable)}
+      {staticChip("actual", "— current", CHANNEL_COLOR[channels[0]])}
+      {chip("median", "— median", MEDIAN_COLOR)}
+      {chip("reference", "— reference", REFERENCE_COLOR, !referenceAvailable)}
     </div>
   );
 }

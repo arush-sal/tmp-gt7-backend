@@ -260,6 +260,7 @@ body {
 
 .chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .graph-legend .chip { background: none; border: 0; padding: 0 6px; font: inherit; cursor: pointer; }
+.graph-legend .chip--static { cursor: default; }
 
 /* ── Data rows ───────────────────────────────────────────────────────────── */
 
@@ -501,6 +502,7 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;            /* collapsed: keep header height, never shrink (fixes squished/inaccessible cards) */
 }
 
 /* Flex chain (2/4): only an EXPANDED card claims the list's spare height —

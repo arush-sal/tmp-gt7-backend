@@ -135,6 +135,7 @@ export default function TelemetryPanel({ store, storageKey = "gt7:telemetry-card
     commit({ ...cur, cards: { ...cur.cards, [key]: { ...s, collapsed: !s.collapsed } } });
   };
   const toggleSeries = (key: string, seriesKey: string) => {
+    if (seriesKey === "actual") return; // "current" is compulsory, never hideable
     const cur = cfgRef.current; const s = cardState(key);
     const hidden = s.hidden.includes(seriesKey) ? s.hidden.filter(x => x !== seriesKey) : [...s.hidden, seriesKey];
     commit({ ...cur, cards: { ...cur.cards, [key]: { ...s, hidden } } });
