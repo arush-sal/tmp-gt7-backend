@@ -5,7 +5,7 @@ import shutil
 import pytest
 
 from rkb.sources import load_kb
-from rkb.victorydash import boundary_from_vd, corners_from_vd, width_from_vd, affine_from_vd
+from rkb.victorydash import boundary_from_vd, corners_from_vd, width_from_vd, affine_from_vd, decode_lap
 
 VD_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..",
@@ -16,6 +16,19 @@ KB_DIR = "/home/salil/go/src/github.com/arush-sal/gt7/kb/track-layouts-svg"
 skip_if_missing = pytest.mark.skipif(
     not os.path.exists(VD_DIR) or shutil.which("go") is None,
     reason="VictoryDash interlagos fixture or vd2csv (go) not available",
+)
+
+# Suzuka is a figure-8 (self-crossing track): nearest-neighbor left/right
+# boundary pairing can jump to the OTHER side of the track where it crosses
+# itself, producing implausible sub-metre cross-sections if not guarded
+# against (see rkb.width.measure).
+SUZUKA_VD_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "..",
+    "supporting-data", "victorydash", "week-29-daily-c-ryun",
+)
+skip_if_suzuka_missing = pytest.mark.skipif(
+    not os.path.exists(SUZUKA_VD_DIR),
+    reason="VictoryDash suzuka fixture not available",
 )
 
 
@@ -32,6 +45,38 @@ def test_width_from_vd_is_a_real_track_width():
     w = width_from_vd(VD_DIR)
     assert w["source"] == "victorydash"
     assert 5 < w["width_m"] < 25
+
+
+def test_decode_lap_default_output_stays_out_of_the_read_only_vd_dir(tmp_path, monkeypatch):
+    # vd_dir under supporting-data/victorydash/<slug>/ is read-only input data;
+    # decode_lap must not write telemetry.csv into it by default.
+    vd_dir = tmp_path / "some-vd-slug"
+    vd_dir.mkdir()
+    (vd_dir / "telemetry.json").write_text("{}")
+
+    recorded = {}
+
+    def fake_run(cmd, cwd=None, check=None):
+        recorded["cmd"] = cmd
+
+    monkeypatch.setattr("rkb.victorydash.subprocess.run", fake_run)
+
+    out = decode_lap(str(vd_dir))
+
+    assert str(vd_dir) not in out
+    assert "supporting-data" not in out
+    assert os.path.join("out", "vd-csv", "some-vd-slug.csv") in out
+    assert os.path.isdir(os.path.dirname(out))
+    # the produced CSV path passed through to vd2csv matches what decode_lap returned
+    assert recorded["cmd"][-1] == out
+
+
+@skip_if_suzuka_missing
+def test_width_from_vd_rejects_crossover_mispairing_on_suzuka():
+    w = width_from_vd(SUZUKA_VD_DIR)
+    assert w["source"] == "victorydash"  # only 14/5799 mis-pairings -- well above the fallback floor
+    assert w["min_m"] >= 3.0
+    assert w["max_m"] <= 40.0
 
 
 @skip_if_missing

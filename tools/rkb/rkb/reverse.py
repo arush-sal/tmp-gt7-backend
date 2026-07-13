@@ -21,7 +21,10 @@ def _flip_corner(corner: dict, turn: int) -> dict:
     if "direction" in out and out["direction"] in _FLIP:
         out["direction"] = _FLIP[out["direction"]]
     if out.get("heading_change_deg") is not None:
-        out["heading_change_deg"] = -out["heading_change_deg"]
+        # Kinematic corners emit heading_change_deg as an UNSIGNED magnitude
+        # (direction is carried separately via `direction`, flipped above).
+        # Negating it would produce a negative "magnitude"; keep it a magnitude.
+        out["heading_change_deg"] = abs(out["heading_change_deg"])
     out["phases"] = None
     out["source"] = "derived-reverse"
     return out
@@ -32,12 +35,17 @@ def _derive_corners(forward_corners: list) -> list:
     return [_flip_corner(c, i) for i, c in enumerate(reversed_corners, start=1)]
 
 
-def _derive_sectors(forward_sectors: list) -> list:
+def _derive_sectors(forward_sectors: list, num_corners: int) -> list:
     reversed_sectors = list(reversed(forward_sectors))
     out = []
     for i, s in enumerate(reversed_sectors, start=1):
         s2 = dict(s)
         s2["sector"] = f"S{i}"
+        turns = s.get("turns")
+        if turns:
+            # forward turn t -> reverse turn (N+1-t); re-sort ascending so the
+            # list still reads in the (new, reverse) direction-of-travel order.
+            s2["turns"] = sorted(num_corners + 1 - t for t in turns)
         out.append(s2)
     return out
 
@@ -59,7 +67,11 @@ def derive_reverse(forward_record: dict, reverse_ident: dict) -> dict:
     corners = _derive_corners(forward_record["corners"])
 
     own_sectors = reverse_ident.get("sectors")
-    sectors = own_sectors if own_sectors else _derive_sectors(forward_record["sectors"])
+    sectors = (
+        own_sectors
+        if own_sectors
+        else _derive_sectors(forward_record["sectors"], len(forward_record["corners"]))
+    )
 
     confidence = {
         "coordinate_usability": forward_record["confidence"]["coordinate_usability"],

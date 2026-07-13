@@ -21,11 +21,16 @@ import numpy as np
 
 from rkb.affine import Affine, fit_bbox, predict_affine
 from rkb.corners import detect_corners
-from rkb.width import from_boundaries
+from rkb.width import measure
 
 # backend root = .../backend, computed relative to this file
 # (this file: backend/tools/rkb/rkb/victorydash.py)
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]
+
+# tool root = .../backend/tools/rkb, computed relative to this file. Decoded
+# CSVs default to here (out/vd-csv/), never into supporting-data/victorydash/
+# -- that directory holds read-only input data.
+_TOOL_ROOT = Path(__file__).resolve().parents[1]
 
 
 def decode_lap(vd_dir, csv_out=None) -> str:
@@ -36,7 +41,9 @@ def decode_lap(vd_dir, csv_out=None) -> str:
     vd_dir = Path(vd_dir)
     telemetry_path = vd_dir / "telemetry.json"
     if csv_out is None:
-        csv_out = vd_dir / "telemetry.csv"
+        out_dir = _TOOL_ROOT / "out" / "vd-csv"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        csv_out = out_dir / f"{vd_dir.name}.csv"
     csv_out = str(csv_out)
     subprocess.run(
         ["go", "run", "./tools/rkb/vd2csv", str(telemetry_path), csv_out],
@@ -96,10 +103,17 @@ def boundary_from_vd(vd_dir) -> dict:
     return out
 
 
-def width_from_vd(vd_dir) -> dict:
-    """Measured track width from a VictoryDash replay's true left/right edges."""
+def width_from_vd(vd_dir, outline_stroke_px=None, affine=None) -> dict:
+    """Measured track width from a VictoryDash replay's true left/right edges.
+
+    Discards implausible crossover-mispaired cross-sections (see
+    `rkb.width.measure`); on a self-crossing track (e.g. Suzuka's figure-8)
+    where nearest-neighbor left/right pairing mostly jumps to the OTHER side
+    of the track, falls back to the SVG-stroke width when `outline_stroke_px`
+    and `affine` are supplied.
+    """
     boundary = boundary_from_vd(vd_dir)
-    return from_boundaries(boundary["left"], boundary["right"])
+    return measure(boundary["left"], boundary["right"], stroke_px=outline_stroke_px, affine=affine)
 
 
 def affine_from_vd(vd_dir, outline_px) -> Affine:

@@ -20,8 +20,7 @@ def coordinate_usability(affine, join, corner_match) -> str:
     if affine.source == "victorydash":
         return "generated-reliable"
     ok_affine = (
-        (affine.source == "victorydash" and (affine.rms_m is not None and affine.rms_m <= 5))
-        or (affine.source in ("procrustes",) and (affine.rms_m is not None and affine.rms_m <= 8))
+        (affine.source in ("procrustes",) and (affine.rms_m is not None and affine.rms_m <= 8))
         or (affine.source == "bbox_from_driven_trace"
             and (affine.sf_anchor_err_m is not None and affine.sf_anchor_err_m <= 10)
             and (affine.scale_sanity_pct is not None and affine.scale_sanity_pct <= 3))

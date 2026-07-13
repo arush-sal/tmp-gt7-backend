@@ -111,9 +111,11 @@ def test_derive_reverse_reverses_and_renumbers_corners():
     assert [c["turn"] for c in corners] == [1, 2, 3]
 
     # old T3 (left, apex 50,60) -> new T1, direction flipped to right
+    # heading_change_deg stays an unsigned magnitude (kinematic convention) --
+    # direction alone carries sense, so it is NOT negated on flip.
     assert corners[0]["apex_world"] == [50.0, 60.0]
     assert corners[0]["direction"] == "right"
-    assert corners[0]["heading_change_deg"] == -100.0
+    assert corners[0]["heading_change_deg"] == 100.0
 
     # old T2 (right) -> new T2, direction flipped to left
     assert corners[1]["apex_world"] == [30.0, 40.0]
@@ -123,7 +125,7 @@ def test_derive_reverse_reverses_and_renumbers_corners():
     # old T1 (left, apex 10,20) -> new T3, direction flipped to right
     assert corners[2]["apex_world"] == [10.0, 20.0]
     assert corners[2]["direction"] == "right"
-    assert corners[2]["heading_change_deg"] == -90.0
+    assert corners[2]["heading_change_deg"] == 90.0
 
 
 def test_derive_reverse_drops_direction_specific_corner_fields():
@@ -166,10 +168,13 @@ def test_derive_reverse_uses_own_sectors_when_given():
 def test_derive_reverse_falls_back_to_reversed_forward_sectors():
     rec = derive_reverse(_forward_record(), _reverse_ident())
     assert [s["sector"] for s in rec["sectors"]] == ["S1", "S2"]
-    # reversed order of forward's sector list, renumbered
-    assert rec["sectors"][0]["turns"] == [2, 3]
+    # reversed order of forward's sector list, renumbered; turns remapped too:
+    # for N=3 corners, forward turn t -> reverse turn (N+1-t) = (4-t).
+    # old S2 (turns [2,3]) -> new S1, turns become sorted([4-2, 4-3]) = [1, 2]
+    assert rec["sectors"][0]["turns"] == [1, 2]
     assert rec["sectors"][0]["label_world"] == [35.0, 45.0]
-    assert rec["sectors"][1]["turns"] == [1, 2]
+    # old S1 (turns [1,2]) -> new S2, turns become sorted([4-1, 4-2]) = [2, 3]
+    assert rec["sectors"][1]["turns"] == [2, 3]
     assert rec["sectors"][1]["label_world"] == [15.0, 25.0]
 
 

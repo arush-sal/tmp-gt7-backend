@@ -62,8 +62,10 @@ def build_track(ref, kb_entry, telemetry_rows=None, victorydash=None, vd_dir=Non
         # (uniform scale+translation, no rotation — see rkb.victorydash.affine_from_vd)
         # + corners kinematically detected off the replay's own driven lap.
         boundary = victorydash_mod.boundary_from_vd(vd_dir)
-        width = victorydash_mod.width_from_vd(vd_dir)
         aff = victorydash_mod.affine_from_vd(vd_dir, outline_px)
+        width = victorydash_mod.width_from_vd(
+            vd_dir, outline_stroke_px=kb_entry.get("outline_stroke_px", 0.0), affine=aff
+        )
         corners = victorydash_mod.corners_from_vd(vd_dir)
     else:
         affine_inp = {
