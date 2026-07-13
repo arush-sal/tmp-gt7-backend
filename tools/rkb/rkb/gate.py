@@ -13,8 +13,11 @@ def coordinate_usability(affine, join, corner_match) -> str:
         return "generated-coarse"
     # VictoryDash supplies authoritative world coordinates (true cl/lb/rb + a real driven
     # lap); its affine only positions those onto a stylized SVG, so the SVG's own drawing
-    # inaccuracy (high rms_m) must not cap the tier. Exact join + corner match is enough.
-    if affine.source == "victorydash" and corner_match:
+    # inaccuracy (high rms_m) must not cap the tier. coordinate_usability is a COORDINATE-
+    # placement measure: it must not hinge on how many corners the kinematic detector found
+    # (a track-shape/detector concern), so corner_match is NOT required for this source —
+    # exact join alone is enough.
+    if affine.source == "victorydash":
         return "generated-reliable"
     ok_affine = (
         (affine.source == "victorydash" and (affine.rms_m is not None and affine.rms_m <= 5))
