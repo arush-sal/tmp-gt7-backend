@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from rkb.affine import Affine, fit_procrustes
+from rkb.affine import Affine, fit_bbox, predict_affine
 from rkb.corners import detect_corners
 from rkb.width import from_boundaries
 
@@ -105,12 +105,41 @@ def width_from_vd(vd_dir) -> dict:
 def affine_from_vd(vd_dir, outline_px) -> Affine:
     """Fit a world<->px affine from a VictoryDash replay's centreline against a KB SVG outline.
 
-    Both `cl` (VictoryDash centreline, world) and `outline_px` (KB SVG outline, px)
-    describe the same track path (not the racing line), making them the cleanest
-    correspondence available for a procrustes fit.
+    The world<->px relationship is a KNOWN uniform scale + translation (the SVG is a
+    plan-view drawing of the same track, same orientation) — there is NO rotation.
+    Procrustes is wrong here: it invents a rotation from the mismatched closed-curve
+    correspondence between the two independently-sampled polylines. Instead we bbox-align:
+    map the centreline's world bbox onto the outline's px bbox (`rkb.affine.fit_bbox`),
+    which yields scale + tx/tz with rot_deg=0.
+
+    `rms_m` is a *real* residual: for a sample of centreline points, project world->px and
+    measure the distance to the nearest outline vertex, converted back to metres. It reflects
+    how well the stylized SVG agrees with the true geometry and may be tens of metres — that
+    is expected for a drawing and must not be read as a fit failure.
     """
     with open(Path(vd_dir) / "track.json") as f:
         track = json.load(f)
-    aff = fit_procrustes(track["cl"], outline_px)
+    cl = np.asarray(track["cl"], dtype=float)
+    minx, minz = float(cl[:, 0].min()), float(cl[:, 1].min())
+    maxx, maxz = float(cl[:, 0].max()), float(cl[:, 1].max())
+    try:
+        aff = fit_bbox(outline_px, (minx, minz, maxx, maxz))
+    except ValueError:
+        # Anisotropic bbox (axes' scales disagree >5%) — the two shapes don't share a
+        # uniform scale. Fall back to the scale-only predictor tier (offset unresolved).
+        cl_length = float(np.hypot(*np.diff(cl, axis=0).T).sum())
+        op = np.asarray(outline_px, dtype=float)
+        outline_perimeter = float(np.hypot(*np.diff(op, axis=0).T).sum())
+        aff = predict_affine(outline_px, outline_perimeter, cl_length)
     aff.source = "victorydash"
+
+    # Real residual: project a sample of centreline points, take the distance to the
+    # nearest outline vertex, convert px->metres via the fitted scale, use the median.
+    op = np.asarray(outline_px, dtype=float)
+    residuals = []
+    for wx, wz in cl[::50]:
+        px, py = aff.world_to_px(wx, wz)
+        d = np.hypot(op[:, 0] - px, op[:, 1] - py).min()
+        residuals.append(d / aff.scale)
+    aff.rms_m = float(np.median(residuals)) if residuals else float("nan")
     return aff

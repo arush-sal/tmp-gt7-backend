@@ -11,6 +11,11 @@ def coordinate_usability(affine, join, corner_match) -> str:
         return "needs-capture"
     if join != "exact":
         return "generated-coarse"
+    # VictoryDash supplies authoritative world coordinates (true cl/lb/rb + a real driven
+    # lap); its affine only positions those onto a stylized SVG, so the SVG's own drawing
+    # inaccuracy (high rms_m) must not cap the tier. Exact join + corner match is enough.
+    if affine.source == "victorydash" and corner_match:
+        return "generated-reliable"
     ok_affine = (
         (affine.source == "victorydash" and (affine.rms_m is not None and affine.rms_m <= 5))
         or (affine.source in ("procrustes",) and (affine.rms_m is not None and affine.rms_m <= 8))

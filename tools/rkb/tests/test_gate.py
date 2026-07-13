@@ -11,6 +11,16 @@ def test_reliable_on_good_bbox_with_sf_and_corner_match():
                  sf_anchor_err_m=6.0, scale_sanity_pct=1.0)
     assert coordinate_usability(aff, join="exact", corner_match=True) == "generated-reliable"
 
+def test_victorydash_reliable_regardless_of_high_rms():
+    # VictoryDash supplies authoritative world coords; the SVG affine's own
+    # inaccuracy (high rms) must NOT cap the tier when join is exact + corners match.
+    aff = Affine(scale=0.6, tx=1, tz=2, source="victorydash", rms_m=40.0)
+    assert coordinate_usability(aff, join="exact", corner_match=True) == "generated-reliable"
+
+def test_victorydash_not_reliable_without_corner_match():
+    aff = Affine(scale=0.6, tx=1, tz=2, source="victorydash", rms_m=40.0)
+    assert coordinate_usability(aff, join="exact", corner_match=False) == "generated-coarse"
+
 def test_corner_count_tolerances():
     assert corner_count_ok(6, 6, "kinematic") is True
     assert corner_count_ok(72, 73, "kinematic") is True     # +-1
