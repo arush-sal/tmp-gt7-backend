@@ -1,0 +1,76 @@
+{
+  "slug": "high-speed-ring-2",
+  "track": "High Speed Ring Reverse",
+  "official_track_id": "ede05f",
+  "official_base_id": "9a42fb",
+  "country": "Japan",
+  "track_length": "2.70 miles",
+  "elevation_difference": "0.01 miles",
+  "number_of_turns": 6,
+  "longest_straight": "0.66 miles",
+  "sector_turns": "S1=1-2; S2=2-5; S3=5-6",
+  "source_png": "supporting-data/track-layouts/high-speed-ring-2.png",
+  "svg": "kb/track-layouts-svg/high-speed-ring-2.svg",
+  "turns": [],
+  "sectors": [
+    {
+      "sector": "S1",
+      "turns": [
+        1,
+        2
+      ]
+    },
+    {
+      "sector": "S2",
+      "turns": [
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "sector": "S3",
+      "turns": [
+        5,
+        6
+      ]
+    }
+  ],
+  "sector_labels": [
+    {
+      "sector": "S2",
+      "element_id": "sector-s2",
+      "x": 631,
+      "y": 834
+    },
+    {
+      "sector": "S3",
+      "element_id": "sector-s3",
+      "x": 90,
+      "y": 402
+    }
+  ],
+  "distance_labels": [
+    {
+      "element_id": "distance-label",
+      "x": 569,
+      "y": 239,
+      "text": "1060m"
+    },
+    {
+      "element_id": "distance-label-2",
+      "x": 717,
+      "y": 241,
+      "text": "(0.66miles)"
+    }
+  ],
+  "paths": {
+    "track_outline": "track-outline",
+    "direction_arrow": "direction-arrow"
+  },
+  "warnings": [
+    "no turn labels detected",
+    "detected sector labels S2,S3 but expected S1,S2,S3"
+  ]
+}

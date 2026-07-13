@@ -1,0 +1,3 @@
+high-speed-ring,High Speed Ring
+high-speed-ring-2,High Speed Ring Reverse
+nurburgring-endurance-2,Nurburgring Endurance II
