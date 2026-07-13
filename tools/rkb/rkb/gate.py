@@ -16,8 +16,10 @@ def coordinate_usability(affine, join, corner_match) -> str:
     # inaccuracy (high rms_m) must not cap the tier. coordinate_usability is a COORDINATE-
     # placement measure: it must not hinge on how many corners the kinematic detector found
     # (a track-shape/detector concern), so corner_match is NOT required for this source —
-    # exact join alone is enough.
-    if affine.source == "victorydash":
+    # exact join alone is enough. Our own pcap captures ("capture") are the same kind of
+    # authoritative driven world coordinates -- no separate boundary file, but the trace
+    # itself is ground truth -- so they get the same treatment.
+    if affine.source in ("victorydash", "capture"):
         return "generated-reliable"
     ok_affine = (
         (affine.source in ("procrustes",) and (affine.rms_m is not None and affine.rms_m <= 8))

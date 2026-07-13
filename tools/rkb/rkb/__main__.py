@@ -41,6 +41,20 @@ _VD_IDENTITY_MAP = {
 
 _VD_ROOT = os.path.join(_GT7_ROOT, "supporting-data", "victorydash")
 
+# rkb slug -> our own raw pcap packet capture (under
+# <gt7 root>/supporting-data/raw-packet-captures/). These are OUR captures --
+# authoritative driven world coordinates (like VictoryDash telemetry, but with
+# no separate boundary file) -- decoded via pcap2csv and fed through
+# rkb.capture. Resolves a needs-capture track's affine + kinematic corners.
+_RAW_CAPTURE_ROOT = os.path.join(_GT7_ROOT, "supporting-data", "raw-packet-captures")
+_CAPTURE_MAP = {
+    "grand-valley-south-2": os.path.join(
+        _RAW_CAPTURE_ROOT,
+        "grand-valley-south-reverse-4laps-1stRight-2ndLeft_with_pit_and_track_width-3rdLeft_with_pit_4thCentre.pcapng",
+    ),
+    "brands-hatch-indy": os.path.join(_RAW_CAPTURE_ROOT, "brand-hatch-indy-3laps-3rd-clean.pcapng"),
+}
+
 
 def _load_telemetry_map() -> dict:
     telemetry_map = {}
@@ -59,6 +73,10 @@ def _load_vd_map() -> dict:
     return vd_map
 
 
+def _load_capture_map() -> dict:
+    return {slug: p for slug, p in _CAPTURE_MAP.items() if os.path.isfile(p)}
+
+
 def main() -> None:
     build_all(
         kb_dir=KB_DIR,
@@ -67,6 +85,7 @@ def main() -> None:
         telemetry_map=_load_telemetry_map(),
         vd_map=_load_vd_map(),
         out_dir=OUT_DIR,
+        capture_map=_load_capture_map(),
     )
 
 

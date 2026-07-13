@@ -28,6 +28,17 @@ def test_victorydash_not_reliable_without_exact_join():
     aff = Affine(scale=0.6, tx=1, tz=2, source="victorydash", rms_m=40.0)
     assert coordinate_usability(aff, join="fuzzy", corner_match=True) == "generated-coarse"
 
+def test_capture_reliable_regardless_of_corner_match():
+    # Our own pcap captures give authoritative driven world coordinates (no
+    # separate boundary file, like victorydash's bbox tier) -- exact join alone
+    # is enough, corner_match is not required.
+    aff = Affine(scale=0.6, tx=1, tz=2, source="capture")
+    assert coordinate_usability(aff, join="exact", corner_match=False) == "generated-reliable"
+
+def test_capture_not_reliable_without_exact_join():
+    aff = Affine(scale=0.6, tx=1, tz=2, source="capture")
+    assert coordinate_usability(aff, join="fuzzy", corner_match=True) == "generated-coarse"
+
 def test_corner_count_tolerances():
     assert corner_count_ok(6, 6, "kinematic") is True
     assert corner_count_ok(72, 73, "kinematic") is True     # +-1

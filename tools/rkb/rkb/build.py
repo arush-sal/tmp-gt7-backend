@@ -9,6 +9,7 @@ import re
 
 from . import affine as affine_mod
 from . import boundary as boundary_mod
+from . import capture as capture_mod
 from . import corners as corners_mod
 from . import db as db_mod
 from . import gate as gate_mod
@@ -45,7 +46,7 @@ def _json_safe(obj):
     return obj
 
 
-def build_track(ref, kb_entry, telemetry_rows=None, victorydash=None, vd_dir=None) -> dict:
+def build_track(ref, kb_entry, telemetry_rows=None, victorydash=None, vd_dir=None, capture_csv=None) -> dict:
     outline_px = kb_entry.get("outline_px") or []
     outline_perimeter_px = _outline_perimeter_px(outline_px)
 
@@ -67,6 +68,16 @@ def build_track(ref, kb_entry, telemetry_rows=None, victorydash=None, vd_dir=Non
             vd_dir, outline_stroke_px=kb_entry.get("outline_stroke_px", 0.0), affine=aff
         )
         corners = victorydash_mod.corners_from_vd(vd_dir)
+    elif capture_csv is not None:
+        # Our own pcap capture: authoritative driven world coordinates resolve the
+        # affine (bbox fit against the KB SVG outline, like the bbox_from_driven_trace
+        # tier) and feed the kinematic corner detector -- but there is no separate
+        # measured boundary/width ground truth for our captures, so boundary/width
+        # still come from the SVG outline (derived), same as the generic KB-only path.
+        aff = capture_mod.affine_from_capture(capture_csv, outline_px)
+        corners = capture_mod.corners_from_capture(capture_csv)
+        boundary = boundary_mod.from_outline(outline_px, aff)
+        width = width_mod.from_svg_stroke(kb_entry.get("outline_stroke_px", 0.0), aff)
     else:
         affine_inp = {
             "victorydash_pts": victorydash_pts,
@@ -151,7 +162,7 @@ def _detect_by_norm(course_rows, detect_by_id):
 
 _VARIANT_SUFFIX = re.compile(r"\s+(reverse|clockwise|counterclockwise)\s*$", re.I)
 
-_RESOLVED_AFFINE_SOURCES = {"victorydash", "bbox_from_driven_trace"}
+_RESOLVED_AFFINE_SOURCES = {"victorydash", "bbox_from_driven_trace", "capture"}
 
 
 def _pair_core_name(name: str) -> str:
@@ -203,7 +214,7 @@ def _apply_reverse_pass(records: dict) -> None:
         records[weak_slug] = derived
 
 
-def build_all(kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir) -> None:
+def build_all(kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir, capture_map=None) -> None:
     kb = sources_mod.load_kb(kb_dir)
     kb_names = {slug: entry["name"] for slug, entry in kb.items()}
 
@@ -216,6 +227,16 @@ def build_all(kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir) ->
     rkb_dir = os.path.join(out_dir, "rkb")
     os.makedirs(rkb_dir, exist_ok=True)
 
+    # Decode each of our own pcap captures to CSV once up front, so build_track
+    # (called per-slug below) never re-invokes the Go decoder.
+    capture_map = capture_map or {}
+    capture_csv_map = {}
+    for slug, pcap_path in capture_map.items():
+        try:
+            capture_csv_map[slug] = capture_mod.decode_capture(pcap_path)
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully when a capture is missing/bad
+            print(f"skipping capture decode for {slug}: {exc}")
+
     records = {}
     vd_map = vd_map or {}
     for slug, ref in refs.items():
@@ -225,6 +246,7 @@ def build_all(kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir) ->
                 kb[slug],
                 telemetry_rows=telemetry_map.get(slug),
                 vd_dir=vd_map.get(slug),
+                capture_csv=capture_csv_map.get(slug),
             )
         except Exception as exc:  # noqa: BLE001 - degrade gracefully when externals are missing
             print(f"skipping {slug}: {exc}")
