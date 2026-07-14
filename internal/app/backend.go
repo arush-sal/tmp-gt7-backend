@@ -74,9 +74,25 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	})
 	defer traceStore.(*live.AsyncTraceStore).Close()
 
+	// Reference Knowledge: the read-only Track RKB DB. Default path $HOME/.garage/rkb.db; failing to
+	// open it is fatal (the /v1/tracks endpoints and live track-detect depend on it) rather than
+	// silently serving an empty RKB. Path is not a user config key -- a fixed convention. Opened here,
+	// ahead of the session sink fan-out, because the live TrackDetector sink needs it as its
+	// DetectionGeomProvider.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home dir for rkb: %w", err)
+	}
+	rkbPath := filepath.Join(home, ".garage", "rkb.db")
+	rkbStore, err := rkb.Open(rkbPath)
+	if err != nil {
+		return fmt.Errorf("open rkb %s: %w", rkbPath, err)
+	}
+	defer func() { _ = rkbStore.Close() }()
+
 	// Fan out the session stream to the lap segmenter + trace recorder (Processing), a logging sink,
-	// and the enrichment sink. Persistence failures are surfaced via error hooks (the Sink/Observe API
-	// is error-less).
+	// the enrichment sink, and the live track detector. Persistence failures are surfaced via error
+	// hooks (the Sink/Observe API is error-less).
 	segmenter := processing.NewLapSegmenter(lapStore)
 	segmenter.OnError = func(err error) { log.Error("lap persistence failed", zap.Error(err)) }
 	recorder := processing.NewTraceRecorder(traceStore)
@@ -88,7 +104,18 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	enrichSink := live.NewEnrichSink(analyzer, enrich, func(err error) { log.Error("enrichment failed", zap.Error(err)) })
 	defer enrichSink.Close()
 
-	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder, enrichSink)
+	// Live track detection: matches the driven path's shape against the RKB's reference geometry and
+	// writes the result into enrich only on a confident match (SetTrack), leaving prior state alone
+	// otherwise.
+	detector := processing.NewTrackDetector(rkbStore, enrich, log)
+
+	// Sink order matters for enrichSink and detector: enrichSink's full-snapshot Set{} (OnSessionEnd
+	// clear, OnSessionStart reset) must run LAST so it clears any Track the detector just wrote (e.g. a
+	// match that only resolved on the session's FINAL OnSessionEnd attempt), instead of leaving a stale
+	// Track (with Analysis=nil) in the snapshot after the session has ended. detector must therefore be
+	// registered before enrichSink. Logging/segmenter/recorder are independent persistence/logging sinks
+	// with no cross-sink field interaction, so their relative order does not matter.
+	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder, detector, enrichSink)
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
 	ingestSrv := ingest.NewServer(sessStore, sink, detCfg, log)
@@ -96,20 +123,6 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 
 	gs := grpc.NewServer()
 	telemetryv1.RegisterTelemetryServer(gs, ingestSrv)
-
-	// Reference Knowledge: the read-only Track RKB DB. Default path $HOME/.garage/rkb.db; failing to
-	// open it is fatal (the /v1/tracks endpoints and live track-detect depend on it) rather than
-	// silently serving an empty RKB. Path is not a user config key -- a fixed convention.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolve home dir for rkb: %w", err)
-	}
-	rkbPath := filepath.Join(home, ".garage", "rkb.db")
-	rkbStore, err := rkb.Open(rkbPath)
-	if err != nil {
-		return fmt.Errorf("open rkb %s: %w", rkbPath, err)
-	}
-	defer func() { _ = rkbStore.Close() }()
 
 	// Read side: Analysis -> Coaching -> HTTP API.
 	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, rkbStore, log)

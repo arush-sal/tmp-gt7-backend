@@ -128,7 +128,7 @@ func (e *EnrichSink) drain() {
 		}
 		e.mu.Lock()
 		if e.active[w.id] == w.gen { // same session generation still active? (guards ID collisions across streams)
-			e.state.Set(Enrichment{SessionID: w.id, Analysis: &a})
+			e.state.SetAnalysis(w.id, &a)
 		}
 		e.mu.Unlock()
 	}

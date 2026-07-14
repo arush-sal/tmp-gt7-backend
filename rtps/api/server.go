@@ -4,8 +4,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/coach"
@@ -25,6 +27,9 @@ type Server struct {
 	delta    *live.DeltaTracker
 	tracks   rkb.Store // Reference-Knowledge RKB; nil when unavailable (routes then 503)
 	log      *zap.Logger
+
+	trackRecMu    sync.Mutex                 // guards trackRecCache
+	trackRecCache map[string]json.RawMessage // slug -> marshalled rkb.Record; records are immutable at runtime, so this never invalidates
 }
 
 // NewServer wires the API server. Nil live dependencies are replaced with safe empties (a no-op
@@ -163,10 +168,18 @@ func (s *Server) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 	sub := s.live.Subscribe()
 	defer sub.Close()
 
-	// Emit the current snapshot immediately so a fresh client isn't blank until the next frame.
-	s.emit(w, flusher)
-
 	ctx := r.Context()
+
+	// lastSlugSent is handler-goroutine-local: it tracks the last slug pushed as a "track" event on
+	// THIS subscriber's connection, so a slug already resolved before connect still replays once
+	// (initial connect below), and a slug that never changes never re-emits.
+	var lastSlugSent *string
+
+	// Emit the current snapshot immediately so a fresh client isn't blank until the next frame, and
+	// replay the track event on connect (a client connecting after resolution gets it right away).
+	s.emit(w, flusher)
+	s.emitTrack(ctx, w, flusher, &lastSlugSent)
+
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {
@@ -176,13 +189,105 @@ func (s *Server) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		case <-heartbeat.C:
 			_, _ = w.Write([]byte(": ping\n\n")) // comment frame keeps intermediaries open
 			flusher.Flush()
+			s.emitTrack(ctx, w, flusher, &lastSlugSent) // quiet-gap coverage (no frames flowing)
 		case <-sub.C():
 			if sub.Take() == nil {
 				continue
 			}
 			s.emit(w, flusher)
+			s.emitTrack(ctx, w, flusher, &lastSlugSent) // resolution mid-stream rides the next frame wake
 		}
 	}
+}
+
+// trackRecord returns the marshalled rkb.Record for slug, memoized on the Server (records are
+// immutable at runtime once resolved, so the cache never needs invalidation). Returns ok=false when
+// s.tracks is nil or the slug is unknown.
+func (s *Server) trackRecord(ctx context.Context, slug string) (json.RawMessage, bool) {
+	if s.tracks == nil {
+		return nil, false
+	}
+	s.trackRecMu.Lock()
+	if raw, ok := s.trackRecCache[slug]; ok {
+		s.trackRecMu.Unlock()
+		return raw, true
+	}
+	s.trackRecMu.Unlock()
+
+	rec, found, err := s.tracks.Track(ctx, slug)
+	if err != nil || !found {
+		return nil, false
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return nil, false
+	}
+
+	s.trackRecMu.Lock()
+	if s.trackRecCache == nil {
+		s.trackRecCache = make(map[string]json.RawMessage)
+	}
+	s.trackRecCache[slug] = raw
+	s.trackRecMu.Unlock()
+	return raw, true
+}
+
+// trackEventPayload is the SSE "track" event body: the resolved slug (nil = cleared), its confidence,
+// and the full RKB record so the frontend never has to fetch it separately.
+type trackEventPayload struct {
+	Slug       *string         `json:"slug"`
+	Confidence *string         `json:"confidence,omitempty"`
+	Record     json.RawMessage `json:"record,omitempty"`
+}
+
+// emitTrack pushes a "track" SSE event exactly when the resolved slug differs from *lastSlugSent
+// (nil->slug, slug->slug2, slug->nil all count as a change); otherwise it is a no-op. This is what
+// makes the full record a ONE-TIME push per (subscriber, slug) rather than riding every frame.
+func (s *Server) emitTrack(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, lastSlugSent **string) {
+	en := s.enrich.Get()
+	cur := en.Track
+
+	if !slugChanged(*lastSlugSent, cur) {
+		return
+	}
+
+	payload := trackEventPayload{Confidence: en.TrackConfidence}
+	if cur != nil {
+		slug := *cur
+		payload.Slug = &slug
+		if raw, ok := s.trackRecord(ctx, slug); ok {
+			payload.Record = raw
+		} else {
+			// Slug resolved but the RKB store has no record for it (or is unavailable): skip this
+			// push rather than emit a track event with no record, and do not update lastSlugSent so
+			// a later successful lookup still fires.
+			s.log.Warn("track event skipped: no rkb record for resolved slug")
+			return
+		}
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return // skip a bad payload rather than kill the stream
+	}
+	_, _ = w.Write([]byte("event: track\ndata: "))
+	_, _ = w.Write(body)
+	_, _ = w.Write([]byte("\n\n"))
+	flusher.Flush()
+
+	*lastSlugSent = cur
+}
+
+// slugChanged reports whether cur differs from prev, treating nil as its own distinct value (so
+// nil->slug, slug->nil, and slug->slug2 are all changes, but slug->slug is not).
+func slugChanged(prev, cur *string) bool {
+	if prev == nil && cur == nil {
+		return false
+	}
+	if prev == nil || cur == nil {
+		return true
+	}
+	return *prev != *cur
 }
 
 // emit writes the current live payload as one SSE data event.
