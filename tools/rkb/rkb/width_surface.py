@@ -37,14 +37,22 @@ TARMAC = "T"
 MAX_SPINE_DISTANCE_M = 15.0
 MIN_HEADING_DOT = 0.5
 
-# Moving-average window (samples) used to smooth the provisional spine when
-# no external centreline is supplied. GT7 telemetry is ~60 Hz, so 1001
-# samples spans ~16.7s -- long enough to average a full corner's worth of
-# left+right hugging excursions toward a more central path, but short enough
-# to stay local (a much larger window starts blending in unrelated, distant
-# sections of a curving track and drags the spine off the local track
-# direction -- caught by the self-crossing guard below, but better avoided).
-SPINE_SMOOTH_WINDOW = 1001
+# Moving-average window candidates (samples), used to smooth the provisional spine when
+# no external centreline is supplied. GT7 telemetry is ~60 Hz, so 1001 samples spans
+# ~16.7s -- long enough to average a full corner's worth of left+right hugging
+# excursions toward a more central path, but short enough to stay local on a normal-length
+# lap. But a width-lap CAPTURE can be much shorter (a single lap of a technical circuit,
+# a few thousand samples) -- the same absolute window then spans a large FRACTION of the
+# lap, and on a track with tight, closely-doubling-back sections the moving average can
+# distort or collapse the spine until every edge-event point reads implausibly far from
+# it (the self-crossing guard below then rejects everything -- n_kept=0). So: try
+# candidates LARGEST-FIRST (never start small -- a too-small window makes the spine hug
+# the edges themselves, collapsing the measured width toward zero) and fall back to a
+# smaller one only when the default produces no usable measurement.
+SPINE_SMOOTH_WINDOWS = (1001, 701, 501, 351, 245, 171, 120)
+
+# Back-compat alias: the single default window most callers/tests care about.
+SPINE_SMOOTH_WINDOW = SPINE_SMOOTH_WINDOWS[0]
 
 
 def _moving_average(points, window):
@@ -63,10 +71,10 @@ def _moving_average(points, window):
     return out
 
 
-def _build_spine(rows_in_race):
+def _build_spine(rows_in_race, window=SPINE_SMOOTH_WINDOW):
     """Provisional spine = the lap's own driven path, smoothed."""
     path = [(float(r["pos_x"]), float(r["pos_z"])) for r in rows_in_race]
-    return _moving_average(path, SPINE_SMOOTH_WINDOW)
+    return _moving_average(path, window)
 
 
 def _parse_wheels(surface_type):
@@ -127,23 +135,13 @@ def _median(values):
     return (s[mid - 1] + s[mid]) / 2.0
 
 
-def width_from_surface(rows, centreline=None):
-    """Scalar track width from a surface_type width-lap.
+def _measure_with_spine(in_race_rows, spine, window=None):
+    """Core scalar-width measurement against an already-built spine.
 
-    `rows` -- list of dict rows (csv.DictReader-style, string values) with at
-    least: pos_x, pos_z, vel_x, vel_z, surface_type, in_race, current_lap.
-    `centreline` -- optional list of [x, z] points to use as the spine
-    (e.g. VictoryDash `cl`); if omitted, a provisional spine is built from the
-    lap's own smoothed driven path.
-
-    Returns {width_m, min_m, max_m, source, n_total, n_kept, profile} where
-    profile carries the raw left/right components + provenance flags (see
-    module docstring / spec) needed for later calibration.
+    Returns the same shape as `width_from_surface` (see there); `window` is
+    recorded in `profile` purely for diagnostics/logging (which candidate, if
+    any, produced this result) -- it plays no part in the measurement itself.
     """
-    in_race_rows = [r for r in rows if r.get("in_race") == "true"]
-
-    spine = [(float(p[0]), float(p[1])) for p in centreline] if centreline else _build_spine(in_race_rows)
-
     left_offsets = []
     right_offsets = []
     n_total = 0
@@ -243,5 +241,38 @@ def width_from_surface(rows, centreline=None):
             "coverage_pct": coverage_pct,
             "publishable_measured": False,
             "calibration_id": None,
+            "spine_window": window,
         },
     }
+
+
+def width_from_surface(rows, centreline=None):
+    """Scalar track width from a surface_type width-lap.
+
+    `rows` -- list of dict rows (csv.DictReader-style, string values) with at
+    least: pos_x, pos_z, vel_x, vel_z, surface_type, in_race, current_lap.
+    `centreline` -- optional list of [x, z] points to use as the spine
+    (e.g. VictoryDash `cl`); if omitted, a provisional spine is built from the
+    lap's own smoothed driven path, trying `SPINE_SMOOTH_WINDOWS` largest-first
+    until one yields a usable measurement (see module docstring).
+
+    Returns {width_m, min_m, max_m, source, n_total, n_kept, profile} where
+    profile carries the raw left/right components + provenance flags (see
+    module docstring / spec) needed for later calibration.
+    """
+    in_race_rows = [r for r in rows if r.get("in_race") == "true"]
+
+    if centreline:
+        spine = [(float(p[0]), float(p[1])) for p in centreline]
+        return _measure_with_spine(in_race_rows, spine)
+
+    result = None
+    for window in SPINE_SMOOTH_WINDOWS:
+        spine = _build_spine(in_race_rows, window)
+        result = _measure_with_spine(in_race_rows, spine, window=window)
+        if result["width_m"] is not None and result["n_kept"] > 0:
+            return result
+    # Every candidate window failed to produce a usable measurement (e.g. no
+    # rows at all) -- return the last attempt as-is (width_m None is an
+    # honest "could not measure", not a crash).
+    return result

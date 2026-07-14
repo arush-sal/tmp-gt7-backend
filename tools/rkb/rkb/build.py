@@ -2,6 +2,7 @@
 width, and the confidence gate into one record per track, plus the batch
 driver (`build_all`) that reconciles the knowledge base against course/detect
 externals and writes the on-disk RKB artifacts."""
+import csv
 import json
 import math
 import os
@@ -20,8 +21,14 @@ from . import sectors as sectors_mod
 from . import sources as sources_mod
 from . import victorydash as victorydash_mod
 from . import width as width_mod
+from . import width_calib as width_calib_mod
+from . import width_surface as width_surface_mod
 from .ids import reconcile
 from .names import normalize
+
+# Sardegna-road-a is the ONLY track with both a VictoryDash true width AND a width-lap
+# surface_type capture for the same car -- the calibration anchor (see rkb.width_calib).
+_WIDTH_CALIBRATION_ANCHOR_SLUG = "sardegna-road-a"
 
 
 def _outline_perimeter_px(outline_px):
@@ -46,7 +53,47 @@ def _json_safe(obj):
     return obj
 
 
-def build_track(ref, kb_entry, telemetry_rows=None, victorydash=None, vd_dir=None, capture_csv=None) -> dict:
+def _resolve_capture_width(default_width, width_lap_rows, calibration_table):
+    """Prefer a calibrated `telemetry_width_lap` measurement over `default_width`
+    (the SVG-stroke fallback) when the width-lap capture yields a usable measurement;
+    otherwise return `default_width` unchanged (graceful degradation -- see
+    rkb.width_calib.calibrated_width for the calibration/publishability rule)."""
+    if not width_lap_rows:
+        return default_width
+    raw = width_surface_mod.width_from_surface(width_lap_rows)
+    if raw["width_m"] is None:
+        return default_width
+    car_category = width_lap_rows[0].get("car_category")
+    calibrated, publishable = width_calib_mod.calibrated_width(
+        raw, car_category, calibration_table or {}
+    )
+    print(
+        f"width (telemetry_width_lap): {calibrated['width_m']}m car={car_category} "
+        f"publishable_measured={publishable} n_kept={calibrated['n_kept']}/{calibrated['n_total']}"
+    )
+    return calibrated
+
+
+def _log_vd_surface_crosscheck(slug, width_lap_rows, vd_width_dict):
+    """Sardegna-road-a keeps its VictoryDash-measured width (true, preferred) -- this
+    only cross-checks the surface_type raw measurement against it and logs the delta,
+    per spec ("use surface_type only to cross-check")."""
+    if not width_lap_rows:
+        return
+    raw = width_surface_mod.width_from_surface(width_lap_rows)
+    if raw["width_m"] is None or vd_width_dict.get("width_m") is None:
+        return
+    delta = round(raw["width_m"] - vd_width_dict["width_m"], 3)
+    print(
+        f"{slug}: surface_type-vs-victorydash width delta={delta}m "
+        f"(surface_type={raw['width_m']}m victorydash={vd_width_dict['width_m']}m)"
+    )
+
+
+def build_track(
+    ref, kb_entry, telemetry_rows=None, victorydash=None, vd_dir=None, capture_csv=None,
+    width_lap_rows=None, calibration_table=None,
+) -> dict:
     outline_px = kb_entry.get("outline_px") or []
     outline_perimeter_px = _outline_perimeter_px(outline_px)
 
@@ -68,16 +115,25 @@ def build_track(ref, kb_entry, telemetry_rows=None, victorydash=None, vd_dir=Non
             vd_dir, outline_stroke_px=kb_entry.get("outline_stroke_px", 0.0), affine=aff
         )
         corners = victorydash_mod.corners_from_vd(vd_dir)
+        # This slug (sardegna-road-a) also has its own width-lap capture -- VictoryDash
+        # width is true/measured and stays authoritative; surface_type is only logged as
+        # a cross-check, never used to override it (spec: "PREFER VictoryDash").
+        _log_vd_surface_crosscheck(ref.slug, width_lap_rows, width)
     elif capture_csv is not None:
         # Our own pcap capture: authoritative driven world coordinates resolve the
         # affine (bbox fit against the KB SVG outline, like the bbox_from_driven_trace
         # tier) and feed the kinematic corner detector -- but there is no separate
-        # measured boundary/width ground truth for our captures, so boundary/width
-        # still come from the SVG outline (derived), same as the generic KB-only path.
+        # measured boundary ground truth for our captures, so boundary still comes from
+        # the SVG outline (derived), same as the generic KB-only path. Width defaults to
+        # the SVG-stroke fallback too, UNLESS a width-lap capture is available and
+        # calibratable (_resolve_capture_width) -- a measured scalar width with no
+        # independent centreline still can't fabricate a boundary (spec: "don't
+        # fabricate boundaries"), so boundary stays SVG-derived regardless.
         aff = capture_mod.affine_from_capture(capture_csv, outline_px)
         corners = capture_mod.corners_from_capture(capture_csv)
         boundary = boundary_mod.from_outline(outline_px, aff)
         width = width_mod.from_svg_stroke(kb_entry.get("outline_stroke_px", 0.0), aff)
+        width = _resolve_capture_width(width, width_lap_rows, calibration_table)
     else:
         affine_inp = {
             "victorydash_pts": victorydash_pts,
@@ -214,8 +270,59 @@ def _apply_reverse_pass(records: dict) -> None:
         records[weak_slug] = derived
 
 
+def _load_width_lap_map(width_lap_slugs, capture_csv_map):
+    """For each slug in `width_lap_slugs` that has a resolved capture CSV, load it and
+    pick out its deliberate width-hugging lap (rkb.width_calib.select_width_lap).
+    Degrades gracefully (skips the slug) when the CSV is missing/unreadable/has no
+    lap meeting the minimum-row floor."""
+    width_lap_map = {}
+    for slug in width_lap_slugs or ():
+        csv_path = capture_csv_map.get(slug)
+        if not csv_path or not os.path.isfile(csv_path):
+            continue
+        try:
+            with open(csv_path) as f:
+                rows = list(csv.DictReader(f))
+            lap_rows = width_calib_mod.select_width_lap(rows)
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully when a capture is bad
+            print(f"skipping width-lap load for {slug}: {exc}")
+            continue
+        if lap_rows:
+            width_lap_map[slug] = lap_rows
+    return width_lap_map
+
+
+def _build_width_calibration_table(width_lap_map, vd_map):
+    """Derive the (single-anchor, per-car) width calibration table from
+    `_WIDTH_CALIBRATION_ANCHOR_SLUG` (sardegna-road-a): the one track with both a
+    width-lap capture and an independent VictoryDash true width. Returns
+    {car_category: calibration_entry}; {} if the anchor's data isn't available."""
+    anchor_rows = width_lap_map.get(_WIDTH_CALIBRATION_ANCHOR_SLUG)
+    anchor_vd_dir = (vd_map or {}).get(_WIDTH_CALIBRATION_ANCHOR_SLUG)
+    if not anchor_rows or not anchor_vd_dir:
+        return {}
+    try:
+        anchor_raw = width_surface_mod.width_from_surface(anchor_rows)
+        if anchor_raw["width_m"] is None:
+            return {}
+        car_category = anchor_rows[0].get("car_category")
+        entry = width_calib_mod.build_calibration(
+            anchor_vd_dir, anchor_raw["width_m"], car_category, _WIDTH_CALIBRATION_ANCHOR_SLUG
+        )
+        print(
+            f"width calibration ({car_category}, anchor={_WIDTH_CALIBRATION_ANCHOR_SLUG}): "
+            f"W_true={entry['w_true_m']}m W_raw={entry['w_raw_m']}m "
+            f"correction={entry['correction_m']}m confidence={entry['confidence']}"
+        )
+        return {car_category: entry}
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully when the anchor is bad
+        print(f"skipping width calibration: {exc}")
+        return {}
+
+
 def build_all(
-    kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir, capture_map=None, capture_csv_overrides=None
+    kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir, capture_map=None,
+    capture_csv_overrides=None, width_lap_slugs=None,
 ) -> None:
     kb = sources_mod.load_kb(kb_dir)
     kb_names = {slug: entry["name"] for slug, entry in kb.items()}
@@ -242,8 +349,11 @@ def build_all(
         except Exception as exc:  # noqa: BLE001 - degrade gracefully when a capture is missing/bad
             print(f"skipping capture decode for {slug}: {exc}")
 
-    records = {}
     vd_map = vd_map or {}
+    width_lap_map = _load_width_lap_map(width_lap_slugs, capture_csv_map)
+    calibration_table = _build_width_calibration_table(width_lap_map, vd_map)
+
+    records = {}
     for slug, ref in refs.items():
         try:
             record = build_track(
@@ -252,6 +362,8 @@ def build_all(
                 telemetry_rows=telemetry_map.get(slug),
                 vd_dir=vd_map.get(slug),
                 capture_csv=capture_csv_map.get(slug),
+                width_lap_rows=width_lap_map.get(slug),
+                calibration_table=calibration_table,
             )
         except Exception as exc:  # noqa: BLE001 - degrade gracefully when externals are missing
             print(f"skipping {slug}: {exc}")

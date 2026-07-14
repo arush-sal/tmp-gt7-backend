@@ -128,6 +128,24 @@ def _load_capture_map() -> dict:
     return {slug: p for slug, p in _CAPTURE_MAP.items() if os.path.isfile(p)}
 
 
+# Slugs with a deliberate edge-hugging "width lap" capture (see the Track Width from
+# Surface Type Design spec, CHOSEN SCOPE): grand-valley-south-2's own capture, plus the
+# 6 Sardegna road layouts split out of the shared multi-layout pcap. sardegna-road-a
+# uniquely also has a VictoryDash true width -- it is the calibration anchor (see
+# rkb.build._WIDTH_CALIBRATION_ANCHOR_SLUG / rkb.width_calib) -- its own width-lap
+# capture is used to CROSS-CHECK the (still-authoritative) VictoryDash width, not
+# override it.
+_WIDTH_LAP_SLUGS = {
+    "grand-valley-south-2",
+    "sardegna-road-a",
+    "sardegna-road-a2",
+    "sardegna-road-b",
+    "sardegna-road-b2",
+    "sardegna-road-c",
+    "sardegna-road-c2",
+}
+
+
 def main() -> None:
     build_all(
         kb_dir=KB_DIR,
@@ -138,6 +156,7 @@ def main() -> None:
         out_dir=OUT_DIR,
         capture_map=_load_capture_map(),
         capture_csv_overrides=_load_sardegna_capture_csv_map(),
+        width_lap_slugs=_WIDTH_LAP_SLUGS,
     )
 
 

@@ -2,6 +2,7 @@ import csv
 import math
 import os
 
+import rkb.width_surface as width_surface
 from rkb.width_surface import width_from_surface
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "gvs_width_sample.csv")
@@ -76,3 +77,44 @@ def test_width_from_surface_ambiguous_both_sides_off_is_skipped():
     w = width_from_surface(rows, centreline=spine)
     assert w["n_total"] == 0
     assert w["n_kept"] == 0
+
+
+def test_width_from_surface_retries_smaller_window_when_default_spine_collapses(monkeypatch):
+    # Reproduces a real failure mode (sardegna-road-b's width-lap capture at the
+    # module's largest default window): the provisional spine built at the biggest
+    # candidate window is degenerate (every edge event ends up implausibly far from
+    # it, so n_kept=0 / width_m=None) -- width_from_surface must retry with the next
+    # smaller SPINE_SMOOTH_WINDOWS candidate rather than give up.
+    spine = [[float(x), 0.0] for x in range(0, 101, 2)]
+    rows = []
+    for x in range(10, 90, 4):
+        rows.append({
+            "pos_x": str(float(x)), "pos_z": "3.0",
+            "vel_x": "10.0", "vel_z": "0.0",
+            "surface_type": "DTTT", "in_race": "true", "current_lap": "1",
+        })
+    for x in range(10, 90, 4):
+        rows.append({
+            "pos_x": str(float(x)), "pos_z": "-4.0",
+            "vel_x": "10.0", "vel_z": "0.0",
+            "surface_type": "TDTT", "in_race": "true", "current_lap": "1",
+        })
+
+    real_build_spine = width_surface._build_spine
+    attempted_windows = []
+
+    def fake_build_spine(rows_in_race, window):
+        attempted_windows.append(window)
+        if window > 200:
+            return [(-9999.0, -9999.0)]  # degenerate: everything reads implausibly far
+        return real_build_spine(rows_in_race, window)
+
+    monkeypatch.setattr(width_surface, "_build_spine", fake_build_spine)
+
+    w = width_surface.width_from_surface(rows)
+
+    assert attempted_windows[0] == width_surface.SPINE_SMOOTH_WINDOWS[0]  # tried biggest first
+    assert len(attempted_windows) > 1  # actually retried
+    assert w["width_m"] is not None
+    assert math.isclose(w["width_m"], 7.0, abs_tol=0.2)
+    assert w["profile"]["spine_window"] == attempted_windows[-1]
