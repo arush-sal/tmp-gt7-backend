@@ -1,7 +1,12 @@
 import csv
 import math
 
-from rkb.build import _log_vd_surface_crosscheck, _resolve_capture_width, build_track
+from rkb.build import (
+    _apply_base_width_pass,
+    _log_vd_surface_crosscheck,
+    _resolve_capture_width,
+    build_track,
+)
 from rkb.ids import TrackRef
 from rkb.schema import validate_record
 
@@ -85,6 +90,100 @@ def test_resolve_capture_width_falls_back_when_surface_measurement_unusable():
     }]
 
     assert _resolve_capture_width(default, rows, {}) is default
+
+
+def _width_rec(slug, base, width_m, width_source, boundary_source):
+    return {
+        "slug": slug, "name": slug, "ddm_id": None, "hex_id": None, "base": base,
+        "is_reverse": False, "is_oval": False, "length_m": 3000.0,
+        "num_corners_expected": 6,
+        "affine": {"scale": 1.0, "rot_deg": 0.0, "tx": 0.0, "tz": 0.0, "source": "capture"},
+        "corners": [], "sectors": [],
+        "boundary": {"source": boundary_source},
+        "width": {"width_m": width_m, "min_m": None, "max_m": None, "source": width_source,
+                  "n_total": None, "n_kept": None, "profile": None},
+        "confidence": {"coordinate_usability": "generated-coarse",
+                       "physical_boundary_fidelity": "derived", "join": "exact"},
+        "provenance": {"affine": "capture", "corners": "kinematic",
+                       "boundary": boundary_source, "width": width_source},
+    }
+
+
+def test_base_width_pass_stamps_best_evidence_across_all_layouts():
+    """A base's width is one value shared by every layout: the best-evidence measurement
+    (VictoryDash > telemetry width-lap > svg-stroke) is stamped on all layouts of the base."""
+    records = {
+        "sardegna-road-a": _width_rec("sardegna-road-a", 20, 10.41, "victorydash", "victorydash"),
+        "sardegna-road-b": _width_rec("sardegna-road-b", 20, 17.21, "telemetry_width_lap", "outline"),
+        "sardegna-road-c": _width_rec("sardegna-road-c", 20, 27.47, "svg_stroke", "outline"),
+    }
+
+    _apply_base_width_pass(records)
+
+    for slug in records:
+        assert records[slug]["width"]["width_m"] == 10.41
+        assert records[slug]["width"]["source"] == "victorydash"
+        assert records[slug]["provenance"]["width"] == "victorydash"
+    # road-a keeps measured (vd boundary + vd width); the outline-boundary layouts are derived
+    assert records["sardegna-road-a"]["confidence"]["physical_boundary_fidelity"] == "measured"
+    assert records["sardegna-road-b"]["confidence"]["physical_boundary_fidelity"] == "derived"
+    # copies, not a shared alias
+    assert records["sardegna-road-a"]["width"] is not records["sardegna-road-b"]["width"]
+
+
+def test_base_width_pass_venue_unifies_across_bases():
+    """Sardegna Windmills (its own base) shares the Sardegna Road width: the venue prefix
+    unions all sardegna-* layouts into one width group across distinct bases."""
+    records = {
+        "sardegna-road-a": _width_rec("sardegna-road-a", 26, 11.25, "victorydash", "victorydash"),
+        "sardegna-windmills": _width_rec("sardegna-windmills", 27, 9.67, "svg_stroke", "outline"),
+    }
+    _apply_base_width_pass(records)
+    assert records["sardegna-windmills"]["width"]["width_m"] == 11.25
+    assert records["sardegna-windmills"]["width"]["source"] == "victorydash"
+    assert records["sardegna-windmills"]["provenance"]["width"] == "victorydash"
+    # windmills has no measured boundary of its own -> still 'derived', not falsely 'measured'
+    assert records["sardegna-windmills"]["confidence"]["physical_boundary_fidelity"] == "derived"
+
+
+def test_base_width_pass_tie_break_first_seen_wins():
+    """Equal-rank widths (strict >): the first-seen layout's value wins, shared to both."""
+    records = {
+        "x-a": _width_rec("x-a", 30, 12.0, "svg_stroke", "outline"),
+        "x-b": _width_rec("x-b", 30, 9.0, "svg_stroke", "outline"),
+    }
+    _apply_base_width_pass(records)
+    assert records["x-a"]["width"]["width_m"] == 12.0
+    assert records["x-b"]["width"]["width_m"] == 12.0  # first-seen (x-a) wins the tie
+
+
+def test_base_width_pass_fidelity_none_when_boundary_and_width_both_non_measured():
+    """A layout whose own boundary is neither outline nor victorydash, sharing a
+    telemetry_width_lap width, is 'none' fidelity (gate: not measured, not derived)."""
+    records = {
+        "y-a": _width_rec("y-a", 40, 13.0, "telemetry_width_lap", "capture"),
+        "y-b": _width_rec("y-b", 40, 99.0, "svg_stroke", "capture"),
+    }
+    _apply_base_width_pass(records)
+    # best evidence is telemetry_width_lap; y-a boundary 'capture' + width telemetry -> none
+    assert records["y-a"]["width"]["source"] == "telemetry_width_lap"
+    assert records["y-a"]["confidence"]["physical_boundary_fidelity"] == "none"
+
+
+def test_base_width_pass_deepcopies_nested_profile():
+    """Stamped width dicts must not alias a nested mutable `profile` across layouts."""
+    a = _width_rec("z-a", 50, 10.0, "svg_stroke", "outline")
+    a["width"]["profile"] = [1.0, 2.0]
+    records = {"z-a": a, "z-b": _width_rec("z-b", 50, 9.0, "svg_stroke", "outline")}
+    _apply_base_width_pass(records)
+    assert records["z-a"]["width"]["profile"] is not records["z-b"]["width"]["profile"]
+
+
+def test_base_width_pass_ignores_baseless_records():
+    rec = _width_rec("solo", None, 8.0, "svg_stroke", "outline")
+    records = {"solo": rec}
+    _apply_base_width_pass(records)
+    assert records["solo"]["width"]["width_m"] == 8.0  # untouched
 
 
 def test_log_vd_surface_crosscheck_does_not_raise(capsys):

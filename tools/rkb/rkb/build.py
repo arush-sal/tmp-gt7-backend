@@ -2,6 +2,7 @@
 width, and the confidence gate into one record per track, plus the batch
 driver (`build_all`) that reconciles the knowledge base against course/detect
 externals and writes the on-disk RKB artifacts."""
+import copy
 import csv
 import json
 import math
@@ -270,6 +271,69 @@ def _apply_reverse_pass(records: dict) -> None:
         records[weak_slug] = derived
 
 
+# A track's width is a property of the BASE — constant along its length and shared by every
+# layout (forward + reverse). Rank the width evidence so a base adopts its single best
+# measurement: VictoryDash true edge-to-edge > telemetry width-lap > SVG-stroke fallback.
+_WIDTH_SOURCE_PRIORITY = {"victorydash": 3, "telemetry_width_lap": 2, "svg_stroke": 1}
+
+# Some GT7 VENUES span more than one `base` group but are the same physical tarmac, so one
+# width covers the whole venue (user rule: Sardegna Windmills shares the Sardegna Road width,
+# even though windmills is a distinct base). A slug matching one of these prefixes joins a
+# single venue-wide width group; every other slug's width group is just its own `base`.
+_WIDTH_VENUE_PREFIXES = ("sardegna-",)
+
+
+def _width_group_key(rec: dict):
+    """The key identifying which layouts share ONE width. A venue prefix (see
+    _WIDTH_VENUE_PREFIXES) unions all its layouts across bases; otherwise the group is the
+    layout's `base`. Returns None for a baseless, non-venue track (no siblings to share
+    with -- left untouched by the width pass)."""
+    slug = rec.get("slug") or ""
+    for pref in _WIDTH_VENUE_PREFIXES:
+        if slug.startswith(pref):
+            return ("venue", pref)
+    base = rec.get("base")
+    return ("base", base) if base is not None else None
+
+
+def _apply_base_width_pass(records: dict) -> None:
+    """Post-pass: a track's width is a property of the base (and, for a few venues, of the
+    whole venue) -- one value shared by every layout, forward and reverse (a group can never
+    carry divergent per-layout widths). Per width-group (_width_group_key), pick the single
+    best-evidence width (victorydash > telemetry_width_lap > svg_stroke) among the layouts
+    that have a real measurement and stamp it on every layout of that group. Recomputes
+    physical_boundary_fidelity per layout (it depends on the width source, which may change
+    here) via the same gate used at build time."""
+    by_group: dict = {}
+    for slug, rec in records.items():
+        key = _width_group_key(rec)
+        if key is None:
+            continue  # baseless, non-venue track has no sibling layouts to share a width with
+        by_group.setdefault(key, []).append(slug)
+
+    for slugs in by_group.values():
+        best_width, best_rank = None, -1
+        for slug in slugs:
+            w = records[slug].get("width") or {}
+            if w.get("width_m") is None:
+                continue
+            rank = _WIDTH_SOURCE_PRIORITY.get(w.get("source"), 0)
+            if rank > best_rank:
+                best_rank, best_width = rank, w
+        if best_width is None:
+            continue  # no layout of this base has a usable width — leave all as-is
+        for slug in slugs:
+            rec = records[slug]
+            # deepcopy: layouts must not alias one width dict OR its nested `profile`
+            # (a list for svg_stroke, a dict for telemetry_width_lap).
+            rec["width"] = copy.deepcopy(best_width)
+            rec["provenance"]["width"] = best_width["source"]
+            rec["confidence"]["physical_boundary_fidelity"] = gate_mod.physical_boundary_fidelity(
+                rec["boundary"]["source"], best_width["source"]
+            )
+            schema_mod.validate_record(rec)
+
+
 def _load_width_lap_map(width_lap_slugs, capture_csv_map):
     """For each slug in `width_lap_slugs` that has a resolved capture CSV, load it and
     pick out its deliberate width-hugging lap (rkb.width_calib.select_width_lap).
@@ -371,6 +435,10 @@ def build_all(
         records[slug] = record
 
     _apply_reverse_pass(records)
+    # Width is a base property: after reverse-derivation (which copies the forward's width),
+    # unify every base's layouts onto its single best-evidence width. Runs last so derived
+    # reverse records are stamped too.
+    _apply_base_width_pass(records)
 
     final_records = []
     for slug, record in records.items():
