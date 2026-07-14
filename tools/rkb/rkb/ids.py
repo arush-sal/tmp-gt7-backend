@@ -16,6 +16,16 @@ class TrackRef:
     sf_line: Optional[tuple] = None         # ((p1x,p1z),(p2x,p2z))
     join: str = "ambiguous"
 
+# KB layouts absent from ddm's course.csv (no roster row, so join stays fuzzy and base is
+# None) that are nonetheless a known member of an existing venue's base. Filling the base
+# directly links them into venue-level passes (e.g. the base-width pass). Only the base
+# linkage is supplied here; width/corners/affine still come from the layout's own evidence.
+#   - nurburgring-endurance-2: Nürburgring venue, base 24 (its forward twin's base).
+_BASE_OVERRIDES = {
+    "nurburgring-endurance-2": 24,
+}
+
+
 def reconcile(kb_names: dict, detect_by_norm: dict, course_rows: list) -> dict:
     # index course rows by normalized name; a name colliding across >1 row (excluding reverse) -> ambiguous
     course_by_norm: dict[str, list] = {}
@@ -38,5 +48,7 @@ def reconcile(kb_names: dict, detect_by_norm: dict, course_rows: list) -> dict:
         d = detect_by_norm.get(k)
         if d:
             ref.world_bbox = d["bbox"]; ref.sf_line = d["sf"]
+        if ref.base is None and slug in _BASE_OVERRIDES:
+            ref.base = _BASE_OVERRIDES[slug]
         refs[slug] = ref
     return refs

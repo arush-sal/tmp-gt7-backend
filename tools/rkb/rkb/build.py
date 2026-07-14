@@ -278,11 +278,11 @@ _WIDTH_SOURCE_PRIORITY = {"victorydash": 3, "telemetry_width_lap": 2, "svg_strok
 
 # Some GT7 VENUES span more than one `base` group but are the same physical tarmac, so one
 # width covers the whole venue. A slug matching one of these prefixes joins a single
-# venue-wide width group; every other slug's width group is just its own `base`. Cases:
+# venue-wide width group; every other slug's width group is just its own `base`.
 #   - "sardegna-": road (base 26) + windmills (base 27) are the same road network.
-#   - "nurburgring-": every layout shares base 24 EXCEPT nurburgring-endurance-2, which is
-#     baseless (unreconciled) and would otherwise be skipped -- the prefix pulls it into the
-#     one Nürburgring width (all layouts already measured at the same value via GP's VD lap).
+#   - "nurburgring-": all layouts share base 24 (nurburgring-endurance-2's missing base is
+#     also filled in rkb.ids._BASE_OVERRIDES); the prefix is belt-and-suspenders so the one
+#     Nürburgring width holds even if a layout ever loses its base linkage.
 _WIDTH_VENUE_PREFIXES = ("sardegna-", "nurburgring-")
 
 

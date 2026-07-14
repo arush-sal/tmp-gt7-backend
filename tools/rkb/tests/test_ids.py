@@ -22,3 +22,21 @@ def test_reconcile_kb_without_course_row_keeps_slug():
     refs = reconcile(kb, detect_by_norm={}, course_rows=[])
     assert refs["nurburgring-endurance-2"].ddm_id is None
     assert refs["nurburgring-endurance-2"].join == "fuzzy"   # kb-only, no external confirmation
+
+
+def test_reconcile_fills_base_override_for_unreconciled_venue_member():
+    """A KB-only layout absent from course.csv still gets its venue base via _BASE_OVERRIDES,
+    so venue-level passes (base-width) include it. join stays fuzzy (no roster confirmation)."""
+    kb = {"nurburgring-endurance-2": "Nürburgring Endurance II"}
+    refs = reconcile(kb, detect_by_norm={}, course_rows=[])
+    assert refs["nurburgring-endurance-2"].base == 24
+    assert refs["nurburgring-endurance-2"].join == "fuzzy"
+
+
+def test_reconcile_course_base_wins_over_override():
+    """When a course row supplies the base, it wins -- the override only fills a missing base."""
+    kb = {"nurburgring-endurance-2": "Nürburgring Endurance II"}
+    course = [{"ID": "9", "Name": "Nürburgring Endurance II", "Base": "99",
+               "Length": "25000", "NumCorners": "0", "IsReverse": "1"}]
+    refs = reconcile(kb, detect_by_norm={}, course_rows=course)
+    assert refs["nurburgring-endurance-2"].base == 99  # course row, not the override
