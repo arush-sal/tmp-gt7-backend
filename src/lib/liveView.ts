@@ -18,6 +18,10 @@ export type LiveView = {
   tyreTemps: { fl: TyreTemp; fr: TyreTemp; rl: TyreTemp; rr: TyreTemp };
   deltaTone: "blue" | "red" | "none";
   fuelTone: "green" | "yellow" | "red" | "none";
+  // format-C CONFIRMED fields; PLACEHOLDER on format-A / older sources that omit them
+  steering: string;      // averaged front-wheel steer angle, degrees (e.g. "+6.9°")
+  surface: string;       // per-wheel surface codes FL,FR,RL,RR (e.g. "TTTT")
+  carCategory: string;   // GT7 category code (e.g. "GRN")
 };
 
 // bands (see plan Global Constraints)
@@ -32,6 +36,13 @@ function fuelToneOf(pct: number): "green" | "yellow" | "red" {
   return "yellow";
 }
 const tyre = (c: number): TyreTemp => ({ value: `${Math.round(c)}°C`, tone: tyreTone(c) });
+
+// Averaged front-wheel steer angle in degrees, e.g. "+6.9°"; PLACEHOLDER unless both wheels present.
+function steeringOf(fl?: number, fr?: number): string {
+  if (fl === undefined || fr === undefined) return PLACEHOLDER;
+  const deg = ((fl + fr) / 2) * (180 / Math.PI);
+  return `${deg >= 0 ? "+" : "-"}${Math.abs(deg).toFixed(1)}°`;
+}
 
 export function toLiveView(s: LiveSnapshot): LiveView {
   const f = s.frame;
@@ -51,6 +62,9 @@ export function toLiveView(s: LiveSnapshot): LiveView {
     lastLap: f && f.last_lap !== null ? nsToClock(parseDuration(f.last_lap)) : PLACEHOLDER,
     deltaTone: delta === null || delta === 0 || !f ? "none" : delta < 0 ? "blue" : "red",
     fuelTone: d ? fuelToneOf(d.fuel_pct) : "none",
+    steering: f ? steeringOf(f.wheel_steering_angle_front_left, f.wheel_steering_angle_front_right) : PLACEHOLDER,
+    surface: f && f.surface_type ? f.surface_type : PLACEHOLDER,
+    carCategory: f && f.car_category ? f.car_category : PLACEHOLDER,
     tyreTemps: f
       ? { fl: tyre(f.tyre_temp_fl), fr: tyre(f.tyre_temp_fr), rl: tyre(f.tyre_temp_rl), rr: tyre(f.tyre_temp_rr) }
       : { fl: { value: PLACEHOLDER, tone: "none" }, fr: { value: PLACEHOLDER, tone: "none" },

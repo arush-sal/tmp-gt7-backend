@@ -29,6 +29,35 @@ export type Frame = {
   last_lap: string | null;
   in_race: boolean;
   is_paused: boolean;
+
+  // --- GT7 "format-C" fields (frontend-handoff.md). OPTIONAL: absent on format-A / older
+  // sources; validateLive includes each only when present with the right type. Confidence tiers
+  // per the handoff — only the CONFIRMED group is safe to display as-is.
+  // CONFIRMED
+  current_lap_time_ms?: number;               // ms — raw packet lap clock. NOT ns; do not divide.
+  wheel_steering_angle_front_left?: number;   // rad (front road wheel)
+  wheel_steering_angle_front_right?: number;  // rad
+  wheel_base?: number;                        // m — per-car constant (axle-to-axle)
+  throttle_filtered?: number;                 // 0..255 filtered throttle
+  surface_type?: string;                      // per-wheel FL,FR,RL,RR codes, e.g. "TTTT"
+  car_category?: string;                      // GT7 category code, e.g. "GRN"
+  // PLAUSIBLE
+  wheel_rotation?: number;                    // rad — hand-wheel angle, clamped ±π
+  steering_angular_velocity?: number;         // rad/s
+  sway?: number;                              // lateral (X) body accel
+  heave?: number;                             // vertical (Y) body accel
+  surge?: number;                             // longitudinal (Z) body accel
+  // UNCONFIRMED — read 0/constant in every capture to date
+  brake_filtered?: number;                    // 0..255
+  torque_vector_fl?: number;
+  torque_vector_fr?: number;
+  torque_vector_rl?: number;
+  torque_vector_rr?: number;
+  energy_recovery?: number;
+  // UNKNOWN — meaning not identified; do not surface
+  unknown_u8_13e?: number;
+  unknown_u8_13f?: number;
+  unknown_f32_154?: number;
 };
 
 export type Derived = {

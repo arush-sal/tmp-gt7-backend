@@ -56,7 +56,33 @@ function validateFrame(raw: unknown): Frame {
     last_lap: durationOrNull(f.last_lap, p("last_lap")),
     in_race: bool(f.in_race, p("in_race")),
     is_paused: bool(f.is_paused, p("is_paused")),
+    ...formatCFields(f),
   };
+}
+
+// GT7 format-C frame fields (frontend-handoff.md). Optional: absent on format-A / older sources.
+// Read leniently — a field is included only when present with the right type, and a wrong-typed
+// value is dropped (not thrown), matching the "treat unknown fields leniently" contract.
+const FORMAT_C_NUM = [
+  "current_lap_time_ms", "wheel_steering_angle_front_left", "wheel_steering_angle_front_right",
+  "wheel_base", "throttle_filtered", "wheel_rotation", "steering_angular_velocity",
+  "sway", "heave", "surge", "brake_filtered",
+  "torque_vector_fl", "torque_vector_fr", "torque_vector_rl", "torque_vector_rr",
+  "energy_recovery", "unknown_u8_13e", "unknown_u8_13f", "unknown_f32_154",
+] as const;
+const FORMAT_C_STR = ["surface_type", "car_category"] as const;
+
+function formatCFields(f: Record<string, unknown>): Partial<Frame> {
+  const out: Record<string, number | string> = {};
+  for (const k of FORMAT_C_NUM) {
+    const v = f[k];
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+  }
+  for (const k of FORMAT_C_STR) {
+    const v = f[k];
+    if (typeof v === "string") out[k] = v;
+  }
+  return out as Partial<Frame>;
 }
 
 function validateDerived(raw: unknown): Derived {

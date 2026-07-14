@@ -72,3 +72,37 @@ describe("validateLive — rejections", () => {
   it("rejects missing track key", () => { const s = live(); delete (s.enrichment as any).track; expect(() => validateLive(s)).toThrow(/track/); });
   it("rejects missing analysis key", () => { const s = live(); delete (s.enrichment as any).analysis; expect(() => validateLive(s)).toThrow(/analysis/); });
 });
+
+describe("validateLive — format-C frame fields", () => {
+  it("exposes format-C fields when the source provides them", () => {
+    const s = live();
+    Object.assign(s.frame, {
+      wheel_steering_angle_front_left: 0.12, wheel_steering_angle_front_right: 0.11,
+      wheel_base: 2.6, throttle_filtered: 170, surface_type: "TTTT", car_category: "GRN",
+      current_lap_time_ms: 45000, sway: 1.4, heave: -0.2, surge: -0.8,
+      wheel_rotation: 0.9, steering_angular_velocity: 0.3,
+    });
+    const f = validateLive(s).frame!;
+    expect(f.surface_type).toBe("TTTT");
+    expect(f.car_category).toBe("GRN");
+    expect(f.wheel_steering_angle_front_left).toBeCloseTo(0.12);
+    expect(f.wheel_base).toBeCloseTo(2.6);
+    expect(f.current_lap_time_ms).toBe(45000);
+    expect(f.surge).toBeCloseTo(-0.8);
+  });
+  it("omits format-C fields when a source lacks them (lenient, older/format-A sources)", () => {
+    const f = validateLive(live()).frame!; // base fixture carries none
+    expect(f.surface_type).toBeUndefined();
+    expect(f.wheel_base).toBeUndefined();
+    expect(f.current_lap_time_ms).toBeUndefined();
+  });
+  it("ignores wrong-typed format-C fields rather than throwing", () => {
+    const s = live();
+    (s.frame as any).surface_type = 5;      // wrong type
+    (s.frame as any).wheel_base = "nope";   // wrong type
+    expect(() => validateLive(s)).not.toThrow();
+    const f = validateLive(s).frame!;
+    expect(f.surface_type).toBeUndefined();
+    expect(f.wheel_base).toBeUndefined();
+  });
+});

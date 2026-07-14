@@ -89,6 +89,32 @@ describe("toLiveView tones", () => {
   });
 });
 
+describe("toLiveView — format-C CONFIRMED fields", () => {
+  const withC = (): LiveSnapshot => ({
+    ...base,
+    frame: {
+      ...base.frame!,
+      wheel_steering_angle_front_left: 0.1, wheel_steering_angle_front_right: 0.14,
+      surface_type: "TTTT", car_category: "GRN", wheel_base: 2.6,
+    },
+  });
+  it("exposes averaged steering angle in degrees when present", () => {
+    // mean(0.1, 0.14) = 0.12 rad -> 6.9°
+    expect(toLiveView(withC()).steering).toBe("+6.9°");
+  });
+  it("exposes surface and car category when present", () => {
+    const v = toLiveView(withC());
+    expect(v.surface).toBe("TTTT");
+    expect(v.carCategory).toBe("GRN");
+  });
+  it("placeholders format-C fields when absent (format-A / older source)", () => {
+    const v = toLiveView(base);
+    expect(v.steering).toBe("—");
+    expect(v.surface).toBe("—");
+    expect(v.carCategory).toBe("—");
+  });
+});
+
 describe("isStale", () => {
   const t0 = Date.parse("2026-07-07T00:00:00.000Z");
   it("fresh within threshold", () => expect(isStale(base, t0 + 1000)).toBe(false));
