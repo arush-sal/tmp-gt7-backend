@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/live"
 	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/reference"
+	"github.com/arush-sal/garage/backend/rtps/rkb"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -94,8 +97,22 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	gs := grpc.NewServer()
 	telemetryv1.RegisterTelemetryServer(gs, ingestSrv)
 
+	// Reference Knowledge: the read-only Track RKB DB. Default path $HOME/.garage/rkb.db; failing to
+	// open it is fatal (the /v1/tracks endpoints and live track-detect depend on it) rather than
+	// silently serving an empty RKB. Path is not a user config key -- a fixed convention.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home dir for rkb: %w", err)
+	}
+	rkbPath := filepath.Join(home, ".garage", "rkb.db")
+	rkbStore, err := rkb.Open(rkbPath)
+	if err != nil {
+		return fmt.Errorf("open rkb %s: %w", rkbPath, err)
+	}
+	defer func() { _ = rkbStore.Close() }()
+
 	// Read side: Analysis -> Coaching -> HTTP API.
-	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, log)
+	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, rkbStore, log)
 	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	// Bind the ingest listener only once we're committed to serving (after storage init), so a failed

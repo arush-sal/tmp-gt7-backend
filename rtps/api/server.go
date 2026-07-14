@@ -10,6 +10,7 @@ import (
 
 	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/live"
+	"github.com/arush-sal/garage/backend/rtps/rkb"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
 )
@@ -22,6 +23,7 @@ type Server struct {
 	live     *live.Hub
 	enrich   *live.EnrichmentState
 	delta    *live.DeltaTracker
+	tracks   rkb.Store // Reference-Knowledge RKB; nil when unavailable (routes then 503)
 	log      *zap.Logger
 }
 
@@ -31,7 +33,7 @@ type Server struct {
 // is left nil when not supplied (rather than constructing a fresh DeltaTracker): a detached tracker
 // never receives ingest frames, so it would silently and permanently report ok=false; nil is the
 // honest "no delta overlay" state, and liveEnrichment skips it cleanly.
-func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, delta *live.DeltaTracker, log *zap.Logger) *Server {
+func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, delta *live.DeltaTracker, tracks rkb.Store, log *zap.Logger) *Server {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -41,7 +43,7 @@ func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *liv
 	if enrich == nil {
 		enrich = live.NewEnrichmentState()
 	}
-	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, delta: delta, log: log}
+	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, delta: delta, tracks: tracks, log: log}
 }
 
 // liveEnrichment returns the current enrichment snapshot with the live per-frame delta overlaid, when a
@@ -65,6 +67,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/live", s.handleLive)
 	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
 	mux.HandleFunc("GET /{$}", s.handleLive)                  // "/" alias, exact match only
+	mux.HandleFunc("GET /v1/tracks", s.handleListTracks)
+	mux.HandleFunc("GET /v1/tracks/{slug}", s.handleTrack)
 	return mux
 }
 
@@ -192,6 +196,40 @@ func (s *Server) emit(w http.ResponseWriter, flusher http.Flusher) {
 	_, _ = w.Write(body)
 	_, _ = w.Write([]byte("\n\n"))
 	flusher.Flush()
+}
+
+// handleListTracks: GET /v1/tracks -> the RKB index (track picker + tier).
+func (s *Server) handleListTracks(w http.ResponseWriter, r *http.Request) {
+	if s.tracks == nil {
+		writeError(w, http.StatusServiceUnavailable, "track RKB unavailable")
+		return
+	}
+	idx, err := s.tracks.Index(r.Context())
+	if err != nil {
+		s.log.Error("rkb index failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to list tracks")
+		return
+	}
+	writeJSON(w, http.StatusOK, idx)
+}
+
+// handleTrack: GET /v1/tracks/{slug} -> the full assembled RKB record; 404 for an unknown slug.
+func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
+	if s.tracks == nil {
+		writeError(w, http.StatusServiceUnavailable, "track RKB unavailable")
+		return
+	}
+	rec, found, err := s.tracks.Track(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		s.log.Error("rkb track failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to load track")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "track not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
 }
 
 // writeJSON marshals v to a buffer first, so an encode failure yields a clean 500 instead of a 200
