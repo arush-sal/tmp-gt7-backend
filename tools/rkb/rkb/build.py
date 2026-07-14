@@ -277,10 +277,13 @@ def _apply_reverse_pass(records: dict) -> None:
 _WIDTH_SOURCE_PRIORITY = {"victorydash": 3, "telemetry_width_lap": 2, "svg_stroke": 1}
 
 # Some GT7 VENUES span more than one `base` group but are the same physical tarmac, so one
-# width covers the whole venue (user rule: Sardegna Windmills shares the Sardegna Road width,
-# even though windmills is a distinct base). A slug matching one of these prefixes joins a
-# single venue-wide width group; every other slug's width group is just its own `base`.
-_WIDTH_VENUE_PREFIXES = ("sardegna-",)
+# width covers the whole venue. A slug matching one of these prefixes joins a single
+# venue-wide width group; every other slug's width group is just its own `base`. Cases:
+#   - "sardegna-": road (base 26) + windmills (base 27) are the same road network.
+#   - "nurburgring-": every layout shares base 24 EXCEPT nurburgring-endurance-2, which is
+#     baseless (unreconciled) and would otherwise be skipped -- the prefix pulls it into the
+#     one Nürburgring width (all layouts already measured at the same value via GP's VD lap).
+_WIDTH_VENUE_PREFIXES = ("sardegna-", "nurburgring-")
 
 
 def _width_group_key(rec: dict):

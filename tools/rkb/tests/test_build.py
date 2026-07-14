@@ -146,6 +146,19 @@ def test_base_width_pass_venue_unifies_across_bases():
     assert records["sardegna-windmills"]["confidence"]["physical_boundary_fidelity"] == "derived"
 
 
+def test_base_width_pass_venue_pulls_in_baseless_member():
+    """A venue layout with base=None (unreconciled, e.g. nurburgring-endurance-2) is still
+    caught by the venue prefix and gets the venue width, though base grouping would skip it."""
+    records = {
+        "nurburgring-gp": _width_rec("nurburgring-gp", 24, 12.09, "victorydash", "victorydash"),
+        "nurburgring-endurance-2": _width_rec(
+            "nurburgring-endurance-2", None, None, "svg_stroke", "outline"),
+    }
+    _apply_base_width_pass(records)
+    assert records["nurburgring-endurance-2"]["width"]["width_m"] == 12.09
+    assert records["nurburgring-endurance-2"]["width"]["source"] == "victorydash"
+
+
 def test_base_width_pass_tie_break_first_seen_wins():
     """Equal-rank widths (strict >): the first-seen layout's value wins, shared to both."""
     records = {
