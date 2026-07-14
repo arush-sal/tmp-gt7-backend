@@ -214,7 +214,9 @@ def _apply_reverse_pass(records: dict) -> None:
         records[weak_slug] = derived
 
 
-def build_all(kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir, capture_map=None) -> None:
+def build_all(
+    kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir, capture_map=None, capture_csv_overrides=None
+) -> None:
     kb = sources_mod.load_kb(kb_dir)
     kb_names = {slug: entry["name"] for slug, entry in kb.items()}
 
@@ -228,9 +230,12 @@ def build_all(kb_dir, course_csv, detect_csv, telemetry_map, vd_map, out_dir, ca
     os.makedirs(rkb_dir, exist_ok=True)
 
     # Decode each of our own pcap captures to CSV once up front, so build_track
-    # (called per-slug below) never re-invokes the Go decoder.
+    # (called per-slug below) never re-invokes the Go decoder. `capture_csv_overrides`
+    # seeds already-resolved slug->csv paths (e.g. a multi-layout capture split by
+    # rkb.capture.capture_csvs_for_multi_layout, decoded+split once by the caller)
+    # before the single-layout capture_map entries are decoded below.
     capture_map = capture_map or {}
-    capture_csv_map = {}
+    capture_csv_map = dict(capture_csv_overrides or {})
     for slug, pcap_path in capture_map.items():
         try:
             capture_csv_map[slug] = capture_mod.decode_capture(pcap_path)

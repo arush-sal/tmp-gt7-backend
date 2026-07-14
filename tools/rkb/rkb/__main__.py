@@ -5,6 +5,7 @@ records) rather than crashing."""
 import csv
 import os
 
+from . import capture as capture_mod
 from .build import build_all
 
 # gt7 repo root is 4 parents up from this file:
@@ -53,7 +54,57 @@ _CAPTURE_MAP = {
         "grand-valley-south-reverse-4laps-1stRight-2ndLeft_with_pit_and_track_width-3rdLeft_with_pit_4thCentre.pcapng",
     ),
     "brands-hatch-indy": os.path.join(_RAW_CAPTURE_ROOT, "brand-hatch-indy-3laps-3rd-clean.pcapng"),
+    "special-stage-route-x": os.path.join(_RAW_CAPTURE_ROOT, "special-route-x-1lap.pcapng"),
 }
+
+# Sardegna: ONE capture drove all 6 road layouts (a/a2/b/b2/c/c2) back-to-back with
+# no clean lap-counter separation between them -- the lap counter does not reset at
+# a scenery-select boundary, only the car's position teleports. Split by position
+# discontinuity (rkb.capture.split_capture_by_jumps), match each resulting segment to
+# a layout by nearest bbox center, then split each center's forward/reverse pair by
+# traversal winding (rkb.capture.segment_winding_sign).
+#
+# Candidate bbox centers (world metres, from rkb.db / the existing bbox_from_driven_trace
+# tier for these slugs).
+_SARDEGNA_MULTI_LAYOUT_PCAP = os.path.join(
+    _RAW_CAPTURE_ROOT, "sardegna-layout-a-b-c-forward-and-reverse-6laps-lap-3-width.pcapng"
+)
+_SARDEGNA_SLUG_BBOXES = {
+    "sardegna-road-a": (-8.0, 6.0),
+    "sardegna-road-a2": (-8.0, 6.0),
+    "sardegna-road-b": (-172.0, 146.0),
+    "sardegna-road-b2": (-172.0, 146.0),
+    "sardegna-road-c": (-130.0, 311.0),
+    "sardegna-road-c2": (-130.0, 311.0),
+}
+# Winding-sign calibration: sardegna-road-a is ALREADY resolved via VictoryDash
+# (see _VD_IDENTITY_MAP below); its VictoryDash driven lap has signed-area sign +1
+# (computed once from out/vd-csv/week-28-daily-a-sardegna.csv's clean lap). The
+# segment in each a/b/c pair whose winding matches +1 is the forward layout
+# (no "2" suffix); the opposite sign is the reverse ("2"-suffixed) layout. This
+# convention is applied uniformly to b/b2 and c/c2 -- verified after build by
+# checking the two members of each pair produce distinct, non-degenerate corner
+# sets (see .superpowers/sdd/sardegna-ingest-report.md).
+_SARDEGNA_FORWARD_SIGN = {
+    "sardegna-road-a": 1,
+    "sardegna-road-a2": -1,
+    "sardegna-road-b": 1,
+    "sardegna-road-b2": -1,
+    "sardegna-road-c": 1,
+    "sardegna-road-c2": -1,
+}
+
+
+def _load_sardegna_capture_csv_map() -> dict:
+    if not os.path.isfile(_SARDEGNA_MULTI_LAYOUT_PCAP):
+        return {}
+    try:
+        return capture_mod.capture_csvs_for_multi_layout(
+            _SARDEGNA_MULTI_LAYOUT_PCAP, _SARDEGNA_SLUG_BBOXES, _SARDEGNA_FORWARD_SIGN
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully when the capture is missing/bad
+        print(f"skipping sardegna multi-layout capture: {exc}")
+        return {}
 
 
 def _load_telemetry_map() -> dict:
@@ -86,6 +137,7 @@ def main() -> None:
         vd_map=_load_vd_map(),
         out_dir=OUT_DIR,
         capture_map=_load_capture_map(),
+        capture_csv_overrides=_load_sardegna_capture_csv_map(),
     )
 
 

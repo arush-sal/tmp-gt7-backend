@@ -11,6 +11,7 @@ but there is no separate measured boundary/width ground truth here, so
 boundary/width still come from the SVG outline (derived), not measured.
 """
 import csv
+import math
 import subprocess
 from pathlib import Path
 
@@ -99,3 +100,151 @@ def affine_from_capture(csv_path, outline_px) -> Affine:
         aff = predict_affine(outline_px, outline_perimeter, trace_length)
     aff.source = "capture"
     return aff
+
+
+def split_capture_by_jumps(rows, jump_m=100.0, min_len=2000) -> list:
+    """Split a multi-layout capture's IN-RACE rows into contiguous driven segments.
+
+    GT7's own lap counter does not reset at a scenery/layout-select boundary --
+    only the car's position teleports. So instead of trusting `current_lap`,
+    break wherever two consecutive in-race samples' position jumps by more
+    than `jump_m` metres (a real driven lap never moves that far in one
+    telemetry frame). Segments shorter than `min_len` rows are dropped: a
+    teleport itself produces 1-2 point stub segments, and a genuinely partial
+    / pit-lane run is not worth ingesting as a layout.
+    """
+    in_race = [r for r in rows if r.get("in_race") == "true"]
+    segments = []
+    cur = []
+    prev = None
+    for r in in_race:
+        x, z = float(r["pos_x"]), float(r["pos_z"])
+        if prev is not None and math.hypot(x - prev[0], z - prev[1]) > jump_m:
+            if cur:
+                segments.append(cur)
+            cur = []
+        cur.append(r)
+        prev = (x, z)
+    if cur:
+        segments.append(cur)
+    return [s for s in segments if len(s) >= min_len]
+
+
+def _segment_bbox_center(segment):
+    xs = [float(r["pos_x"]) for r in segment]
+    zs = [float(r["pos_z"]) for r in segment]
+    return ((min(xs) + max(xs)) / 2.0, (min(zs) + max(zs)) / 2.0)
+
+
+def _signed_area(segment):
+    xs = [float(r["pos_x"]) for r in segment]
+    zs = [float(r["pos_z"]) for r in segment]
+    area = 0.0
+    n = len(xs)
+    for i in range(n):
+        j = (i + 1) % n
+        area += xs[i] * zs[j] - xs[j] * zs[i]
+    return area / 2.0
+
+
+def segment_winding_sign(segment) -> int:
+    """+1 or -1: sign of the driven path's shoelace signed area.
+
+    Two laps of the SAME physical route driven in opposite directions have
+    opposite winding sign. Bbox center alone can't distinguish forward from
+    reverse (they cover the same ground) -- this is the tie-breaker once a
+    segment has already been matched to a route by bbox center.
+    """
+    return 1 if _signed_area(segment) >= 0 else -1
+
+
+def assign_segments_to_slugs(segments, slug_bboxes) -> dict:
+    """Match driven segments to candidate slugs by nearest bbox-center.
+
+    `slug_bboxes`: {slug: (cx, cz)}. Slugs whose center is (numerically) the
+    same physical spot are a forward/reverse pair for one route -- both of
+    the two nearest segments are claimed for the pair and returned under
+    EACH slug as the same 2-element list (forward vs reverse unresolved; see
+    `resolve_forward_reverse`). A slug with a center no other slug shares
+    gets its single nearest segment directly, as a 1-element list.
+
+    Returns {slug: list[segment]}.
+    """
+    remaining = list(segments)
+    groups = []  # [(center, [slugs sharing it])]
+    for slug, center in slug_bboxes.items():
+        for g in groups:
+            gc = g[0]
+            if math.hypot(gc[0] - center[0], gc[1] - center[1]) < 1.0:
+                g[1].append(slug)
+                break
+        else:
+            groups.append((center, [slug]))
+
+    result = {}
+    for center, slugs in groups:
+        n = len(slugs)
+        remaining.sort(
+            key=lambda s: math.hypot(
+                _segment_bbox_center(s)[0] - center[0], _segment_bbox_center(s)[1] - center[1]
+            )
+        )
+        claimed, remaining = remaining[:n], remaining[n:]
+        for slug in slugs:
+            result[slug] = claimed
+    return result
+
+
+def resolve_forward_reverse(assigned, forward_sign_by_slug) -> dict:
+    """Flatten `assign_segments_to_slugs`'s output into one segment per slug.
+
+    `forward_sign_by_slug`: {slug: +1 or -1}, the `segment_winding_sign` that
+    identifies THIS slug's segment within its (possibly shared) candidate
+    list. For a uniquely-matched slug (1-element list) the sign is moot --
+    its only candidate is returned as-is. For a forward/reverse pair (shared
+    2-element list), the segment whose winding sign matches is picked.
+    """
+    out = {}
+    for slug, segs in assigned.items():
+        if len(segs) == 1:
+            out[slug] = segs[0]
+            continue
+        want = forward_sign_by_slug[slug]
+        matches = [s for s in segs if segment_winding_sign(s) == want]
+        out[slug] = matches[0] if matches else segs[0]
+    return out
+
+
+def _write_rows_csv(rows, csv_path) -> None:
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def capture_csvs_for_multi_layout(pcap_path, slug_bboxes, forward_sign_by_slug, csv_out_dir=None) -> dict:
+    """Decode a single multi-layout pcap ONCE and split it into one CSV per slug.
+
+    Used when several distinct track layouts were driven back-to-back in one
+    capture with no clean lap-counter separation (e.g. Sardegna's 6 road
+    layouts): decode -> `split_capture_by_jumps` -> `assign_segments_to_slugs`
+    -> `resolve_forward_reverse`, then write each resolved slug's rows to its
+    own CSV under `csv_out_dir` (default out/capture-csv/).
+
+    Returns {slug: csv_path}.
+    """
+    csv_path = decode_capture(pcap_path)
+    rows = _load_rows(csv_path)
+    segments = split_capture_by_jumps(rows)
+    assigned = assign_segments_to_slugs(segments, slug_bboxes)
+    resolved = resolve_forward_reverse(assigned, forward_sign_by_slug)
+
+    out_dir = Path(csv_out_dir) if csv_out_dir is not None else (_TOOL_ROOT / "out" / "capture-csv")
+    out = {}
+    for slug, seg_rows in resolved.items():
+        out_path = out_dir / f"{slug}.csv"
+        _write_rows_csv(seg_rows, out_path)
+        out[slug] = str(out_path)
+    return out
