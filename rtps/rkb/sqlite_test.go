@@ -25,12 +25,12 @@ func newTestDBAt(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	// Schema mirrors the generator's current normalized layout (tools/rkb writers): tracks carries the
-	// width_n_total/width_n_kept measurement counts, and width_profile is its own ordered table.
+	// Schema mirrors the generator's current normalized layout (tools/rkb writers): tracks carries a
+	// single constant width_m + width_source (no min/max range, no per-distance profile table).
 	schema := `
 create table tracks(slug text primary key,name text,ddm_id int,hex_id text,base int,
  is_reverse int,is_oval int,length_m real,num_corners_expected int,
- width_m real,width_min_m real,width_max_m real,width_source text,width_n_total int,width_n_kept int,
+ width_m real,width_source text,
  affine_scale real,affine_rot_deg real,affine_tx real,affine_tz real,affine_source text,
  affine_rms_m real,affine_sf_anchor_err_m real,affine_scale_sanity_pct real,
  affine_world_bbox_min_x real,affine_world_bbox_min_z real,affine_world_bbox_max_x real,affine_world_bbox_max_z real,
@@ -43,7 +43,6 @@ create table corners(slug text,turn int,apex_x real,apex_z real,radius_m real,di
 create table corner_phases(slug text,turn int,phase text,world_x real,world_z real,phase_distance_from_apex real);
 create table sectors(slug text,sector text,turns text,label_x real,label_z real);
 create table boundary_points(slug text,side text,idx int,world_x real,world_z real);
-create table width_profile(slug text,idx int,width_m real);
 create table reference_times(slug text,sector text,car_id int,car_category text,performance_point real,reference_time_ms int);`
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatal(err)
@@ -51,9 +50,9 @@ create table reference_times(slug text,sector text,car_id int,car_category text,
 	// one reliable track (hsr) and one needs-capture track (bar)
 	if _, err := db.Exec(
 		`insert into tracks(slug,name,ddm_id,hex_id,length_m,num_corners_expected,affine_source,boundary_source,
-		 coordinate_usability,physical_boundary_fidelity,join_confidence,width_source,width_n_total,width_n_kept) values
-		 ('hsr','High Speed Ring',11,NULL,4345.0,6,'src','outline','generated-coarse','derived','exact','svg_stroke',3,3),
-		 ('bar','Bar',NULL,NULL,NULL,NULL,'src','outline','needs-capture','none','fuzzy','svg_stroke',NULL,NULL)`); err != nil {
+		 coordinate_usability,physical_boundary_fidelity,join_confidence,width_m,width_source) values
+		 ('hsr','High Speed Ring',11,NULL,4345.0,6,'src','outline','generated-coarse','derived','exact',9.7,'svg_stroke'),
+		 ('bar','Bar',NULL,NULL,NULL,NULL,'src','outline','needs-capture','none','fuzzy',NULL,'svg_stroke')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(
@@ -76,10 +75,6 @@ create table reference_times(slug text,sector text,car_id int,car_category text,
 	if _, err := db.Exec(
 		`insert into boundary_points(slug,side,idx,world_x,world_z) values
 		 ('hsr','outline',0,0.0,0.0),('hsr','cl',1,3.0,4.0),('hsr','cl',0,1.0,2.0)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(
-		`insert into width_profile(slug,idx,width_m) values('hsr',0,9.6),('hsr',1,9.8),('hsr',2,9.7)`); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -162,11 +157,11 @@ func TestSQLiteStore_Track(t *testing.T) {
 		*rec.Boundary.Cl[0][0] != 1.0 || *rec.Boundary.Cl[1][0] != 3.0 {
 		t.Errorf("cl wrong/unordered: %+v", rec.Boundary.Cl)
 	}
-	if rec.Width.NTotal == nil || *rec.Width.NTotal != 3 {
-		t.Errorf("width n_total wrong: %+v", rec.Width.NTotal)
+	if rec.Width.WidthM == nil || *rec.Width.WidthM != 9.7 {
+		t.Errorf("width_m wrong: %+v", rec.Width.WidthM)
 	}
-	if rec.Width.Profile == nil || len(*rec.Width.Profile) != 3 || (*rec.Width.Profile)[1] != 9.8 {
-		t.Errorf("width profile wrong: %+v", rec.Width.Profile)
+	if rec.Width.Source != "svg_stroke" {
+		t.Errorf("width source wrong: %+v", rec.Width.Source)
 	}
 }
 

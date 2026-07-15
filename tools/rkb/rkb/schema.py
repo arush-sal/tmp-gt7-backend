@@ -49,7 +49,8 @@ def record_to_dict(ref, affine, corners, sectors, boundary, width, confidence, p
         corners: List of corner dicts
         sectors: List of sector dicts
         boundary: Boundary dict
-        width: Width dict
+        width: Width dict (may carry internal measurement fields; only width_m/source
+            are kept in the record -- see the trim below)
         confidence: Confidence dict
         provenance: Provenance dict
 
@@ -70,7 +71,11 @@ def record_to_dict(ref, affine, corners, sectors, boundary, width, confidence, p
         "corners": corners,
         "sectors": sectors,
         "boundary": boundary,
-        "width": width,
+        # Width is a single scalar + its provenance -- callers (width.py, victorydash.py,
+        # width_surface.py, width_calib.py) may compute internal fields (min_m/max_m/
+        # profile/n_kept/n_total) for ranking/calibration, but only width_m and source
+        # are part of the published record shape.
+        "width": {"width_m": width.get("width_m"), "source": width.get("source")},
         "confidence": confidence,
         "provenance": provenance,
     }

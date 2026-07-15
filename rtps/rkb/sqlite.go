@@ -78,7 +78,7 @@ func (s *SQLiteStore) Track(ctx context.Context, slug string) (*Record, bool, er
 		        affine_rms_m,affine_sf_anchor_err_m,affine_scale_sanity_pct,
 		        affine_world_bbox_min_x,affine_world_bbox_min_z,affine_world_bbox_max_x,affine_world_bbox_max_z,
 		        affine_svg_bbox_min_x,affine_svg_bbox_min_y,affine_svg_bbox_max_x,affine_svg_bbox_max_y,
-		        boundary_source,width_m,width_min_m,width_max_m,width_source,width_n_total,width_n_kept,
+		        boundary_source,width_m,width_source,
 		        coordinate_usability,physical_boundary_fidelity,join_confidence,
 		        provenance_affine,provenance_corners,provenance_boundary,provenance_width
 		 from tracks where slug=?`, slug).Scan(
@@ -86,8 +86,7 @@ func (s *SQLiteStore) Track(ctx context.Context, slug string) (*Record, bool, er
 		&rec.LengthM, &rec.NumCornersExpected,
 		&a.Scale, &a.RotDeg, &a.Tx, &a.Tz, &a.Source, &a.RmsM, &a.SfAnchorErrM, &a.ScaleSanityPct,
 		&wbMinX, &wbMinZ, &wbMaxX, &wbMaxZ, &sbMinX, &sbMinY, &sbMaxX, &sbMaxY,
-		&rec.Boundary.Source, &rec.Width.WidthM, &rec.Width.MinM, &rec.Width.MaxM, &rec.Width.Source,
-		&rec.Width.NTotal, &rec.Width.NKept,
+		&rec.Boundary.Source, &rec.Width.WidthM, &rec.Width.Source,
 		&rec.Confidence.CoordinateUsability, &rec.Confidence.PhysicalBoundaryFidelity, &rec.Confidence.Join,
 		&rec.Provenance.Affine, &rec.Provenance.Corners, &rec.Provenance.Boundary, &rec.Provenance.Width,
 	)
@@ -101,9 +100,6 @@ func (s *SQLiteStore) Track(ctx context.Context, slug string) (*Record, bool, er
 	a.SvgBbox = bbox4(sbMinX, sbMinY, sbMaxX, sbMaxY)
 	rec.Affine = a
 
-	if err := s.loadWidth(ctx, rec); err != nil {
-		return nil, false, err
-	}
 	if err := s.loadCorners(ctx, rec); err != nil {
 		return nil, false, err
 	}
@@ -135,29 +131,6 @@ func nullF(n sql.NullFloat64) *float64 {
 	}
 	v := n.Float64
 	return &v
-}
-
-// loadWidth reads the measured cross-section series (measured/victorydash tracks) ordered by idx into
-// Width.Profile. Profile stays nil (JSON null) for SVG tracks, which have no width_profile rows.
-func (s *SQLiteStore) loadWidth(ctx context.Context, rec *Record) error {
-	rows, err := s.db.QueryContext(ctx,
-		`select width_m from width_profile where slug=? order by idx`, rec.Slug)
-	if err != nil {
-		return fmt.Errorf("rkb: width_profile %s: %w", rec.Slug, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var prof []float64
-	for rows.Next() {
-		var w float64
-		if err := rows.Scan(&w); err != nil {
-			return fmt.Errorf("rkb: width_profile scan: %w", err)
-		}
-		prof = append(prof, w)
-	}
-	if prof != nil {
-		rec.Width.Profile = &prof
-	}
-	return rows.Err()
 }
 
 func (s *SQLiteStore) loadCorners(ctx context.Context, rec *Record) error {

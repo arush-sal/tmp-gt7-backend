@@ -111,16 +111,11 @@ type Boundary struct {
 	Cl      [][]*float64 `json:"cl,omitempty"` // centerline (measured tracks)
 }
 
-// Width is nominal + min/max + measured profile/counts. profile is the per-cross-section series
-// (measured tracks; null otherwise); width_m/min_m/max_m are its mean/min/max.
+// Width is a single constant scalar for the whole track (per the base-width pass in the
+// generator) plus its measurement source. There is no per-distance profile or min/max range.
 type Width struct {
-	WidthM  *float64   `json:"width_m"`
-	MinM    *float64   `json:"min_m"`
-	MaxM    *float64   `json:"max_m"`
-	Source  string     `json:"source"`
-	Profile *[]float64 `json:"profile"`
-	NTotal  *int       `json:"n_total,omitempty"` // measurement provenance; omitempty tag finalized by Task 6 gate
-	NKept   *int       `json:"n_kept,omitempty"`
+	WidthM *float64 `json:"width_m"`
+	Source string   `json:"source"`
 }
 
 // Confidence carries the two independent tier dims + the join label.

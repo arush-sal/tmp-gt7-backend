@@ -14,8 +14,7 @@ _SCHEMA = """
 create table tracks(
   slug text primary key, name text, ddm_id int, hex_id text, base int,
   is_reverse int, is_oval int, length_m real, num_corners_expected int,
-  width_m real, width_min_m real, width_max_m real, width_source text,
-  width_n_total int, width_n_kept int,
+  width_m real, width_source text,
   affine_scale real, affine_rot_deg real, affine_tx real, affine_tz real, affine_source text,
   affine_rms_m real, affine_sf_anchor_err_m real, affine_scale_sanity_pct real,
   affine_world_bbox_min_x real, affine_world_bbox_min_z real,
@@ -33,7 +32,6 @@ create table corner_phases(
   slug text, turn int, phase text, world_x real, world_z real, phase_distance_from_apex real);
 create table sectors(slug text, sector text, turns text, label_x real, label_z real);
 create table boundary_points(slug text, side text, idx int, world_x real, world_z real);
-create table width_profile(slug text, idx int, width_m real);
 create table reference_times(
   slug text, sector text, car_id int, car_category text, performance_point real,
   reference_time_ms int, unique(slug, sector, car_id, performance_point));
@@ -41,7 +39,6 @@ create index idx_corners_slug on corners(slug);
 create index idx_corner_phases_slug on corner_phases(slug, turn);
 create index idx_sectors_slug on sectors(slug);
 create index idx_boundary_points_slug on boundary_points(slug);
-create index idx_width_profile_slug on width_profile(slug);
 create index idx_reference_times_slug on reference_times(slug);
 """
 
@@ -80,20 +77,19 @@ def build_db(records, path):
         con.execute(
             "insert into tracks("
             "slug,name,ddm_id,hex_id,base,is_reverse,is_oval,length_m,num_corners_expected,"
-            "width_m,width_min_m,width_max_m,width_source,width_n_total,width_n_kept,"
+            "width_m,width_source,"
             "affine_scale,affine_rot_deg,affine_tx,affine_tz,affine_source,"
             "affine_rms_m,affine_sf_anchor_err_m,affine_scale_sanity_pct,"
             "affine_world_bbox_min_x,affine_world_bbox_min_z,affine_world_bbox_max_x,affine_world_bbox_max_z,"
             "affine_svg_bbox_min_x,affine_svg_bbox_min_y,affine_svg_bbox_max_x,affine_svg_bbox_max_y,"
             "boundary_source,coordinate_usability,physical_boundary_fidelity,join_confidence,"
             "provenance_affine,provenance_corners,provenance_boundary,provenance_width) "
-            "values(" + ",".join(["?"] * 39) + ")",
+            "values(" + ",".join(["?"] * 35) + ")",
             (
                 r["slug"], r["name"], r.get("ddm_id"), r.get("hex_id"), r.get("base"),
                 _b(r.get("is_reverse")), _b(r.get("is_oval")), r.get("length_m"),
                 r.get("num_corners_expected"),
-                w.get("width_m"), w.get("min_m"), w.get("max_m"), w.get("source"),
-                w.get("n_total"), w.get("n_kept"),
+                w.get("width_m"), w.get("source"),
                 a.get("scale"), a.get("rot_deg"), a.get("tx"), a.get("tz"), a.get("source"),
                 a.get("rms_m"), a.get("sf_anchor_err_m"), a.get("scale_sanity_pct"),
                 wbx[0], wbx[1], wbx[2], wbx[3], sbx[0], sbx[1], sbx[2], sbx[3],
@@ -158,10 +154,6 @@ def build_db(records, path):
                     (r["slug"], side, i, p[0], p[1]),
                 )
                 counts["boundary_points"] += 1
-        for i, wv in enumerate(w.get("profile") or []):
-            con.execute("insert into width_profile values(?,?,?)", (r["slug"], i, wv))
-            counts.setdefault("width_profile", 0)
-            counts["width_profile"] += 1
     con.commit()
     con.close()
     return counts

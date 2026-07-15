@@ -14,7 +14,6 @@ def _rec():
         "is_oval": False,
         "length_m": 4345.0,
         "num_corners_expected": 6,
-        "width": {"width_m": 10.0, "source": "svg_stroke"},
         "affine": {
             "scale": 0.6,
             "rot_deg": 0.0,
@@ -149,16 +148,20 @@ def test_boundary_points_renamed(tmp_path):
     assert "world_x" in cols and "world_z" in cols and "x" not in cols
 
 
-def test_width_profile_and_measurement_columns(tmp_path):
+def test_width_is_single_scalar_no_profile_or_range(tmp_path):
+    """Width is a single constant width_m + source: no min/max range column and no
+    per-distance width_profile table."""
     rec = _rec()
-    rec["width"] = {"width_m": 10.0, "min_m": 8.0, "max_m": 14.0, "source": "victorydash",
-                    "n_total": 100, "n_kept": 98, "profile": [8.0, 9.0, 14.0]}
+    rec["width"] = {"width_m": 10.0, "source": "victorydash"}
     p = tmp_path / "r.db"; build_db([rec], str(p))
     con = sqlite3.connect(p)
     cols = [r[1] for r in con.execute("PRAGMA table_info(tracks)")]
-    assert "width_n_total" in cols and "width_n_kept" in cols
-    assert con.execute("select width_n_total, width_n_kept from tracks where slug='x'").fetchone() == (100, 98)
-    assert con.execute("select width_m from width_profile where slug='x' order by idx").fetchall() == [(8.0,), (9.0,), (14.0,)]
+    assert "width_m" in cols and "width_source" in cols
+    assert "width_min_m" not in cols and "width_max_m" not in cols
+    assert "width_n_total" not in cols and "width_n_kept" not in cols
+    assert con.execute("select width_m, width_source from tracks where slug='x'").fetchone() == (10.0, "victorydash")
+    tables = [r[0] for r in con.execute("select name from sqlite_master where type='table'")]
+    assert "width_profile" not in tables
 
 
 def test_boundary_cl_side_stored(tmp_path):
