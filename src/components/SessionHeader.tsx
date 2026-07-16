@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { LiveView } from "../lib/liveView";
 import type { CornerAnalysis } from "../mock/snapshot";
 import { PLACEHOLDER } from "../lib/format";
@@ -5,9 +6,11 @@ import { PLACEHOLDER } from "../lib/format";
 interface Props {
   view: LiveView | null;
   selectedCorner: CornerAnalysis | null;
+  trackPicker?: ReactNode;
+  lapSelector?: ReactNode;
 }
 
-export default function SessionHeader({ view, selectedCorner }: Props) {
+export default function SessionHeader({ view, selectedCorner, trackPicker, lapSelector }: Props) {
   const ph = "—";
   const deltaClass =
     view?.deltaTone === "blue" ? "text-blue" : view?.deltaTone === "red" ? "text-red" : "text-muted";
@@ -23,13 +26,16 @@ export default function SessionHeader({ view, selectedCorner }: Props) {
         </div>
 
         <div className="header-cell">
-          <span className="label">Lap</span>
-          <span className="mono header-val">{view ? view.lap : ph}</span>
+          <div className="lap-cell-row">
+            <span className="label">Lap</span>
+            <span className="mono header-val">{view ? view.lap : ph}</span>
+          </div>
+          {lapSelector}
         </div>
 
         <div className="header-cell header-cell--wide">
           <span className="label">Track / Layout</span>
-          <span className="header-val text-muted">{ph}</span>
+          {trackPicker ?? <span className="header-val text-muted">{ph}</span>}
         </div>
 
         {selectedCorner ? (

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDuration, nsToClock, nsToDeltaSeconds, PLACEHOLDER } from "./format";
+import { parseDuration, nsToClock, nsToDeltaSeconds, msToSectorTime, PLACEHOLDER } from "./format";
 
 describe("parseDuration", () => {
   it("parses whole seconds", () => expect(parseDuration("77s")).toBe(77_000_000_000));
@@ -34,6 +34,12 @@ describe("nsToDeltaSeconds", () => {
   it("formats negative with Unicode minus", () =>
     expect(nsToDeltaSeconds(-910_000_000)).toBe("−0.910s"));
   it("treats zero as positive", () => expect(nsToDeltaSeconds(0)).toBe("+0.000s"));
+});
+
+describe("msToSectorTime", () => {
+  it("formats sub-minute as SS.mmm", () => expect(msToSectorTime(12345)).toBe("12.345"));
+  it("formats a minute or more as M:SS.mmm", () => expect(msToSectorTime(65_432)).toBe("1:05.432"));
+  it("null -> PLACEHOLDER", () => expect(msToSectorTime(null)).toBe(PLACEHOLDER));
 });
 
 describe("PLACEHOLDER", () => {

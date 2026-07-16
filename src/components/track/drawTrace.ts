@@ -1,0 +1,106 @@
+import type { TracePoint } from "../../lib/historyStore";
+import { worldToScreen, type View } from "../../lib/trackTransform";
+import { traceColor, brakeSpans } from "../../lib/traceColor";
+import { decimate, penUpBreaks } from "../../lib/traceDecimate";
+
+const TOOTH_STEP = 7; // px, fixed arc-length step between sawtooth vertices
+const TOOTH_AMP = 3;  // px, perpendicular offset amplitude
+
+// Resample a screen-space polyline at a fixed arc-length step, offsetting each
+// vertex perpendicular to the local segment direction by alternating +/- amp.
+function sawtoothPoints(pts: ReadonlyArray<{ sx: number; sy: number }>, step: number, amp: number):
+  Array<{ x: number; y: number }> {
+  if (pts.length < 2) return [];
+  const segLen: number[] = [];
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const l = Math.hypot(pts[i].sx - pts[i - 1].sx, pts[i].sy - pts[i - 1].sy);
+    segLen.push(l);
+    total += l;
+  }
+  if (total <= 0) return [];
+  const out: Array<{ x: number; y: number }> = [];
+  let segIdx = 0, segStart = 0, tooth = 0;
+  for (let d = 0; d <= total; d += step) {
+    while (segIdx < segLen.length - 1 && d > segStart + segLen[segIdx]) {
+      segStart += segLen[segIdx];
+      segIdx++;
+    }
+    const a = pts[segIdx], b = pts[segIdx + 1];
+    const dx = b.sx - a.sx, dy = b.sy - a.sy;
+    const len = Math.hypot(dx, dy) || 1;
+    const t = Math.max(0, Math.min(1, (d - segStart) / len));
+    const px = a.sx + dx * t, py = a.sy + dy * t;
+    const nx = -dy / len, ny = dx / len;
+    const sign = tooth % 2 === 0 ? 1 : -1;
+    out.push({ x: px + nx * amp * sign, y: py + ny * amp * sign });
+    tooth++;
+  }
+  return out;
+}
+
+// Regular sawtooth ribbon drawn on top of the racing line, confined to brake spans.
+function drawBrakeSawtooth(ctx: CanvasRenderingContext2D, keptPts: ReadonlyArray<TracePoint>,
+                          spans: ReadonlyArray<[number, number]>, view: View, alpha: number) {
+  if (spans.length === 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = "rgba(225,6,0,0.9)";
+  ctx.lineWidth = 1.2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const [start, end] of spans) {
+    if (end - start < 1) continue; // need at least 2 points to have a direction
+    const screenPts = [];
+    for (let i = start; i <= end; i++) screenPts.push(worldToScreen(view, keptPts[i].posX, keptPts[i].posZ));
+    const teeth = sawtoothPoints(screenPts, TOOTH_STEP, TOOTH_AMP);
+    if (teeth.length < 2) continue;
+    ctx.beginPath();
+    ctx.moveTo(teeth[0].x, teeth[0].y);
+    for (let i = 1; i < teeth.length; i++) ctx.lineTo(teeth[i].x, teeth[i].y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawLap(ctx: CanvasRenderingContext2D, pts: ReadonlyArray<TracePoint>, view: View,
+                theme: "light" | "dark", alpha: number) {
+  if (pts.length < 2) return;
+  const keep = decimate(pts, view, 1);
+  const keptPts = keep.map(i => pts[i]);
+  const dts = keep.map(() => 1 / 60); // uniform 60Hz; refine if per-sample dt is threaded later
+  const breaks = penUpBreaks(keptPts, dts, 200);
+  const spans = brakeSpans(keptPts.map(p => p.brake));
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  for (let k = 1; k < keep.length; k++) {
+    if (breaks.has(k)) continue; // pen-up: skip this segment
+    const a = pts[keep[k - 1]], b = pts[keep[k]];
+    const pa = worldToScreen(view, a.posX, a.posZ), pb = worldToScreen(view, b.posX, b.posZ);
+    ctx.strokeStyle = traceColor(b.throttle, b.brake, theme, alpha);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(pa.sx, pa.sy);
+    ctx.lineTo(pb.sx, pb.sy);
+    ctx.stroke();
+  }
+  ctx.restore();
+  drawBrakeSawtooth(ctx, keptPts, spans, view, alpha); // on top of the racing line, brake spans only
+}
+
+export function drawTrace(ctx: CanvasRenderingContext2D, opts: {
+  trace: { completed: readonly (readonly TracePoint[])[]; current: readonly TracePoint[] };
+  view: View; theme: "light" | "dark";
+  select?: "all" | "current" | number;
+}) {
+  const select = opts.select ?? "all";
+  if (select === "all") {
+    for (const lap of opts.trace.completed) drawLap(ctx, lap, opts.view, opts.theme, 0.35);
+    drawLap(ctx, opts.trace.current, opts.view, opts.theme, 1);
+  } else if (select === "current") {
+    drawLap(ctx, opts.trace.current, opts.view, opts.theme, 1);
+  } else {
+    const lap = opts.trace.completed[select];
+    if (lap) drawLap(ctx, lap, opts.view, opts.theme, 1);
+  }
+}

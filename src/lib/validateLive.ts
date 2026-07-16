@@ -69,6 +69,7 @@ const FORMAT_C_NUM = [
   "sway", "heave", "surge", "brake_filtered",
   "torque_vector_fl", "torque_vector_fr", "torque_vector_rl", "torque_vector_rr",
   "energy_recovery", "unknown_u8_13e", "unknown_u8_13f", "unknown_f32_154",
+  "position_x", "position_y", "position_z",
 ] as const;
 const FORMAT_C_STR = ["surface_type", "car_category"] as const;
 
@@ -102,6 +103,11 @@ function validateEnrichment(raw: unknown): Enrichment {
   if ("session_id" in e && typeof e.session_id !== "string") {
     throw new Error("enrichment.session_id: expected a string when present");
   }
+  // track_confidence: optional string | null; read leniently (drop wrong-typed rather than throw).
+  const trackConfidence =
+    typeof e.track_confidence === "string" || e.track_confidence === null
+      ? (e.track_confidence as string | null)
+      : undefined;
   if (e.car_name !== null && typeof e.car_name !== "string") throw new Error("enrichment.car_name: expected string or null");
   if (e.track !== null && typeof e.track !== "string") throw new Error("enrichment.track: expected string or null");
   const delta = e.delta_to_best_ns === null ? null : safeIntNs(e.delta_to_best_ns, "enrichment.delta_to_best_ns");
@@ -113,6 +119,7 @@ function validateEnrichment(raw: unknown): Enrichment {
     car_name: (e.car_name as string | null),
     track: (e.track as string | null),
     delta_to_best_ns: delta,
+    ...(trackConfidence !== undefined ? { track_confidence: trackConfidence } : {}),
   };
 }
 

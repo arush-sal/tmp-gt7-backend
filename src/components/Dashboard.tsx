@@ -1,18 +1,29 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { mockCorners, mockCornerDetails } from "../mock/snapshot";
 import type { CornerAnalysis } from "../mock/snapshot";
 import { useSession } from "../hooks/useSession";
 import { useHistory } from "../hooks/useHistory";
+import { useTrack } from "../hooks/useTrack";
+import { useSectorTimes } from "../hooks/useSectorTimes";
 import { toLiveView } from "../lib/liveView";
+import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
+import { toDrawGeometry } from "../lib/rkbGeometry";
+import { insideFraction, isMismatch } from "../lib/trackMismatch";
+import { initialSel, reduceAuto, reduceManual } from "../lib/trackSelection";
+import { clampIndex } from "../lib/trackScrub";
 import SessionHeader from "./SessionHeader";
-import TrackMap from "./TrackMap";
+import { TrackPicker, type TrackListItem } from "./track/TrackPicker";
+import TrackTraceCanvas from "./track/TrackTraceCanvas";
+import { ConfidenceBadges } from "./track/ConfidenceBadges";
 import TelemetryPanel from "./telemetry/TelemetryPanel";
 import FloatingPanel from "./telemetry/FloatingPanel";
 import CornerDetailPanel from "./CornerDetailPanel";
 import RightPanel from "./RightPanel";
 
-export default function Dashboard({ source = subscribeLive }: { source?: LiveSource }) {
+export default function Dashboard({ source = subscribeLive, theme = "light" }: {
+  source?: LiveSource; theme?: "light" | "dark";
+}) {
   const { snapshot, error } = useSession(undefined, source);
   const view = snapshot ? toLiveView(snapshot) : null;
   // Independent live subscription (per the plan: fan-out to a single subscription is a
@@ -20,10 +31,111 @@ export default function Dashboard({ source = subscribeLive }: { source?: LiveSou
   // useSession so tests (and a future single-subscription refactor) see one seam.
   const history = useHistory(source);
 
+  // Fuel card: used/lap from the most recently completed lap; laps left projects the
+  // current tank against that burn rate. Both null when data is insufficient (e.g. no
+  // completed lap yet, or the store detected a refuel anomaly).
+  const usedPerLap = history.lastLapFuelUsedPct();
+  const currentFuelPct = snapshot?.derived?.fuel_pct ?? null;
+  const lapsLeft = estimateLapsLeft(currentFuelPct, usedPerLap);
+
   const [selectedCornerId, setSelectedCornerId] = useState<number | null>(null);
   const selectedCornerDetail: CornerAnalysis | null =
     selectedCornerId !== null ? (mockCornerDetails.find(c => c.id === selectedCornerId) ?? null) : null;
   const handleCornerSelect = (id: number | null) => setSelectedCornerId(id);
+
+  // Track list for the picker — fetched once; failure just leaves the list empty.
+  const [trackList, setTrackList] = useState<TrackListItem[]>([]);
+  useEffect(() => {
+    let active = true;
+    const ctrl = new AbortController();
+    fetch("/v1/tracks", { signal: ctrl.signal })
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+      .then((items: TrackListItem[]) => { if (active) setTrackList(items); })
+      .catch((e) => { if (e.name === "AbortError") return; if (active) setTrackList([]); });
+    return () => { active = false; ctrl.abort(); };
+  }, []);
+
+  // Track selection: auto-detect within the first observed lap, else stay pickable manually.
+  const [sel, setSel] = useState(initialSel);
+  useEffect(() => {
+    setSel(initialSel);
+  }, [snapshot?.enrichment?.session_id]);
+  useEffect(() => {
+    setSel(s => reduceAuto(
+      s,
+      snapshot?.enrichment?.track ?? null,
+      snapshot?.frame?.current_lap ?? 0,
+      (snapshot?.frame?.car_speed ?? 0) > 1,
+    ));
+  }, [snapshot]);
+
+  const track = useTrack(sel.slug);
+  const geometry = useMemo(() => (track.record ? toDrawGeometry(track.record) : null), [track.record]);
+  const sectorTimes = useSectorTimes(snapshot, geometry, sel.slug);
+
+  // Best-candidate shortlist for the header picker: cap to 3 so drivers aren't scrolling
+  // through all 121 tracks. Interim heuristic only -- true detection-ranked candidates
+  // need a backend `track_candidates` field (follow-up); until then we approximate with
+  // the auto-detected slug (if any) plus tracks whose coordinates are known-reliable.
+  const candidates = useMemo(() => {
+    const autoSlug = sel.slug ?? snapshot?.enrichment?.track ?? null;
+    const out: TrackListItem[] = [];
+    const seen = new Set<string>();
+    const add = (item: TrackListItem | undefined) => {
+      if (item && !seen.has(item.slug)) { seen.add(item.slug); out.push(item); }
+    };
+    if (autoSlug) add(trackList.find(t => t.slug === autoSlug));
+    for (const t of trackList) {
+      if (out.length >= 3) break;
+      if (t.coordinate_usability === "generated-reliable") add(t);
+    }
+    return out.slice(0, 3);
+  }, [trackList, sel.slug, snapshot?.enrichment?.track]);
+
+  // Lap selection: which lap's trace is drawn on the canvas. Defaults to "all"
+  // (current behaviour: faint completed laps + full current lap).
+  const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("all");
+  const completedLapCount = history.completedLapCount();
+
+  // Analysis mode: a completed lap is selected -> a scrub cursor can be placed/stepped
+  // along that lap's trace, and the telemetry graphs switch to showing that lap's data.
+  const analysisLap = typeof selectedLap === "number" ? (history.trace().completed[selectedLap] ?? null) : null;
+  const [scrubIndex, setScrubIndex] = useState<number | null>(null);
+  useEffect(() => {
+    setScrubIndex(null);
+  }, [selectedLap]);
+  useEffect(() => {
+    if (!analysisLap) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      const dir = e.key === "ArrowRight" ? 1 : -1;
+      setScrubIndex(prev => clampIndex((prev ?? 0) + dir, analysisLap.length));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [analysisLap]);
+
+  // Mismatch check is a dev nudge, not per-frame work — throttle to 1/s.
+  const [mismatch, setMismatch] = useState(false);
+  useEffect(() => {
+    if (!geometry) { setMismatch(false); return; }
+    const id = setInterval(() => {
+      setMismatch(isMismatch(insideFraction(history.trace().current, geometry)));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [geometry, history]);
+
+  // The track name itself is redundant here -- it's already shown in the header picker --
+  // so the canvas footer only carries actionable status text (error / still-detecting /
+  // no-match), alongside the confidence badges.
+  const statusMessage = error
+    ? `stream error: ${error.message}`
+    : sel.slug
+      ? null
+      : !sel.autoClosed
+        ? "detecting track..."
+        : "no track - pick one from the list";
 
   return (
     <>
@@ -37,23 +149,70 @@ export default function Dashboard({ source = subscribeLive }: { source?: LiveSou
         </div>
       )}
 
-      <SessionHeader view={view} selectedCorner={selectedCornerDetail} />
+      <SessionHeader
+        view={view}
+        selectedCorner={selectedCornerDetail}
+        trackPicker={
+          <TrackPicker
+            value={sel.slug}
+            items={candidates}
+            onPick={slug => setSel(s => reduceManual(s, slug))}
+          />
+        }
+        lapSelector={
+          <select
+            aria-label="Lap"
+            className="header-select"
+            value={String(selectedLap)}
+            onChange={e => {
+              const v = e.target.value;
+              setSelectedLap(v === "all" || v === "current" ? v : Number(v));
+            }}
+          >
+            <option value="all">All laps</option>
+            <option value="current">Current lap</option>
+            {Array.from({ length: completedLapCount }, (_, i) => (
+              <option key={i} value={i}>Lap {i + 1}</option>
+            ))}
+          </select>
+        }
+      />
 
       <div className="dashboard-body">
         <div className="center-column">
-          <TrackMap
-            corners={mockCorners}
-            selectedCornerId={selectedCornerId}
-            onCornerSelect={handleCornerSelect}
-            selectedCornerDetail={selectedCornerDetail}
-          />
+          <div className="track-panel">
+            <TrackTraceCanvas
+              store={history}
+              geometry={geometry}
+              theme={theme}
+              selectedLap={selectedLap}
+              analysisLap={analysisLap}
+              scrubIndex={scrubIndex}
+              onScrub={setScrubIndex}
+              footer={
+                <>
+                  {statusMessage && <span className="track-status-text">{statusMessage}</span>}
+                  <ConfidenceBadges
+                    coordinate={track.record?.confidence?.coordinate_usability}
+                    boundary={track.record?.confidence?.physical_boundary_fidelity}
+                    trackConfidence={snapshot?.enrichment?.track_confidence}
+                    mismatch={mismatch}
+                  />
+                </>
+              }
+            />
+          </div>
           <FloatingPanel
             key="telemetry"
             storageKey="gt7:telemetry-geom"
             defaultGeom={{ x: 12, y: 12, width: 380, height: 640 }}
             dragHandleClassName="telemetry-panel__header"
           >
-            <TelemetryPanel store={history} />
+            <TelemetryPanel
+              store={history}
+              analysisLapIndex={typeof selectedLap === "number" ? selectedLap : null}
+              analysisScrubIndex={scrubIndex}
+            />
           </FloatingPanel>
           {selectedCornerDetail !== null && (
             <FloatingPanel
@@ -74,6 +233,9 @@ export default function Dashboard({ source = subscribeLive }: { source?: LiveSou
             selectedCornerId={selectedCornerId}
             onCornerSelect={handleCornerSelect}
             selectedCornerDetail={selectedCornerDetail}
+            usedPerLap={usedPerLap}
+            lapsLeft={lapsLeft}
+            sectorTimes={sectorTimes}
           />
         </div>
       </div>

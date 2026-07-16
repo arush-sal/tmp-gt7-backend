@@ -311,22 +311,13 @@ body {
   font-family: var(--data);
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.2;
 }
 
 .muted { color: var(--text-muted); }
 
-/* ── Track map ───────────────────────────────────────────────────────────── */
-
-.track-map {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  padding: 14px;
-  min-height: 0;
-}
-
-/* Wraps TrackMap in Dashboard so the floating telemetry-panel overlay variant has a
-   positioned ancestor to anchor to (the center canvas area). */
+/* Wraps the track-trace panel in Dashboard so the floating telemetry-panel overlay
+   variant has a positioned ancestor to anchor to (the center canvas area). */
 .center-column {
   flex: 1;
   display: flex;
@@ -336,7 +327,69 @@ body {
   position: relative;
 }
 
-.track-map__header {
+/* ── Track trace panel (live P2) ─────────────────────────────────────────── */
+
+.track-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.track-picker {
+  font-family: var(--ui);
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--surface);
+  align-self: flex-start;
+}
+
+/* Header-embedded selects (track picker, lap picker) -- compact, matches header-val. */
+.header-cell .track-picker,
+.header-select {
+  font-family: var(--data);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-2);
+  color: var(--text);
+  background: var(--surface);
+  max-width: 100%;
+}
+.header-cell--wide .track-picker { align-self: center; }
+
+/* Lap cell: row 1 is "LAP" label + current/total value on one line (space-between);
+   row 2 is the lap-selector directly below, kept compact so the header-bar's height
+   stays whatever the OTHER (label+value-only) cells dictate. */
+.lap-cell-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+.lap-cell-row .header-val { line-height: 1; }
+.header-cell > .header-select {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.1;
+  padding: 0 3px;
+  border-radius: 4px;
+  margin-top: 1px;
+}
+
+.track-trace-canvas {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  min-height: 0;
+}
+
+.track-trace-canvas__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -344,58 +397,36 @@ body {
   flex-shrink: 0;
 }
 
-.track-map__canvas {
+.track-trace-canvas__stage-wrap {
   flex: 1;
   background: var(--map-bg);
   border: 1px dashed var(--border);
   border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   position: relative;
   overflow: hidden;
   min-height: 0;
 }
 
-.track-map__svg-wrap {
-  width: min(100%, 560px);
-  position: relative;
-}
-
-.track-map__legend {
+.track-status {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
   flex-shrink: 0;
 }
 
-.track-map__hint {
-  position: absolute;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
+.track-status-text {
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--text-muted);
-  background: var(--surface);
-  padding: 3px 12px;
-  border-radius: 20px;
-  border: 1px dashed var(--border);
-  white-space: nowrap;
-  pointer-events: none;
 }
 
-.map-callout {
-  position: absolute;
-  font-family: var(--data);
-  font-size: 9px;
-  padding: 2px 6px;
-  border-radius: 5px;
-  white-space: nowrap;
-  pointer-events: none;
+.confidence-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
-.map-callout--red   { color: var(--red);        background: var(--surface); border: 1px solid rgba(225,6,0,.3); }
-.map-callout--amber { color: var(--amber-dark);  background: var(--surface); border: 1px solid rgba(245,208,32,.5); }
 
 /* ── Telemetry accordion ─────────────────────────────────────────────────── */
 
@@ -448,6 +479,7 @@ body {
    look (surface, border, shadow) and make it a column-flex container so the
    height it's given actually flows down into the graphs (see flex chain below). */
 .floating-panel {
+  position: relative; /* anchors the collapse button overlay */
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--surface) 96%, transparent);
@@ -460,6 +492,28 @@ body {
    floating-panel's border/shadow/bg — the float already provides the surface. Descendant
    selector because react-rnd may wrap the children in its own content div. */
 .floating-panel .card { border: none; box-shadow: none; background: transparent; }
+
+/* Collapse toggle -- overlaid top-right, on top of the child's own header row. Sits
+   outside dragHandleClassName so it never starts a drag; onMouseDown also stops
+   propagation as a belt-and-braces guard. */
+.floating-panel__collapse {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 5;
+  line-height: 1;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.floating-panel__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.floating-panel__body--collapsed { display: none; }
 
 /* ── Telemetry panel (uPlot graphs) — single-metric accordion cards, floating ── */
 

@@ -1,0 +1,11 @@
+// @vitest-environment jsdom
+import { render, screen, fireEvent } from "@testing-library/react";
+import { TrackPicker } from "./TrackPicker";
+
+test("TrackPicker lists items and reports a pick", () => {
+  const onPick = vi.fn();
+  render(<TrackPicker value={null} onPick={onPick}
+    items={[{ slug: "suzuka", name: "Suzuka Circuit" }, { slug: "spa-francorchamps", name: "Spa" }]} />);
+  fireEvent.change(screen.getByRole("combobox"), { target: { value: "spa-francorchamps" } });
+  expect(onPick).toHaveBeenCalledWith("spa-francorchamps");
+});

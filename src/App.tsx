@@ -81,7 +81,7 @@ export default function App() {
             }}
           />
         ) : (
-          <Dashboard />
+          <Dashboard theme={theme} />
         )}
       </div>
     </>

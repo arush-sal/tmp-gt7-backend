@@ -22,7 +22,11 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-interface Props { store: HistoryStore; storageKey?: string; }
+interface Props {
+  store: HistoryStore; storageKey?: string;
+  analysisLapIndex?: number | null;
+  analysisScrubIndex?: number | null;
+}
 
 /** Moves `activeKey` to `overKey`'s index; no-op on unknown/equal keys. */
 export function reorder(order: string[], activeKey: string, overKey: string): string[] {
@@ -35,9 +39,11 @@ export function reorder(order: string[], activeKey: string, overKey: string): st
 
 function TelemetryCard({
   card, store, state, onToggleCollapse, onToggleSeries, onRemove,
+  analysisLapIndex, analysisScrubIndex,
 }: {
   card: CardDef; store: HistoryStore; state: CardState;
   onToggleCollapse: () => void; onToggleSeries: (k: string) => void; onRemove: () => void;
+  analysisLapIndex?: number | null; analysisScrubIndex?: number | null;
 }) {
   const isMulti = card.kind === "multi";
   const collapsed = state.collapsed;
@@ -81,6 +87,8 @@ function TelemetryCard({
             id={`tg-${card.key}`}
             median={!isMulti}
             hidden={state.hidden}
+            analysisLapIndex={analysisLapIndex}
+            analysisScrubIndex={analysisScrubIndex}
           />
           <GraphLegend
             variant={isMulti ? "multi" : "single"}
@@ -102,7 +110,9 @@ function TelemetryCard({
  * mutation (add/remove/collapse/legend-toggle) so the layout survives a refresh. Always
  * floats (via the caller's FloatingPanel) over the center track-map canvas.
  */
-export default function TelemetryPanel({ store, storageKey = "gt7:telemetry-cards" }: Props) {
+export default function TelemetryPanel({
+  store, storageKey = "gt7:telemetry-cards", analysisLapIndex = null, analysisScrubIndex = null,
+}: Props) {
   const [cfg, setCfg] = useState<PanelConfig>(() => loadCardConfig(storageKey, defaultCardConfig()));
   // Mutators read the latest cfg via this ref (not the render closure) so a same-tick
   // follow-up mutation never operates on a stale snapshot; render still uses `cfg` so
@@ -171,6 +181,8 @@ export default function TelemetryPanel({ store, storageKey = "gt7:telemetry-card
                 onToggleCollapse={() => toggleCollapse(card.key)}
                 onToggleSeries={sk => toggleSeries(card.key, sk)}
                 onRemove={() => remove(card.key)}
+                analysisLapIndex={analysisLapIndex}
+                analysisScrubIndex={analysisScrubIndex}
               />
             ))}
           </SortableContext>

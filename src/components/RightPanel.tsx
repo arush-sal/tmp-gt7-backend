@@ -1,6 +1,7 @@
 import type { LiveView } from "../lib/liveView";
 import type { Corner, CornerAnalysis } from "../mock/snapshot";
-import { PLACEHOLDER } from "../lib/format";
+import type { SectorTime } from "../lib/sectorTimer";
+import { PLACEHOLDER, msToSectorTime } from "../lib/format";
 
 interface Props {
   view: LiveView | null;
@@ -8,10 +9,14 @@ interface Props {
   selectedCornerId: number | null;
   onCornerSelect: (id: number | null) => void;
   selectedCornerDetail: CornerAnalysis | null;
+  usedPerLap?: number | null;
+  lapsLeft?: number | null;
+  sectorTimes?: SectorTime[] | null;
 }
 
 export default function RightPanel({
   view, corners, selectedCornerId, onCornerSelect, selectedCornerDetail,
+  usedPerLap = null, lapsLeft = null, sectorTimes = null,
 }: Props) {
   const opportunities = [...corners]
     .filter(c => c.delta > 0.05)
@@ -26,8 +31,20 @@ export default function RightPanel({
 
       {/* ── Sector times ── */}
       <div className="section">
-        <div className="label" style={{ marginBottom: 6 }}>Sector Times</div>
-        <div className="data-row"><span className="text-muted">sector data pending</span><span className="mono text-muted">—</span></div>
+        <div className="section__row" style={{ marginBottom: 6 }}>
+          <span className="label">Sector Times</span>
+          {sectorTimes && <span className="label text-muted" title="Derived from distance-based sector labels, not exact sector-line geometry">approx</span>}
+        </div>
+        {sectorTimes ? (
+          sectorTimes.map(st => (
+            <div className="data-row" key={st.sector}>
+              <span className="text-muted">{st.sector}</span>
+              <span className="mono">{msToSectorTime(st.timeMs)}</span>
+            </div>
+          ))
+        ) : (
+          <div className="data-row"><span className="text-muted">sector data pending</span><span className="mono text-muted">—</span></div>
+        )}
       </div>
 
       {/* ── Lap history ── */}
@@ -134,10 +151,17 @@ export default function RightPanel({
             <span className={`mono fuel-${view ? view.fuelTone : "none"}`} style={{ fontSize: 15, fontWeight: 600 }}>
               {view ? view.fuelPct : "—"}
             </span>
+            {/* GT7 telemetry does not expose the fuel map setting — left as a placeholder. */}
             <span className="label">map —</span>
           </div>
-          <div className="data-row"><span className="text-muted">Used/lap</span><span className="mono text-muted">—</span></div>
-          <div className="data-row" style={{ borderBottom: "none" }}><span className="text-muted">Laps left</span><span className="mono text-muted">—</span></div>
+          <div className="data-row">
+            <span className="text-muted">Used/lap</span>
+            <span className="mono text-muted">{usedPerLap !== null ? `${usedPerLap.toFixed(1)}%` : "—"}</span>
+          </div>
+          <div className="data-row" style={{ borderBottom: "none" }}>
+            <span className="text-muted">Laps left</span>
+            <span className="mono text-muted">{lapsLeft !== null ? lapsLeft.toFixed(1) : "—"}</span>
+          </div>
         </div>
 
       </div>

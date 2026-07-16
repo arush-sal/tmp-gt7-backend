@@ -57,3 +57,13 @@ export function nsToDeltaSeconds(ns: number): string {
   const sign = ns >= 0 ? "+" : "−";
   return `${sign}${(Math.abs(ns) / 1_000_000_000).toFixed(3)}s`;
 }
+
+/**
+ * Milliseconds -> sector-split display: "SS.mmm" under a minute (the common case for a
+ * sector split), "M:SS.mmm" (reusing formatLapTime) at or beyond a minute. null -> PLACEHOLDER.
+ */
+export function msToSectorTime(ms: number | null): string {
+  if (ms === null) return PLACEHOLDER;
+  if (ms < 60_000) return (ms / 1_000).toFixed(3);
+  return formatLapTime(ms);
+}

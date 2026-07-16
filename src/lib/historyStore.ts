@@ -4,11 +4,19 @@ export type Channel =
   | "throttle" | "brake" | "clutch" | "rpm" | "gear" | "speed" | "boost" | "delta"
   | "tyreFL" | "tyreFR" | "tyreRL" | "tyreRR" | "fuel";
 
-type Sample = { t: number } & Record<Channel, number>; // t = seconds since lap start; delta may be NaN
+// t = seconds since lap start; delta may be NaN. posX/posZ/surface are spatial-only fields:
+// kept OUT of Channel/columns() so P3 uPlot never sees them (see trace() below).
+type Sample = { t: number; posX: number; posZ: number; surface: string } & Record<Channel, number>;
+
+export type TracePoint = {
+  readonly posX: number; readonly posZ: number;
+  readonly throttle: number; readonly brake: number; readonly surface: string;
+};
 
 function project(f: Frame, d: Derived, e: Enrichment): Sample {
   return {
     t: d.current_lap_time_ns / 1e9,
+    posX: f.position_x ?? NaN, posZ: f.position_z ?? NaN, surface: f.surface_type ?? "",
     throttle: f.throttle, brake: f.brake, clutch: f.clutch, rpm: f.rpm,
     gear: f.current_gear, speed: f.car_speed, boost: f.boost,
     delta: e.delta_to_best_ns === null ? NaN : e.delta_to_best_ns / 1e9,
@@ -53,7 +61,12 @@ export type HistoryStore = {
   medianColumn(ch: Channel): number[];
   size(): number;
   completedLapCount(): number;
+  lastLapFuelUsedPct(): number | null;
   reset(): void;
+  trace(): { completed: readonly (readonly TracePoint[])[]; current: readonly TracePoint[] };
+  revision(): number;
+  lapColumns(i: number, chs: Channel[]): number[][] | null;
+  lapSampleCount(i: number): number;
 };
 
 const MAX_COMPLETED_LAPS = 20;
@@ -72,6 +85,10 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
   const medCache = new Map<Channel, Map<number, number>>();
   let medCacheVersion = -1;
   const bump = () => { version++; };
+
+  // revision: dirty-redraw counter for the trace canvas. Distinct from `version` (median cache):
+  // bumps on every accepted push, session reset, lap rollover, and reset().
+  let revision = 0;
   const pruneMedCacheX = (t: number) => { for (const m of medCache.values()) m.delete(t); };
 
   const scopeLaps = (): Sample[][] => {
@@ -83,7 +100,7 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
     push(s) {
       if (s.status !== "live" || !s.frame || !s.derived) return;
       const sid = s.enrichment.session_id;
-      if (sid !== session) { session = sid; buf = []; completed = []; lap = null; totalLaps = null; bump(); }
+      if (sid !== session) { session = sid; buf = []; completed = []; lap = null; totalLaps = null; bump(); revision++; }
       if (lap !== null && s.frame.current_lap !== lap) {
         if (buf.length) {
           completed.push(buf);                 // full lap (no time-eviction happened)
@@ -91,6 +108,7 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
         }
         buf = [];
         bump(); // completed-lap set changed -> invalidate median cache
+        revision++;
       }
       lap = s.frame.current_lap;
       if (s.frame.total_laps !== totalLaps) { totalLaps = s.frame.total_laps; bump(); } // scope change -> invalidate
@@ -98,6 +116,7 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
       // x must be strictly increasing (uPlot aligned-data contract).
       if (buf.length && sample.t <= buf[buf.length - 1].t) return;
       buf.push(sample);
+      revision++;
       // Full-lap retention: NO time-window eviction (median compares whole laps). A generous
       // sample cap bounds a pathological non-terminating lap; drop-oldest + prune its dead
       // median-cache entry so medCache can't outgrow buf.
@@ -123,6 +142,34 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
     },
     size() { return buf.length; },
     completedLapCount() { return completed.length; },
-    reset() { buf = []; completed = []; lap = null; session = undefined; totalLaps = null; bump(); },
+    lastLapFuelUsedPct() {
+      if (completed.length === 0) return null;
+      const last = completed[completed.length - 1];
+      if (last.length === 0) return null;
+      const used = last[0].fuel - last[last.length - 1].fuel;
+      if (!Number.isFinite(used) || used <= 0) return null;
+      return used;
+    },
+    reset() { buf = []; completed = []; lap = null; session = undefined; totalLaps = null; bump(); revision++; },
+    trace() {
+      // Sample is structurally a superset of TracePoint -> zero-copy narrowing, no remap.
+      // Returns LIVE internal arrays: read + draw synchronously each call; do NOT retain the
+      // result across frames (a later push mutates buf/completed in place). Use revision() as
+      // the dirty flag to know when to re-call and redraw.
+      return { completed, current: buf } as {
+        completed: readonly (readonly TracePoint[])[]; current: readonly TracePoint[];
+      };
+    },
+    revision() { return revision; },
+    lapColumns(i, chs) {
+      const lap = completed[i];
+      if (!lap) return null;
+      const xs = lap.map(s => s.t);
+      return [xs, ...chs.map(c => lap.map(s => s[c]))];
+    },
+    lapSampleCount(i) {
+      const lap = completed[i];
+      return lap ? lap.length : 0;
+    },
   };
 }

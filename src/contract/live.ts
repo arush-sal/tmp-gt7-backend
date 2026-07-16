@@ -41,6 +41,9 @@ export type Frame = {
   throttle_filtered?: number;                 // 0..255 filtered throttle
   surface_type?: string;                      // per-wheel FL,FR,RL,RR codes, e.g. "TTTT"
   car_category?: string;                      // GT7 category code, e.g. "GRN"
+  position_x?: number;                        // GT7 world metres (top-down X)
+  position_y?: number;                        // elevation (metres); captured, not rendered
+  position_z?: number;                        // GT7 world metres (top-down Z)
   // PLAUSIBLE
   wheel_rotation?: number;                    // rad — hand-wheel angle, clamped ±π
   steering_angular_velocity?: number;         // rad/s
@@ -72,6 +75,7 @@ export type Enrichment = {
   car_name: string | null;
   track: string | null;
   delta_to_best_ns: number | null;  // ns; null until a reference lap; -ve = ahead
+  track_confidence?: string | null; // "confident" once trackdetect resolves; null/absent until then
 };
 
 export type LiveSnapshot = {

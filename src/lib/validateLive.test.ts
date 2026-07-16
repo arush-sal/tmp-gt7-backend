@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { validateLive } from "./validateLive";
 import type { Frame, Derived, Enrichment } from "../contract/live";
+import { liveSample } from "../mock/liveSample";
 
 // Typed fixtures so tests can mutate fields to their full contract types
 // (e.g. best_lap -> null, delta_to_best_ns -> number) and still typecheck.
@@ -104,5 +105,34 @@ describe("validateLive — format-C frame fields", () => {
     const f = validateLive(s).frame!;
     expect(f.surface_type).toBeUndefined();
     expect(f.wheel_base).toBeUndefined();
+  });
+});
+
+describe("validateLive — spatial + track_confidence fields (P2)", () => {
+  it("accepts position + track_confidence when present", () => {
+    const s = structuredClone(liveSample) as any;
+    s.frame.position_x = -82.4;
+    s.frame.position_y = 1.1;
+    s.frame.position_z = -385.0;
+    s.enrichment.track_confidence = "confident";
+    expect(() => validateLive(s)).not.toThrow();
+    const out = validateLive(s);
+    expect(out.frame!.position_x).toBeCloseTo(-82.4);
+    expect(out.frame!.position_y).toBeCloseTo(1.1);
+    expect(out.frame!.position_z).toBeCloseTo(-385.0);
+    expect(out.enrichment.track_confidence).toBe("confident");
+  });
+
+  it("stays lenient when position + track_confidence absent", () => {
+    const s = structuredClone(liveSample) as any;
+    delete s.frame.position_x;
+    delete s.frame.position_y;
+    delete s.frame.position_z;
+    delete s.enrichment.track_confidence;
+    expect(() => validateLive(s)).not.toThrow();
+    const out = validateLive(s);
+    expect(out.frame!.position_x).toBeUndefined();
+    expect(out.frame!.position_y).toBeUndefined();
+    expect(out.frame!.position_z).toBeUndefined();
   });
 });
