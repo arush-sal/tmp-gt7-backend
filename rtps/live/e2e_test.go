@@ -185,14 +185,15 @@ func TestEgress_GoldenReplayPopulatesLive(t *testing.T) {
 		t.Fatal("hub has no frame after replay")
 	}
 
-	// Assert enrichment BEFORE CloseAndRecv: OnSessionEnd (triggered by the client's EOF, which the
-	// detector treats as the session ending) now CLEARS the live enrichment rather than recomputing
-	// it, so the session must still be open when we check that enrichment populated. The server
-	// processes sent frames asynchronously, so poll with a bounded timeout rather than sleeping a
-	// fixed duration or racing the assertion.
+	// Assert enrichment BEFORE CloseAndRecv, while the session is still open, to prove it populates
+	// during the active session (not only as a leftover). The server processes sent frames
+	// asynchronously, so poll with a bounded timeout rather than sleeping a fixed duration or racing
+	// the assertion.
+	var preCloseSessionID string
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if en := enrich.Get(); en.Analysis != nil && en.Analysis.HasPB {
+			preCloseSessionID = en.SessionID
 			frame, lapStart, ok := mustLatest(hub)
 			body, err := live.BuildPayload(frame, lapStart, ok, en)
 			if err != nil {
@@ -239,23 +240,18 @@ func TestEgress_GoldenReplayPopulatesLive(t *testing.T) {
 		t.Fatalf("CloseAndRecv: %v", err)
 	}
 
-	// Lock in the new lifecycle: once the session ends (EOF -> OnSessionEnd), live enrichment is
-	// cleared rather than lingering on the just-ended session's analysis.
-	deadline = time.Now().Add(2 * time.Second)
-	for enrich.Get().Analysis != nil {
-		if time.Now().After(deadline) {
-			t.Fatal("enrichment was not cleared after session end")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Strengthened post-close assertion: don't just catch the first nil and declare victory — a stale
-	// in-flight recompute could still land after the clear and republish. Poll for a sustained window
-	// and fail if enrichment ever becomes non-nil again.
+	// Lock in the race-lifecycle A1 requirement: once the session ends (EOF -> OnSessionEnd), the
+	// finished race's live enrichment is RETAINED (not cleared), so post-race analysis still has
+	// track/session context. Poll for a sustained window to prove it isn't cleared a moment later by
+	// some other path.
 	sustainedUntil := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(sustainedUntil) {
-		if en := enrich.Get(); en.Analysis != nil {
-			t.Fatalf("enrichment became non-nil again after session end (stale republish): %+v", en)
+		en := enrich.Get()
+		if en.Analysis == nil || !en.Analysis.HasPB {
+			t.Fatalf("enrichment was cleared after session end, want retained: %+v", en)
+		}
+		if en.SessionID != preCloseSessionID {
+			t.Fatalf("SessionID after session end = %q, want retained %q", en.SessionID, preCloseSessionID)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

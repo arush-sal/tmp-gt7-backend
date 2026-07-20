@@ -109,12 +109,13 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	// otherwise.
 	detector := processing.NewTrackDetector(rkbStore, enrich, log)
 
-	// Sink order matters for enrichSink and detector: enrichSink's full-snapshot Set{} (OnSessionEnd
-	// clear, OnSessionStart reset) must run LAST so it clears any Track the detector just wrote (e.g. a
-	// match that only resolved on the session's FINAL OnSessionEnd attempt), instead of leaving a stale
-	// Track (with Analysis=nil) in the snapshot after the session has ended. detector must therefore be
-	// registered before enrichSink. Logging/segmenter/recorder are independent persistence/logging sinks
-	// with no cross-sink field interaction, so their relative order does not matter.
+	// Sink order matters for enrichSink and detector: detector.OnSessionEnd does its final match attempt
+	// and SetTrack synchronously, inline, before returning; enrichSink.OnSessionEnd no longer clears or
+	// replaces the published enrichment (it only fences its own map state), so whichever order these two
+	// run in, neither can clobber the other's fields in the shared EnrichmentState. detector is still
+	// registered before enrichSink for clarity/history, but the ordering is no longer load-bearing.
+	// Logging/segmenter/recorder are independent persistence/logging sinks with no cross-sink field
+	// interaction, so their relative order does not matter either.
 	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder, detector, enrichSink)
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}

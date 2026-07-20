@@ -38,6 +38,11 @@ func TestBuildPayload_Live(t *testing.T) {
 	if derived["current_lap_time_ns"] == nil {
 		t.Errorf("derived missing current_lap_time_ns: %v", derived)
 	}
+	var enrichment map[string]any
+	_ = json.Unmarshal(got["enrichment"], &enrichment)
+	if enrichment["session_id"] != "sess-1" {
+		t.Errorf("enrichment.session_id = %v, want %q (must always serialize, no omitempty)", enrichment["session_id"], "sess-1")
+	}
 }
 
 func TestBuildPayload_Idle(t *testing.T) {
@@ -51,5 +56,15 @@ func TestBuildPayload_Idle(t *testing.T) {
 	_ = json.Unmarshal(got["status"], &status)
 	if status != "idle" {
 		t.Errorf("status = %q, want idle", status)
+	}
+
+	// The real regression for "session_id always serializes": a zero-value SessionID ("") would pass
+	// even with omitempty if we only checked the value (as TestBuildPayload_Live's "sess-1" case does,
+	// since a non-empty string serializes either way). Assert the KEY is present in the marshalled
+	// enrichment object even when SessionID is its zero value.
+	var enrichment map[string]json.RawMessage
+	_ = json.Unmarshal(got["enrichment"], &enrichment)
+	if _, ok := enrichment["session_id"]; !ok {
+		t.Error("enrichment missing session_id key for empty Enrichment{} (omitempty would drop it)")
 	}
 }

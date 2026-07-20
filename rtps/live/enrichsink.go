@@ -17,11 +17,11 @@ import (
 //
 // Lifecycle: OnSessionStart resets the published enrichment for the new session (correlated fields
 // null again). OnFrame's lap-boundary detection requests an async recompute so the live view fills in
-// progressively during the session. OnSessionEnd CLEARS the published enrichment (does not recompute)
-// so that between stints, and during a new stint's pre-confirmation window, live enrichment reads null
-// rather than the just-ended session's stale analysis. The finished session's analysis remains
-// available via the sessions/coaching retention endpoint; nothing is lost because the last completed
-// lap's analysis was already published on its lap-boundary OnFrame during the active session.
+// progressively during the session. OnSessionEnd does NOT clear the published enrichment: the finished
+// race's enrichment (analysis, track, session_id) is intentionally RETAINED so the live view keeps
+// showing post-race context (D-race-lifecycle A1) rather than reverting to null between stints. The
+// next OnSessionStart overwrites it (`e.state.Set(Enrichment{SessionID: rec.ID})`) when a new session
+// begins.
 //
 // AnalyzeSession (normalizes traces + splits sectors) runs on a SEPARATE worker goroutine, never on
 // the ingest goroutine — recomputing inline would block stream.Recv and stall the live publish cadence
@@ -36,8 +36,9 @@ import (
 //
 // Active-session fence: the worker's recompute runs OUTSIDE mu (AnalyzeSession is heavy), so a session
 // can end while its recompute is in flight. drain re-checks active AFTER AnalyzeSession returns, under
-// the same mu that OnSessionEnd uses to clear state, so publish and clear are mutually exclusive: an id
-// that ended during analysis is dropped, never republished over the cleared enrichment.
+// the same mu that OnSessionEnd uses to fence state (delete from lap/bestLap/active/pending), so a
+// publish and the fence are mutually exclusive: an id that ended during analysis is dropped, never
+// republished for a session that's no longer active.
 //
 // The fence is keyed on a GENERATION token, not merely the session ID: session IDs (e.g. "sess-N") are
 // minted per-Detector, so they are only unique within one gRPC stream and can collide across streams
@@ -179,18 +180,17 @@ func (e *EnrichSink) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) {
 	}
 }
 
-// OnSessionEnd forgets the session's lap tracker, fences it out of pending/active, and clears the
-// published live enrichment, so the live view reflects only the active session rather than lingering
-// on the just-ended one's analysis. The delete+clear happen under mu so they are serialized with
-// drain's publish: an in-flight recompute for this session that finishes after this call sees the
-// session no longer active and drops its publish instead of republishing over the clear.
+// OnSessionEnd forgets the session's lap tracker and fences it out of pending/active, so an in-flight
+// recompute for this session that finishes after this call sees the session no longer active and drops
+// its publish. The published live enrichment is intentionally RETAINED (not cleared): the finished
+// race's analysis/track/session_id stays visible for post-race review until the next OnSessionStart
+// overwrites it for the new session.
 func (e *EnrichSink) OnSessionEnd(rec *session.Record) {
 	e.mu.Lock()
 	delete(e.lap, rec.ID)
 	delete(e.bestLap, rec.ID)
 	delete(e.active, rec.ID)
 	delete(e.pending, rec.ID)
-	e.state.Set(Enrichment{}) // clear under mu so it can't be reordered after a stale worker publish
 	e.mu.Unlock()
 }
 

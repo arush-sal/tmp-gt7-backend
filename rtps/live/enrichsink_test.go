@@ -224,6 +224,24 @@ func TestEnrichSink_NoStaleRepublishAcrossCollidingGenerations(t *testing.T) {
 	}
 }
 
+// TestOnSessionEnd_RetainsEnrichment is the regression for the race-lifecycle A1 requirement: the
+// finished race's enrichment (session_id in particular) must survive OnSessionEnd so the live view
+// still carries post-race context until the next OnSessionStart overwrites it. Previously OnSessionEnd
+// cleared the published enrichment (Set(Enrichment{})), losing session_id immediately at race end.
+func TestOnSessionEnd_RetainsEnrichment(t *testing.T) {
+	state := NewEnrichmentState()
+	e := NewEnrichSink(testAnalyzer(), state, func(err error) { t.Errorf("unexpected onErr: %v", err) })
+	defer e.Close()
+
+	rec := &session.Record{ID: "session-finished", CurrentLap: 0}
+	e.OnSessionStart(rec)
+	e.OnSessionEnd(rec)
+
+	if got := state.Get().SessionID; got != rec.ID {
+		t.Fatalf("SessionID after OnSessionEnd = %q, want retained %q", got, rec.ID)
+	}
+}
+
 // TestEnrichSink_CloseRace hammers OnFrame/OnSessionEnd (which call request) from goroutines while
 // Close runs concurrently, guarding against a send-on-closed-channel panic. Run with -race.
 func TestEnrichSink_CloseRace(t *testing.T) {

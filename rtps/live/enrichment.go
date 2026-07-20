@@ -18,7 +18,7 @@ import (
 // mutation after publish is a data race. If you must modify analysis or metadata, construct a new
 // Enrichment.
 type Enrichment struct {
-	SessionID       string                    `json:"session_id,omitempty"` // plain metadata; not a correlated field
+	SessionID       string                    `json:"session_id"` // plain metadata; not a correlated field. Always serialized (never omitempty): the frontend keys every live frame on it.
 	Analysis        *analysis.SessionAnalysis `json:"analysis"`
 	CarName         *string                   `json:"car_name"`
 	Track           *string                   `json:"track"`
