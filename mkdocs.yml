@@ -1,5 +1,5 @@
 site_name: GARAGE Backend
-site_description: Documentation for the GARAGE telemetry collector backend.
+site_description: Documentation for the GARAGE telemetry backend (collector, RTPS, and tools).
 repo_url: https://github.com/arush-sal/garage
 docs_dir: docs
 
@@ -25,6 +25,13 @@ nav:
   - Getting started: getting-started.md
   - Configuration: configuration.md
   - Architecture: architecture.md
+  - HTTP API: api.md
+  - Terminal dashboard: tui.md
+  - Tools:
+      - Overview: tools/index.md
+      - pcap2csv: tools/pcap2csv.md
+      - vd2csv: tools/vd2csv.md
+      - rkb: tools/rkb.md
 
 markdown_extensions:
   - admonition

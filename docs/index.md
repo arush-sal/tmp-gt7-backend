@@ -4,35 +4,40 @@
 telemetry-based analysis, coaching, and performance guidance across racing games and simulators.
 
 This site documents the **backend**: the software that turns raw game telemetry into structured
-data for analysis and coaching. Gran Turismo 7 is the first supported game.
+data for analysis and coaching. Gran Turismo 7 is the first supported game. The web dashboard that
+visualizes results is a separate application and is not part of this backend.
 
 ## The system
 
-The backend runs as two cooperating processes:
+The backend runs as two cooperating processes that talk over a **versioned, game-neutral telemetry
+contract**. A collector is game-specific (this one speaks Gran Turismo 7); the processing system is
+not, so other games could feed the same pipeline through their own collectors.
 
 | Component | Role | Status |
 |---|---|---|
-| **Telemetry Collector** | Receives GT7 UDP telemetry, decodes it, and streams it onward. | Implemented |
-| **Real-Time Processing System (RTPS)** | Session management, lap segmentation, analysis, coaching. | Planned |
+| **Telemetry Collector** (`collector`) | Receives GT7 UDP telemetry, decodes it, streams it onward over gRPC. | Implemented |
+| **Real-Time Processing System** (`rtps`) | Session detection, lap segmentation, analysis, live egress, and a read HTTP API. | Implemented (analysis/coaching evolving) |
+| **Terminal dashboard** (`tui`) | Text-mode pit-wall client of the backend API. | Implemented |
 
-They talk over a **versioned, game-neutral telemetry contract**. A collector is game-specific
-(this one speaks Gran Turismo 7); the processing system is not, so other games could feed the same
-pipeline through their own collectors in the future.
+> **Status note.** The end-to-end path — collect -> ingest -> detect sessions -> segment laps ->
+> analyze -> serve — works today. The **analysis** layer is deterministic and functional; the
+> **coaching** layer is currently a placeholder passthrough, so treat natural-language coaching as
+> work-in-progress.
 
-The web dashboard that visualizes results is a separate application and is not part of this backend.
+## Binaries
+
+- `cmd/collector` — the GT7 telemetry collector.
+- `cmd/rtps` — the backend (gRPC ingest + HTTP API).
+- `cmd/tui` — the terminal dashboard.
 
 ## Pages
 
-- [Getting started](getting-started.md) — install, build, and run the collector.
+- [Getting started](getting-started.md) — install, build, and run the collector, backend, and TUI.
 - [Configuration](configuration.md) — every option, with defaults and precedence.
-- [Architecture](architecture.md) — how telemetry flows through the collector.
-
-## Current capabilities
-
-The collector receives Gran Turismo 7 telemetry at ~60 Hz, decrypts and validates each packet,
-discards duplicates and stale packets, decodes the full telemetry frame, and streams it to the
-processing system over gRPC — reconnecting automatically if that system is unavailable. It logs
-structured, levelled diagnostics and shuts down cleanly.
+- [Architecture](architecture.md) — how telemetry flows end to end.
+- [HTTP API reference](api.md) — the backend's read endpoints and live stream.
+- [Terminal dashboard](tui.md) — the `tui` pit-wall client.
+- [Tools](tools/index.md) — the `pcap2csv`, `vd2csv`, and `rkb` data tools.
 
 ## License
 
