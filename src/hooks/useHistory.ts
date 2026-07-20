@@ -1,21 +1,18 @@
 import { useEffect, useRef } from "react";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
-import { createHistoryStore, type HistoryStore } from "../lib/historyStore";
+import { createHistoryStore, type HistoryStore, type PersistedHistory } from "../lib/historyStore";
+import { loadVersioned, saveVersioned } from "../lib/persistState";
 
 const STORAGE_KEY = "gt7:history";
 
 function loadPersisted(store: HistoryStore) {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) store.load(JSON.parse(raw));
-  } catch { /* absent / corrupt / no storage — start empty */ }
+  const blob = loadVersioned<PersistedHistory>(STORAGE_KEY);
+  if (blob) store.load(blob);
 }
 
 function persist(store: HistoryStore) {
-  try {
-    const d = store.dump();
-    if (d) localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
-  } catch { /* quota / no storage — best effort */ }
+  const d = store.dump();
+  if (d) saveVersioned(STORAGE_KEY, d);
 }
 
 // Independent live subscription that feeds a per-frame ring buffer WITHOUT React state
