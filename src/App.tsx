@@ -68,10 +68,11 @@ export default function App() {
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === "light" ? "dark" : "light"));
+  const [live, setLive] = useState(false);
 
   return (
     <>
-      <AppBar theme={theme} onToggleTheme={toggleTheme} />
+      <AppBar theme={theme} onToggleTheme={toggleTheme} live={live} />
       <div className="app">
         {phase.kind === "onboarding" ? (
           <OnboardingFlow
@@ -81,7 +82,7 @@ export default function App() {
             }}
           />
         ) : (
-          <Dashboard theme={theme} />
+          <Dashboard theme={theme} onLiveChange={setLive} />
         )}
       </div>
     </>

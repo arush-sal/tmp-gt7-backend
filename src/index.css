@@ -113,6 +113,9 @@ body {
 .appbar__brand { font-weight: 600; letter-spacing: -.01em; font-size: 13px; }
 .appbar__brand b { color: var(--red); }
 .appbar__controls { display: flex; gap: 8px; align-items: center; }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+.status-dot--on  { background: var(--green); }
+.status-dot--off { background: var(--text-muted); }
 .toggle {
   font-family: var(--ui);
   font-size: 12px;

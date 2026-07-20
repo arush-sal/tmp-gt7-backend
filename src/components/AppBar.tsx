@@ -1,6 +1,9 @@
+import StatusDot from "./StatusDot";
+
 interface Props {
   theme: "light" | "dark";
   onToggleTheme: () => void;
+  live: boolean;
 }
 
 /**
@@ -8,11 +11,12 @@ interface Props {
  * light and dark can be shown. Corner selection is driven by clicking the map
  * or a Top Opportunity row, per the wireframe interaction flow.
  */
-export default function AppBar({ theme, onToggleTheme }: Props) {
+export default function AppBar({ theme, onToggleTheme, live }: Props) {
   return (
     <div className="appbar">
       <span className="appbar__brand">GT7 <b>Race Coach</b> · Dashboard</span>
       <div className="appbar__controls">
+        <StatusDot live={live} />
         <button className="toggle" onClick={onToggleTheme}>
           ◐ {theme === "dark" ? "Light" : "Dark"}
         </button>
