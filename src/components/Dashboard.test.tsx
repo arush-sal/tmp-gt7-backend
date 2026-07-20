@@ -205,4 +205,56 @@ describe("Dashboard (live)", () => {
       vi.useRealTimers();
     }
   });
+
+  // Race lifecycle (task E1w): the history store only grows while `live`, and wipes on a
+  // genuine new race — both driven by Dashboard's effects off useSession's `live`/`newRaceSeq`.
+  // Probed through the lap-selector's "Lap N" options (fed by history.completedLapCount()),
+  // since Dashboard doesn't expose the store directly.
+  it("gates history growth on `live` and resets it on a new race", () => {
+    const subscribers: LiveHandlers[] = [];
+    const source: LiveSource = (_url, h) => { subscribers.push(h); return () => {}; };
+    const push = (overrides: {
+      session: string; lap: number; totalLaps?: number; t: number;
+    }) => {
+      const s = structuredClone(liveSample) as {
+        frame: Record<string, unknown>; derived: Record<string, unknown>; enrichment: Record<string, unknown>;
+      };
+      s.frame.current_lap = overrides.lap;
+      s.frame.total_laps = overrides.totalLaps ?? 90;
+      s.derived.current_lap_time_ns = overrides.t;
+      s.enrichment.session_id = overrides.session;
+      const snap = validateLive(s);
+      subscribers.forEach(h => h.onSnapshot(snap));
+    };
+    const lapOptions = () =>
+      screen.getAllByRole("option").map(o => o.textContent).filter(t => /^Lap \d+$/.test(t ?? ""));
+
+    render(<Dashboard source={source} />);
+
+    // `history.setLive` runs once on mount with useSession's initial `live` (false), so the
+    // very first snapshot always finds the store gated shut and is dropped before the effect
+    // catches up to `live=true` — a priming push before the real assertions absorbs that.
+    act(() => push({ session: "a", lap: 1, t: 1_000_000_000 }));
+
+    // Laps 2..4: each lap change completes the previous lap's buffer.
+    act(() => push({ session: "a", lap: 2, t: 2_000_000_000 }));
+    act(() => push({ session: "a", lap: 3, t: 3_000_000_000 }));
+    act(() => push({ session: "a", lap: 4, t: 4_000_000_000 }));
+    expect(lapOptions()).toEqual(["Lap 2", "Lap 1"]);
+
+    // Race-over frame (current_lap > total_laps -> live=false) then another push while
+    // still not-live: the second push must be gated (no further growth).
+    act(() => push({ session: "a", lap: 11, totalLaps: 10, t: 5_000_000_000 }));
+    const afterRaceOver = lapOptions().length;
+    act(() => push({ session: "a", lap: 11, totalLaps: 10, t: 6_000_000_000 }));
+    expect(lapOptions().length).toBe(afterRaceOver);
+
+    // New race (session "b", lap 1): newRaceSeq bumps -> history.reset() wipes the store.
+    // The first post-reset push is itself dropped (same stale-gate reason as above), so two
+    // more pushes are needed to prove growth restarted clean, not still holding session "a".
+    act(() => push({ session: "b", lap: 1, t: 100_000_000 }));
+    act(() => push({ session: "b", lap: 2, t: 200_000_000 }));
+    act(() => push({ session: "b", lap: 3, t: 300_000_000 }));
+    expect(lapOptions()).toEqual(["Lap 1"]);
+  });
 });

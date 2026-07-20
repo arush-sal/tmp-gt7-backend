@@ -4,7 +4,6 @@ import { useSession } from "../hooks/useSession";
 import { useHistory } from "../hooks/useHistory";
 import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
-import { toLiveView } from "../lib/liveView";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { toDrawGeometry } from "../lib/rkbGeometry";
@@ -20,15 +19,20 @@ import FloatingPanel from "./telemetry/FloatingPanel";
 import CornerDetailPanel from "./CornerDetailPanel";
 import RightPanel from "./RightPanel";
 
-export default function Dashboard({ source = subscribeLive, theme = "light" }: {
-  source?: LiveSource; theme?: "light" | "dark";
+export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange }: {
+  source?: LiveSource; theme?: "light" | "dark"; onLiveChange?: (live: boolean) => void;
 }) {
-  const { snapshot, error } = useSession(undefined, source);
-  const view = snapshot ? toLiveView(snapshot) : null;
+  const { snapshot, error, view, live, newRaceSeq } = useSession(undefined, source);
   // Independent live subscription (per the plan: fan-out to a single subscription is a
   // later pass) — feeds the graph buffer only, reuses the same injectable `source` as
   // useSession so tests (and a future single-subscription refactor) see one seam.
   const history = useHistory(source);
+  // Single writer into the history store: gate append by `live` (paused/idle/race-over
+  // stops growth) and wipe on a genuine new race. The sector timer resets itself on
+  // session_id change via its own sessionKey, so it needs no explicit reset here.
+  useEffect(() => { history.setLive(live); }, [history, live]);
+  useEffect(() => { if (newRaceSeq > 0) history.reset(); }, [history, newRaceSeq]);
+  useEffect(() => { onLiveChange?.(live); }, [onLiveChange, live]);
 
   // Fuel card: used/lap from the most recently completed lap; laps left projects the
   // current tank against that burn rate. Both null when data is insufficient (e.g. no
@@ -83,7 +87,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
 
   const track = useTrack(sel.slug);
   const geometry = useMemo(() => (track.record ? toDrawGeometry(track.record) : null), [track.record]);
-  const sectorTimes = useSectorTimes(snapshot, geometry, sel.slug);
+  const sectorTimes = useSectorTimes(snapshot, geometry, sel.slug, live);
 
   // Best-candidate shortlist for the header picker: cap to 3 so drivers aren't scrolling
   // through all 121 tracks. Interim heuristic only -- true detection-ranked candidates
