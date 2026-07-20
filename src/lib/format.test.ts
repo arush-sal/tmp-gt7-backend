@@ -40,6 +40,8 @@ describe("msToSectorTime", () => {
   it("formats sub-minute as SS.mmm", () => expect(msToSectorTime(12345)).toBe("12.345"));
   it("formats a minute or more as M:SS.mmm", () => expect(msToSectorTime(65_432)).toBe("1:05.432"));
   it("null -> PLACEHOLDER", () => expect(msToSectorTime(null)).toBe(PLACEHOLDER));
+  it("floors a fractional (float ns/1e6) ms — no double-decimal tail", () =>
+    expect(msToSectorTime(96784.2488920000033)).toBe("1:36.784"));
 });
 
 describe("msToSectorDelta", () => {
