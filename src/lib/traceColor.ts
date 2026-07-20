@@ -1,10 +1,12 @@
 export type DriveState = "accel" | "coast" | "brake" | "trail";
 
-const FLOOR = { dark: [139, 148, 158], light: [75, 85, 99] }; // #8b949e / #4b5563
-const GREEN = [22, 163, 74]; // #16a34a -- darker/more saturated so full-throttle reads clearly on the light-grey band
-const RED = [225, 6, 0];      // #e10600
-const AMBER = [245, 158, 11]; // #f59e0b -- coast (off-throttle, off-brake)
-const COAST_MIX = 0.55;       // how strongly coast leans into amber vs. the theme floor
+// Solid, saturated colours per drive state -- NOT an intensity gradient. An intensity
+// gradient blended toward a grey "floor", so partial throttle rendered as a muddy dark-green;
+// the line now reads categorically (any throttle = green, brake = red, coast = white, trail-
+// brake = amber), matching the legend. Precise magnitudes live in the telemetry graphs.
+const GREEN = "46,209,106";  // #2ed16a -- throttle
+const RED = "240,22,14";     // brake
+const AMBER = "250,180,20";  // trail-braking (throttle + brake together)
 
 export function driveState(throttle: number, brake: number): DriveState {
   const t = throttle > 10, b = brake > 10;
@@ -14,26 +16,15 @@ export function driveState(throttle: number, brake: number): DriveState {
   return "coast";
 }
 
-export function traceColor(throttle: number, brake: number, theme: "light" | "dark", alpha = 1): string {
-  const f = FLOOR[theme];
-
-  if (driveState(throttle, brake) === "coast") {
-    const r = Math.round(f[0] + (AMBER[0] - f[0]) * COAST_MIX);
-    const g = Math.round(f[1] + (AMBER[1] - f[1]) * COAST_MIX);
-    const b = Math.round(f[2] + (AMBER[2] - f[2]) * COAST_MIX);
-    return `rgba(${r},${g},${b},${alpha})`;
+// theme is accepted for call-site compatibility but no longer affects the colour (the
+// categorical palette reads on both the light and the darkened track band).
+export function traceColor(throttle: number, brake: number, _theme: "light" | "dark", alpha = 1): string {
+  switch (driveState(throttle, brake)) {
+    case "coast": return `rgba(255,255,255,${alpha})`;
+    case "brake": return `rgba(${RED},${alpha})`;
+    case "trail": return `rgba(${AMBER},${alpha})`;
+    default:      return `rgba(${GREEN},${alpha})`; // accel
   }
-
-  const th = Math.max(0, Math.min(1, throttle / 100));
-  const br = Math.max(0, Math.min(1, brake / 100));
-  const mix = Math.max(th, br);
-  const target = th >= br ? GREEN : RED; // dominant input picks hue; both-high reads amber via blend
-  const amber = th > 0 && br > 0;
-  const tgt = amber ? [(GREEN[0] + RED[0]) / 2, (GREEN[1] + RED[1]) / 2, (GREEN[2] + RED[2]) / 2] : target;
-  const r = Math.round(f[0] + (tgt[0] - f[0]) * mix);
-  const g = Math.round(f[1] + (tgt[1] - f[1]) * mix);
-  const b = Math.round(f[2] + (tgt[2] - f[2]) * mix);
-  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 export function colorBucket(throttle: number, brake: number): number {

@@ -67,3 +67,12 @@ export function msToSectorTime(ms: number | null): string {
   if (ms < 60_000) return (ms / 1_000).toFixed(3);
   return formatLapTime(ms);
 }
+
+/**
+ * Per-sector delta in milliseconds -> signed seconds, e.g. "+0.412" / "-0.311".
+ * Sign is always shown so the caller can colour-code (+ = slower/red, - = faster/blue).
+ */
+export function msToSectorDelta(ms: number): string {
+  const sign = ms >= 0 ? "+" : "-";
+  return `${sign}${(Math.abs(ms) / 1_000).toFixed(3)}`;
+}

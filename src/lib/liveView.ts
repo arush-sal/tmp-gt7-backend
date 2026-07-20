@@ -1,7 +1,11 @@
 import type { LiveSnapshot } from "../contract/live";
 import { nsToClock, nsToDeltaSeconds, parseDuration, PLACEHOLDER } from "./format";
 
-export type TyreTemp = { value: string; tone: "hot" | "warm" | "cold" | "none" };
+// Tyre-temperature bands (grip-window semantics, not raw hot/cold):
+//   under   (< 75 C)      -> red   : tyres below the working window, low grip
+//   optimal (75..90 C)    -> green : in the working window
+//   over    (> 90 C)      -> lime  : above the window, overheating
+export type TyreTemp = { value: string; tone: "under" | "optimal" | "over" | "none" };
 
 export type LiveView = {
   status: "live" | "idle";
@@ -24,11 +28,11 @@ export type LiveView = {
   carCategory: string;   // GT7 category code (e.g. "GRN")
 };
 
-// bands (see plan Global Constraints)
-function tyreTone(c: number): "hot" | "warm" | "cold" {
-  if (c > 85) return "hot";
-  if (c < 55) return "cold";
-  return "warm";
+// bands (see TyreTemp): under < 75 <= optimal <= 90 < over
+function tyreTone(c: number): "under" | "optimal" | "over" {
+  if (c < 75) return "under";
+  if (c > 90) return "over";
+  return "optimal";
 }
 function fuelToneOf(pct: number): "green" | "yellow" | "red" {
   if (pct > 85) return "green";

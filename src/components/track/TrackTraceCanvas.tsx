@@ -18,15 +18,15 @@ const MIN_EXTENT_M = 50;
 // Values mirror src/index.css :root (light) and [data-theme="dark"] overrides.
 const PALETTE = {
   light: {
-    trackBand: "rgba(120,122,134,0.65)",
-    trackBandEdge: "#8d8d99",
-    sectorLabel: "#d0d0da",
-    startLine: "#3a3d44",
+    trackBand: "rgba(74,78,90,0.82)",
+    trackBandEdge: "#5a5e6a",
+    sectorLabel: "#c2c2cc",
+    startLine: "#2a2d34",
   },
   dark: {
-    trackBand: "rgba(150,155,163,0.55)",
-    trackBandEdge: "#5b6067",
-    sectorLabel: "#474d54",
+    trackBand: "rgba(70,74,82,0.85)",
+    trackBandEdge: "#363b42",
+    sectorLabel: "#5a616a",
     startLine: "#c8cdd3",
   },
 } as const;
@@ -310,6 +310,12 @@ export default function TrackTraceCanvas(props: {
             })()}
           </Layer>
         </Stage>
+        <div className="trace-legend" aria-label="drive line colours">
+          <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--accel" />Throttle</span>
+          <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--coast" />Coast</span>
+          <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--brake" />Brake</span>
+          <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--trail" />Trail</span>
+        </div>
       </div>
       {footer && <div className="track-status" role="status">{footer}</div>}
     </div>

@@ -11,6 +11,10 @@ type Sample = { t: number; posX: number; posZ: number; surface: string } & Recor
 export type TracePoint = {
   readonly posX: number; readonly posZ: number;
   readonly throttle: number; readonly brake: number; readonly surface: string;
+  // Lap-time seconds of this sample. Present at runtime (trace() returns Samples), used to
+  // measure the REAL elapsed time between decimated/thinned points for the teleport guard.
+  // Optional so lightweight test fixtures need not supply it (they fall back to ~60Hz).
+  readonly t?: number;
 };
 
 function project(f: Frame, d: Derived, e: Enrichment): Sample {
@@ -55,6 +59,16 @@ function interpAt(lap: Sample[], ch: Channel, x: number): number {
   return a[ch] + (b[ch] - a[ch]) * frac;
 }
 
+/** Serializable snapshot of the store for cross-refresh persistence (see dump/load). */
+export type PersistedHistory = {
+  v: 1;
+  session: string | undefined;
+  lap: number | null;
+  totalLaps: number | null;
+  completed: Sample[][];
+  buf: Sample[];
+};
+
 export type HistoryStore = {
   push(s: LiveSnapshot): void;
   columns(chs: Channel[]): number[][];
@@ -67,10 +81,35 @@ export type HistoryStore = {
   revision(): number;
   lapColumns(i: number, chs: Channel[]): number[][] | null;
   lapSampleCount(i: number): number;
+  /** Decimated, lap-capped serializable state for persistence; null when empty. */
+  dump(): PersistedHistory | null;
+  /** Rehydrate from a dump()'d payload (best-effort; ignores anything malformed). */
+  load(data: unknown): void;
 };
 
 const MAX_COMPLETED_LAPS = 20;
 const DEFAULT_MAX_SAMPLES_PER_LAP = 36_000; // ~10 min at 60Hz — safety bound for a non-terminating lap
+
+// Persistence bounds: keep localStorage small. A lap is thinned to at most this many
+// samples (endpoints preserved; median interpolates, trace stays visually faithful), and
+// only the most recent laps are persisted.
+export const PERSIST_TARGET_SAMPLES = 1500;
+export const PERSIST_MAX_LAPS = 8;
+
+// Uniform-stride thinning that always keeps the first and last sample.
+function thin(lap: Sample[], target: number): Sample[] {
+  if (lap.length <= target) return lap.slice();
+  const stride = Math.ceil(lap.length / target);
+  const out: Sample[] = [];
+  for (let i = 0; i < lap.length; i += stride) out.push(lap[i]);
+  const last = lap[lap.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
+function isSample(x: unknown): x is Sample {
+  return !!x && typeof x === "object" && typeof (x as Sample).t === "number";
+}
 
 export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LAP): HistoryStore {
   let buf: Sample[] = [];
@@ -99,8 +138,17 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
   return {
     push(s) {
       if (s.status !== "live" || !s.frame || !s.derived) return;
-      const sid = s.enrichment.session_id;
-      if (sid !== session) { session = sid; buf = []; completed = []; lap = null; totalLaps = null; bump(); revision++; }
+      // Reset only on a GENUINE session change: a real, different session id. The backend
+      // frequently omits session_id (null) and it can flap between frames, so treating null
+      // -- or the first id seen after a refresh-restore -- as a change would wrongly wipe the
+      // rehydrated buffer (the refresh-persistence bug). Null never resets; the first real id
+      // is adopted without wiping.
+      const sid = s.enrichment.session_id ?? null;
+      if (sid !== null && session != null && sid !== session) {
+        session = sid; buf = []; completed = []; lap = null; totalLaps = null; bump(); revision++;
+      } else if (sid !== null && session == null) {
+        session = sid;
+      }
       if (lap !== null && s.frame.current_lap !== lap) {
         if (buf.length) {
           completed.push(buf);                 // full lap (no time-eviction happened)
@@ -170,6 +218,28 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
     lapSampleCount(i) {
       const lap = completed[i];
       return lap ? lap.length : 0;
+    },
+    dump() {
+      if (buf.length === 0 && completed.length === 0) return null;
+      return {
+        v: 1,
+        session, lap, totalLaps,
+        completed: completed.slice(-PERSIST_MAX_LAPS).map(l => thin(l, PERSIST_TARGET_SAMPLES)),
+        buf: thin(buf, PERSIST_TARGET_SAMPLES),
+      };
+    },
+    load(data) {
+      const d = data as Partial<PersistedHistory> | null;
+      if (!d || d.v !== 1 || !Array.isArray(d.completed) || !Array.isArray(d.buf)) return;
+      // Best-effort: keep only well-formed sample arrays; a malformed payload rehydrates
+      // to whatever survives rather than throwing.
+      completed = d.completed.filter(Array.isArray).map(l => (l as unknown[]).filter(isSample));
+      buf = (d.buf as unknown[]).filter(isSample);
+      session = typeof d.session === "string" ? d.session : undefined;
+      lap = typeof d.lap === "number" ? d.lap : null;
+      totalLaps = typeof d.totalLaps === "number" ? d.totalLaps : null;
+      bump();
+      revision++;
     },
   };
 }

@@ -67,11 +67,11 @@ describe("toLiveView tones", () => {
   it("fuel tone none when idle", () =>
     expect(toLiveView({ ...base, status: "idle", frame: null, derived: null }).fuelTone).toBe("none"));
 
-  it("tyre tone hot above 85, warm 55..85, cold below 55", () => {
-    const v = toLiveView(base); // rl 86.8 hot, rr 80.1 warm, fl 42.2 cold, fr 30.7 cold
-    expect(v.tyreTemps.rl.tone).toBe("hot");
-    expect(v.tyreTemps.rr.tone).toBe("warm");
-    expect(v.tyreTemps.fl.tone).toBe("cold");
+  it("tyre tone: under < 75, optimal 75..90, over > 90", () => {
+    const v = toLiveView(base); // rl 86.8 optimal, rr 80.1 optimal, fl 42.2 under, fr 30.7 under
+    expect(v.tyreTemps.rl.tone).toBe("optimal");
+    expect(v.tyreTemps.rr.tone).toBe("optimal");
+    expect(v.tyreTemps.fl.tone).toBe("under");
     expect(v.tyreTemps.rl.value).toBe("87°C");
   });
   it("tyre tone none + placeholder when idle", () => {
@@ -81,11 +81,11 @@ describe("toLiveView tones", () => {
 
   it("delta tone is none at exactly 0", () =>
     expect(toLiveView({ ...base, enrichment: { ...base.enrichment, delta_to_best_ns: 0 } }).deltaTone).toBe("none"));
-  it("tyre tone boundaries: 85 and 55 are warm; just outside flips", () => {
-    expect(toLiveView(withTyreFl(85)).tyreTemps.fl.tone).toBe("warm");
-    expect(toLiveView(withTyreFl(55)).tyreTemps.fl.tone).toBe("warm");
-    expect(toLiveView(withTyreFl(85.1)).tyreTemps.fl.tone).toBe("hot");
-    expect(toLiveView(withTyreFl(54.9)).tyreTemps.fl.tone).toBe("cold");
+  it("tyre tone boundaries: 75 and 90 are optimal; just outside flips", () => {
+    expect(toLiveView(withTyreFl(75)).tyreTemps.fl.tone).toBe("optimal");
+    expect(toLiveView(withTyreFl(90)).tyreTemps.fl.tone).toBe("optimal");
+    expect(toLiveView(withTyreFl(74.9)).tyreTemps.fl.tone).toBe("under");
+    expect(toLiveView(withTyreFl(90.1)).tyreTemps.fl.tone).toBe("over");
   });
 });
 

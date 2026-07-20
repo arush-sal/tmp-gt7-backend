@@ -13,19 +13,13 @@ function rgbaChannels(css: string): [number, number, number] {
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-test("traceColor: coast reads amber/orange (not the grey floor, not black); theme-aware", () => {
+test("traceColor: coast is white (theme-independent, not black)", () => {
   const dark = traceColor(0, 0, "dark");
   const light = traceColor(0, 0, "light");
-  expect(dark).not.toBe("rgba(0,0,0,1)");
-  expect(light).not.toBe("rgba(0,0,0,1)");
-  expect(dark).not.toBe(light);
-
-  // amber/orange: red channel clearly dominant, blue channel clearly weakest
-  for (const css of [dark, light]) {
-    const [r, g, b] = rgbaChannels(css);
-    expect(r).toBeGreaterThan(g);
-    expect(g).toBeGreaterThan(b);
-  }
+  expect(dark).toBe("rgba(255,255,255,1)");
+  expect(light).toBe("rgba(255,255,255,1)");
+  const [r, g, b] = rgbaChannels(dark);
+  expect(r).toBe(255); expect(g).toBe(255); expect(b).toBe(255);
 });
 
 test("traceColor: full throttle is green-ish (red at full brake, for reference)", () => {

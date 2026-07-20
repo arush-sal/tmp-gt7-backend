@@ -316,15 +316,57 @@ body {
 
 .muted { color: var(--text-muted); }
 
-/* Wraps the track-trace panel in Dashboard so the floating telemetry-panel overlay
-   variant has a positioned ancestor to anchor to (the center canvas area). */
+/* Center area: telemetry dock (left, fixed) + track-trace panel (fills the rest). Row layout
+   so collapsing the dock hands its width to the canvas. position:relative anchors the
+   reopen button (when the dock is hidden) and the dormant corner floating-panel. */
 .center-column {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  gap: 10px;
   min-height: 0;
   min-width: 0;
   position: relative;
+}
+
+/* Left-docked telemetry panel: fixed width, full height, its own card chrome. */
+.telemetry-dock {
+  position: relative;
+  flex: 0 0 380px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+/* Docked, so the panel header is no longer a drag handle. */
+.telemetry-dock .telemetry-panel__header { cursor: default; }
+
+.telemetry-dock__toggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  line-height: 1;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+/* Shown only when the dock is collapsed: a small handle to bring it back. Sits below the
+   track-trace header row so it never covers the "Track Trace" heading. */
+.telemetry-reopen {
+  position: absolute;
+  top: 52px;
+  left: 14px;
+  z-index: 6;
+  line-height: 1;
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 8px;
 }
 
 /* ── Track trace panel (live P2) ─────────────────────────────────────────── */
@@ -334,6 +376,7 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .track-picker {
@@ -406,6 +449,31 @@ body {
   overflow: hidden;
   min-height: 0;
 }
+
+/* Drive-line colour legend, pinned bottom-right of the canvas. */
+.trace-legend {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  border: 1px solid var(--border);
+  font-family: var(--ui);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-2);
+  pointer-events: none;
+}
+.trace-legend__item { display: inline-flex; align-items: center; gap: 5px; }
+.trace-legend__sw { width: 15px; height: 3px; border-radius: 2px; }
+.trace-legend__sw--accel { background: rgb(46,209,106); }
+.trace-legend__sw--coast { background: #fff; box-shadow: 0 0 0 1px var(--border-2); }
+.trace-legend__sw--brake { background: rgb(240,22,14); }
+.trace-legend__sw--trail { background: rgb(250,180,20); }
 
 .track-status {
   display: flex;
@@ -866,31 +934,29 @@ body {
   align-items: flex-end;
 }
 
+/* The fill occupies the whole bar; its colour encodes the current temperature band. */
 .tyre-fill {
   width: 100%;
-  transition: height .3s ease;
+  height: 100%;
+  transition: background-color .3s ease;
 }
 
-.tyre-compound {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  font-family: var(--data);
-  font-size: 10px;
-  font-weight: 700;
-}
+.fuel-red    { color: var(--red); }
+.fuel-yellow { color: var(--amber-dark); }
+.fuel-green  { color: var(--green-dark); }
+.fuel-none   { color: var(--text-muted); }
+.lap-best-hl { background: color-mix(in srgb, var(--blue) 14%, transparent); border-radius: 6px; padding: 1px 6px; }
 
-.tyre-hot, .fuel-red    { color: var(--red); }
-.tyre-warm, .fuel-yellow{ color: var(--amber-dark); }
-.tyre-cold              { color: var(--blue); }
-.fuel-green             { color: var(--green-dark); }
-.tyre-none, .fuel-none  { color: var(--text-muted); }
-.lap-best-hl            { background: color-mix(in srgb, var(--blue) 14%, transparent); border-radius: 6px; padding: 1px 6px; }
-.tyre-fill--na          { height: 0; }
-.tyre-compound--na      { background: var(--text-muted); color: #fff; }
+/* Tyre temperature bands: under=red, optimal=green, over=lime (yellow-green blend). */
+.tyre-under   { color: var(--red); }
+.tyre-optimal { color: var(--green-dark); }
+.tyre-over    { color: color-mix(in srgb, var(--green-dark) 55%, var(--amber-dark) 45%); }
+.tyre-none    { color: var(--text-muted); }
+
+.tyre-fill--under   { background: var(--red); }
+.tyre-fill--optimal { background: var(--green); }
+.tyre-fill--over    { background: color-mix(in srgb, var(--green) 55%, var(--amber) 45%); }
+.tyre-fill--none    { background: transparent; }
 
 /* ── Onboarding ──────────────────────────────────────────────────────────── */
 

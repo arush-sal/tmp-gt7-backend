@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
 import { useHistory } from "./useHistory";
 import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import type { LiveSnapshot } from "../contract/live";
@@ -16,6 +16,8 @@ const live = (lap: number, ns: number): LiveSnapshot => ({
 });
 
 describe("useHistory", () => {
+  beforeEach(() => localStorage.clear());
+
   it("feeds pushed frames into the store; unsubscribes on unmount", () => {
     let handlers: LiveHandlers | undefined;
     const unsub = vi.fn();
@@ -27,5 +29,22 @@ describe("useHistory", () => {
     expect(result.current.columns(["throttle"])[1]).toEqual([42, 42]);
     unmount();
     expect(unsub).toHaveBeenCalledOnce();
+  });
+
+  it("persists on page hide and rehydrates the buffer on a fresh mount (refresh)", () => {
+    let handlers: LiveHandlers | undefined;
+    const source: LiveSource = (_u, h) => { handlers = h; return vi.fn(); };
+
+    const first = renderHook(() => useHistory(source));
+    act(() => { handlers!.onSnapshot(live(1, 1e9)); handlers!.onSnapshot(live(1, 2e9)); });
+    expect(first.result.current.size()).toBe(2);
+
+    // Simulate a refresh: page hide flushes to localStorage, then the hook remounts fresh.
+    act(() => { window.dispatchEvent(new Event("pagehide")); });
+    first.unmount();
+
+    const second = renderHook(() => useHistory(source));
+    expect(second.result.current.size()).toBe(2);                          // buffer restored
+    expect(second.result.current.columns(["throttle"])[1]).toEqual([42, 42]);
   });
 });

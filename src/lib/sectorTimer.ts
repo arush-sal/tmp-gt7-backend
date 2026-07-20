@@ -14,7 +14,15 @@
 import type { DrawGeometry } from "./rkbGeometry";
 import { clArcLengths, projectToClArc, sectorBoundaries, sectorIndexAt, type SectorPartition } from "./sectorTiming";
 
-export type SectorTime = { sector: string; timeMs: number | null };
+export type SectorTime = {
+  sector: string;
+  /** Most recently completed time for this sector. Once set, it is only ever overwritten,
+   *  never cleared -- it persists across lap rollovers until this sector completes again. */
+  timeMs: number | null;
+  /** This sector's time minus its previously-recorded time (lap-over-lap). null on the
+   *  first recording (no baseline) and while the sector has never completed. */
+  deltaMs: number | null;
+};
 
 export type SectorTimerInput = {
   /** Identifies the current session/lap-count context; changing it forces a reset even mid-lap. */
@@ -24,6 +32,8 @@ export type SectorTimerInput = {
   x: number;
   z: number;
 };
+
+type Slot = { timeMs: number | null; deltaMs: number | null };
 
 export class SectorTimer {
   private readonly cl: ReadonlyArray<[number, number]>;
@@ -35,7 +45,9 @@ export class SectorTimer {
   private currentIdx = 0;
   private entryLapTimeNs = 0;
   private lastLapTimeNs = 0;
-  private times: Array<number | null>;
+  // Sticky per-sector display state. Survives lap rollover (only overwritten on a fresh
+  // completion); cleared only on a session change or a brand-new timer.
+  private displayed: Slot[];
 
   constructor(geometry: DrawGeometry | null) {
     this.cl = geometry?.cl ?? [];
@@ -43,7 +55,7 @@ export class SectorTimer {
       ? sectorBoundaries(geometry.cl, geometry.sectors.map(s => ({ sector: s.label, x: s.x, z: s.z })))
       : null;
     this.arc = this.partition ? clArcLengths(this.cl) : [];
-    this.times = this.partition ? this.partition.order.map(() => null) : [];
+    this.displayed = this.partition ? this.partition.order.map(() => ({ timeMs: null, deltaMs: null })) : [];
   }
 
   /** No geometry / fewer than 2 usable sector labels -> permanently null (caller keeps showing "pending"). */
@@ -51,31 +63,60 @@ export class SectorTimer {
     return this.partition !== null;
   }
 
-  private resetTimes() {
+  /** Reset the running-lap cursor only. Displayed times are intentionally left intact. */
+  private resetLap() {
     this.currentIdx = 0;
     this.entryLapTimeNs = 0;
-    this.times = this.partition ? this.partition.order.map(() => null) : [];
+  }
+
+  /** Full reset (new session / new track): clear both the cursor and the sticky display. */
+  private resetAll() {
+    this.resetLap();
+    this.displayed = this.partition ? this.partition.order.map(() => ({ timeMs: null, deltaMs: null })) : [];
+  }
+
+  /** Record a freshly-completed sector: overwrite its displayed time and compute the
+   *  lap-over-lap delta against whatever it held before. A non-positive time is a bogus
+   *  split (e.g. a rollover fired before any real accumulation) and is ignored, so it can
+   *  never clobber a genuine (including a seeded/restored) value with 0. */
+  private finalize(idx: number, timeMs: number) {
+    if (idx < 0 || idx >= this.displayed.length) return;
+    if (!(timeMs > 0)) return;
+    const prev = this.displayed[idx].timeMs;
+    this.displayed[idx] = { timeMs, deltaMs: prev !== null ? timeMs - prev : null };
+  }
+
+  /** Restore sticky display state after a page refresh. Seeds the session/lap context too so
+   *  the first live update for the SAME session continues rather than resetting; a different
+   *  incoming session still resets (its sessionKey won't match). */
+  seedState(sessionKey: string | null, lap: number | null, times: SectorTime[]) {
+    if (!this.partition) return;
+    this.sessionKey = sessionKey;
+    this.lap = lap;
+    const order = this.partition.order;
+    for (let i = 0; i < order.length && i < times.length; i++) {
+      const t = times[i];
+      if (!t) continue;
+      const timeMs = typeof t.timeMs === "number" ? t.timeMs : null;
+      const deltaMs = typeof t.deltaMs === "number" ? t.deltaMs : null;
+      this.displayed[i] = { timeMs, deltaMs };
+    }
   }
 
   update(input: SectorTimerInput): SectorTime[] | null {
     if (!this.partition) return null;
 
-    let justCompleted: Array<number | null> | null = null;
-
     if (input.sessionKey !== this.sessionKey) {
       this.sessionKey = input.sessionKey;
       this.lap = input.lap;
       this.lastLapTimeNs = 0;
-      this.resetTimes();
+      this.resetAll();
     } else if (this.lap !== null && input.lap !== this.lap) {
       // Lap rollover: finalize the sector we were in using the last known lap time
       // from just before the wrap (this frame's lapTimeNs has already reset near 0).
-      if (this.currentIdx < this.times.length) {
-        this.times[this.currentIdx] = (this.lastLapTimeNs - this.entryLapTimeNs) / 1_000_000;
-      }
-      justCompleted = this.times;
+      this.finalize(this.currentIdx, (this.lastLapTimeNs - this.entryLapTimeNs) / 1_000_000);
       this.lap = input.lap;
-      this.resetTimes();
+      this.resetLap();
     } else if (this.lap === null) {
       this.lap = input.lap;
     }
@@ -84,7 +125,7 @@ export class SectorTimer {
     if (!Number.isNaN(arcLen)) {
       const idx = sectorIndexAt(arcLen, this.partition.bounds);
       if (idx === this.currentIdx + 1) {
-        this.times[this.currentIdx] = (input.lapTimeNs - this.entryLapTimeNs) / 1_000_000;
+        this.finalize(this.currentIdx, (input.lapTimeNs - this.entryLapTimeNs) / 1_000_000);
         this.entryLapTimeNs = input.lapTimeNs;
         this.currentIdx = idx;
       }
@@ -92,7 +133,10 @@ export class SectorTimer {
 
     this.lastLapTimeNs = input.lapTimeNs;
 
-    const source = justCompleted ?? this.times;
-    return this.partition.order.map((sector, i) => ({ sector, timeMs: source[i] }));
+    return this.partition.order.map((sector, i) => ({
+      sector,
+      timeMs: this.displayed[i].timeMs,
+      deltaMs: this.displayed[i].deltaMs,
+    }));
   }
 }

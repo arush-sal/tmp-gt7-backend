@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { mockCorners, mockCornerDetails } from "../mock/snapshot";
-import type { CornerAnalysis } from "../mock/snapshot";
+import type { Corner, CornerAnalysis } from "../contract/corner";
 import { useSession } from "../hooks/useSession";
 import { useHistory } from "../hooks/useHistory";
 import { useTrack } from "../hooks/useTrack";
@@ -38,10 +37,23 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
   const currentFuelPct = snapshot?.derived?.fuel_pct ?? null;
   const lapsLeft = estimateLapsLeft(currentFuelPct, usedPerLap);
 
+  // Corner/coaching data is not emitted by the backend yet (coaching is a
+  // `status:"pending"` passthrough). Until it ships, there are no corners to select
+  // and no detail to show — the panels render their pending/empty states. The
+  // selection plumbing is kept intact so wiring real data back in is a one-liner.
+  const corners: Corner[] = [];
   const [selectedCornerId, setSelectedCornerId] = useState<number | null>(null);
-  const selectedCornerDetail: CornerAnalysis | null =
-    selectedCornerId !== null ? (mockCornerDetails.find(c => c.id === selectedCornerId) ?? null) : null;
+  const selectedCornerDetail: CornerAnalysis | null = null;
   const handleCornerSelect = (id: number | null) => setSelectedCornerId(id);
+
+  // Telemetry panel is docked on the left of the track area. Collapsing hides it entirely so
+  // the track canvas fills the freed width; the open/closed choice persists across refreshes.
+  const [telemetryOpen, setTelemetryOpen] = useState(() => {
+    try { return localStorage.getItem("gt7:telemetry-open") !== "0"; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("gt7:telemetry-open", telemetryOpen ? "1" : "0"); } catch { /* no storage */ }
+  }, [telemetryOpen]);
 
   // Track list for the picker — fetched once; failure just leaves the list empty.
   const [trackList, setTrackList] = useState<TrackListItem[]>([]);
@@ -135,7 +147,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
       ? null
       : !sel.autoClosed
         ? "detecting track..."
-        : "no track - pick one from the list";
+        : "no track detected";
 
   return (
     <>
@@ -153,11 +165,15 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
         view={view}
         selectedCorner={selectedCornerDetail}
         trackPicker={
-          <TrackPicker
-            value={sel.slug}
-            items={candidates}
-            onPick={slug => setSel(s => reduceManual(s, slug))}
-          />
+          // No selected/detected track (e.g. right after a refresh, before auto-detect
+          // re-locks) -> render nothing rather than an empty "select track" dropdown.
+          sel.slug ? (
+            <TrackPicker
+              value={sel.slug}
+              items={candidates}
+              onPick={slug => setSel(s => reduceManual(s, slug))}
+            />
+          ) : undefined
         }
         lapSelector={
           <select
@@ -171,7 +187,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
           >
             <option value="all">All laps</option>
             <option value="current">Current lap</option>
-            {Array.from({ length: completedLapCount }, (_, i) => (
+            {Array.from({ length: completedLapCount }, (_, i) => completedLapCount - 1 - i).map(i => (
               <option key={i} value={i}>Lap {i + 1}</option>
             ))}
           </select>
@@ -180,6 +196,34 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
 
       <div className="dashboard-body">
         <div className="center-column">
+          {telemetryOpen ? (
+            <aside className="telemetry-dock">
+              <button
+                type="button"
+                className="telemetry-dock__toggle chip"
+                onClick={() => setTelemetryOpen(false)}
+                aria-label="hide telemetry"
+                title="hide telemetry"
+              >
+                ◀
+              </button>
+              <TelemetryPanel
+                store={history}
+                analysisLapIndex={typeof selectedLap === "number" ? selectedLap : null}
+                analysisScrubIndex={scrubIndex}
+              />
+            </aside>
+          ) : (
+            <button
+              type="button"
+              className="telemetry-reopen chip"
+              onClick={() => setTelemetryOpen(true)}
+              aria-label="show telemetry"
+              title="show telemetry"
+            >
+              graphs ▶
+            </button>
+          )}
           <div className="track-panel">
             <TrackTraceCanvas
               store={history}
@@ -202,18 +246,6 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
               }
             />
           </div>
-          <FloatingPanel
-            key="telemetry"
-            storageKey="gt7:telemetry-geom"
-            defaultGeom={{ x: 12, y: 12, width: 380, height: 640 }}
-            dragHandleClassName="telemetry-panel__header"
-          >
-            <TelemetryPanel
-              store={history}
-              analysisLapIndex={typeof selectedLap === "number" ? selectedLap : null}
-              analysisScrubIndex={scrubIndex}
-            />
-          </FloatingPanel>
           {selectedCornerDetail !== null && (
             <FloatingPanel
               key="corner"
@@ -229,7 +261,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light" }: {
         <div className="right-panel-wrap">
           <RightPanel
             view={view}
-            corners={mockCorners}
+            corners={corners}
             selectedCornerId={selectedCornerId}
             onCornerSelect={handleCornerSelect}
             selectedCornerDetail={selectedCornerDetail}

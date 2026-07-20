@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { LiveView } from "../lib/liveView";
-import type { CornerAnalysis } from "../mock/snapshot";
+import type { CornerAnalysis } from "../contract/corner";
 import { PLACEHOLDER } from "../lib/format";
 
 interface Props {

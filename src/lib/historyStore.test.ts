@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createHistoryStore } from "./historyStore";
+import { createHistoryStore, PERSIST_TARGET_SAMPLES, PERSIST_MAX_LAPS } from "./historyStore";
 import type { LiveSnapshot } from "../contract/live";
 
 const frame = (lap: number, lapTimeNs: number, throttle: number): LiveSnapshot => ({
@@ -315,5 +315,84 @@ describe("historyStore — lapColumns / lapSampleCount", () => {
     expect(s.lapSampleCount(0)).toBe(2);
     expect(s.lapSampleCount(1)).toBe(0);
     expect(s.lapSampleCount(-1)).toBe(0);
+  });
+});
+
+describe("historyStore — persistence (dump/load)", () => {
+  it("dump() returns null for an empty store", () => {
+    expect(createHistoryStore().dump()).toBeNull();
+  });
+
+  it("round-trips completed laps + the running buffer into a fresh store", () => {
+    const a = createHistoryStore();
+    a.push(frame(1, 1e9, 40));
+    a.push(frame(1, 2e9, 60));
+    a.push(frame(2, 0.5e9, 80)); // rollover: lap 1 completed (2 samples), lap 2 running (1)
+    const data = a.dump()!;
+    expect(data).not.toBeNull();
+
+    const b = createHistoryStore();
+    b.load(data);
+    expect(b.completedLapCount()).toBe(1);
+    expect(b.size()).toBe(1);                                 // running lap 2 has 1 sample
+    expect(b.lapColumns(0, ["throttle"])![1]).toEqual([40, 60]); // lap 1 restored
+    expect(b.columns(["throttle"])[1]).toEqual([80]);         // running lap restored
+  });
+
+  it("thins a huge lap to the sample cap, preserving first + last", () => {
+    const a = createHistoryStore();
+    for (let i = 0; i < 5000; i++) a.push(frame(1, (i + 1) * 1e6, i % 100));
+    const data = a.dump()!;
+    expect(data.buf.length).toBeLessThanOrEqual(PERSIST_TARGET_SAMPLES + 1);
+    expect(data.buf[0].throttle).toBe(0);                     // first
+    expect(data.buf[data.buf.length - 1].throttle).toBe(4999 % 100); // last preserved
+  });
+
+  it("persists only the most recent laps (cap)", () => {
+    const a = createHistoryStore();
+    for (let lap = 1; lap <= 12; lap++) {
+      a.push(frame(lap, 1e9, 50));
+      a.push(frame(lap, 2e9, 50));
+    }
+    expect(a.dump()!.completed.length).toBe(PERSIST_MAX_LAPS);
+  });
+
+  it("a null/absent session_id never wipes accumulated history (backend omits it)", () => {
+    const withSession = (lap: number, ns: number, sid: string | undefined): LiveSnapshot => {
+      const f = frame(lap, ns, 50);
+      return { ...f, enrichment: { ...f.enrichment, session_id: sid } };
+    };
+    const s = createHistoryStore();
+    s.push(withSession(1, 1e9, "sess-1"));  // adopt sess-1
+    s.push(withSession(1, 2e9, undefined));       // null -> must NOT wipe
+    s.push(withSession(1, 3e9, undefined));
+    expect(s.size()).toBe(3);
+  });
+
+  it("keeps rehydrated laps when the first live frame carries no session_id (the refresh case)", () => {
+    const withSession = (lap: number, ns: number, sid: string | undefined): LiveSnapshot => {
+      const f = frame(lap, ns, 50);
+      return { ...f, enrichment: { ...f.enrichment, session_id: sid } };
+    };
+    const a = createHistoryStore();
+    a.push(withSession(1, 1e9, "sess-1"));
+    a.push(withSession(1, 2e9, "sess-1"));
+    a.push(withSession(2, 0.5e9, "sess-1")); // rollover -> 1 completed lap
+    const data = a.dump();
+
+    const b = createHistoryStore();
+    b.load(data);                            // hydrated with session "sess-1"
+    expect(b.completedLapCount()).toBe(1);
+    b.push(withSession(2, 1e9, undefined));       // live frame after refresh: session_id null
+    expect(b.completedLapCount()).toBe(1);   // NOT wiped
+    expect(b.size()).toBeGreaterThanOrEqual(1);
+  });
+
+  it("ignores a malformed / wrong-version payload", () => {
+    const b = createHistoryStore();
+    b.load({ v: 2, completed: [], buf: [] });
+    b.load(null);
+    b.load("garbage");
+    expect(b.dump()).toBeNull();
   });
 });

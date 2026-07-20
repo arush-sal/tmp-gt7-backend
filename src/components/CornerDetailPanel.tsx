@@ -1,4 +1,4 @@
-import type { CornerAnalysis } from "../mock/snapshot";
+import type { CornerAnalysis } from "../contract/corner";
 
 interface Props {
   corner: CornerAnalysis;

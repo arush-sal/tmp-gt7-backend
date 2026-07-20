@@ -46,7 +46,7 @@ function drawBrakeSawtooth(ctx: CanvasRenderingContext2D, keptPts: ReadonlyArray
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = "rgba(225,6,0,0.9)";
-  ctx.lineWidth = 1.2;
+  ctx.lineWidth = 2.2;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const [start, end] of spans) {
@@ -68,7 +68,13 @@ function drawLap(ctx: CanvasRenderingContext2D, pts: ReadonlyArray<TracePoint>, 
   if (pts.length < 2) return;
   const keep = decimate(pts, view, 1);
   const keptPts = keep.map(i => pts[i]);
-  const dts = keep.map(() => 1 / 60); // uniform 60Hz; refine if per-sample dt is threaded later
+  // REAL elapsed time between consecutive kept points (from the samples' lap-time `t`), not a
+  // uniform 60Hz guess. Kept points are decimated (live) or thinned to 1500/lap (after a
+  // refresh), so a straight-line high-speed segment can span many frames; using 1/60 made the
+  // teleport guard fire on those and drop the line (notably the fast run to start/finish).
+  // Falls back to 1/60 when `t` is absent (test fixtures) via penUpBreaks' own NaN guard.
+  const dts = keptPts.map((p, k) =>
+    k === 0 ? 0 : (p.t !== undefined && keptPts[k - 1].t !== undefined ? p.t - keptPts[k - 1].t! : NaN));
   const breaks = penUpBreaks(keptPts, dts, 200);
   const spans = brakeSpans(keptPts.map(p => p.brake));
   ctx.save();
@@ -78,7 +84,7 @@ function drawLap(ctx: CanvasRenderingContext2D, pts: ReadonlyArray<TracePoint>, 
     const a = pts[keep[k - 1]], b = pts[keep[k]];
     const pa = worldToScreen(view, a.posX, a.posZ), pb = worldToScreen(view, b.posX, b.posZ);
     ctx.strokeStyle = traceColor(b.throttle, b.brake, theme, alpha);
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(pa.sx, pa.sy);
     ctx.lineTo(pb.sx, pb.sy);

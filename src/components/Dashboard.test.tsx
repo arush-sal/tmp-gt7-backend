@@ -22,6 +22,7 @@ vi.mock("react-konva", () => ({
 // Dashboard fetches the track list (and useTrack fetches a track record) via the real
 // `fetch` global — stub it for every test in this file so none of them hit the network.
 beforeEach(() => {
+  localStorage.clear();
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => [] })) as unknown as typeof fetch);
 });
 afterEach(() => {
@@ -87,20 +88,23 @@ describe("Dashboard (live)", () => {
     expect(screen.getByText(/start a session in GT7/i)).toBeTruthy();
   });
 
-  it("renders the trace canvas + track picker (no mock TrackMap)", async () => {
+  it("renders the trace canvas (no mock TrackMap) and hides the picker until a track is detected", async () => {
     function sourceOnce(): LiveSource {
       return (_url, h) => {
         const s = structuredClone(liveSample) as { frame: Record<string, unknown>; enrichment: Record<string, unknown> };
         s.frame.position_x = 10;
         s.frame.position_z = 20;
-        s.enrichment.track = null;
+        s.enrichment.track = null; // no detected track
         h.onSnapshot(validateLive(s));
         return () => {};
       };
     }
     render(<Dashboard source={sourceOnce()} />);
-    await waitFor(() => expect(screen.getByLabelText("Track")).toBeInTheDocument());
+    // Canvas always renders; the old mock TrackMap is gone.
+    await waitFor(() => expect(screen.getByText("Track Trace")).toBeInTheDocument());
     expect(screen.queryByText("click any corner to inspect →")).not.toBeInTheDocument();
+    // With no detected/selected track, the "select track" dropdown is not shown.
+    expect(screen.queryByLabelText("Track")).not.toBeInTheDocument();
   });
 
   // Regression for the reviewed blocker: `geometry` used to be recomputed fresh on every

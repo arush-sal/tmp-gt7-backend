@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useSectorTimes } from "./useSectorTimes";
 import type { LiveSnapshot } from "../contract/live";
@@ -34,6 +34,8 @@ function live(lap: number, lapTimeNs: number, x: number, z: number): LiveSnapsho
 }
 
 describe("useSectorTimes", () => {
+  beforeEach(() => localStorage.clear());
+
   it("returns null when there is no geometry", () => {
     const { result } = renderHook(
       ({ snapshot }) => useSectorTimes(snapshot, null, null),
@@ -48,16 +50,16 @@ describe("useSectorTimes", () => {
       { initialProps: { snapshot: live(1, 0, 0, 0) as LiveSnapshot | null } },
     );
     expect(result.current).toEqual([
-      { sector: "S1", timeMs: null },
-      { sector: "S2", timeMs: null },
-      { sector: "S3", timeMs: null },
+      { sector: "S1", timeMs: null, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
     ]);
 
     rerender({ snapshot: live(1, 2_000_000_000, 9, 0) }); // crosses into S2
     expect(result.current).toEqual([
-      { sector: "S1", timeMs: 2000 },
-      { sector: "S2", timeMs: null },
-      { sector: "S3", timeMs: null },
+      { sector: "S1", timeMs: 2000, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
     ]);
   });
 
@@ -78,17 +80,17 @@ describe("useSectorTimes", () => {
     // Geometry resolves; same trackKey, same snapshot lap/pos so far.
     rerender({ snapshot: live(1, 0, 0, 0), geom: geometry });
     expect(result.current).toEqual([
-      { sector: "S1", timeMs: null },
-      { sector: "S2", timeMs: null },
-      { sector: "S3", timeMs: null },
+      { sector: "S1", timeMs: null, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
     ]);
 
     // Sector splits now compute normally on the newly-partitioned timer.
     rerender({ snapshot: live(1, 2_000_000_000, 9, 0), geom: geometry });
     expect(result.current).toEqual([
-      { sector: "S1", timeMs: 2000 },
-      { sector: "S2", timeMs: null },
-      { sector: "S3", timeMs: null },
+      { sector: "S1", timeMs: 2000, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
     ]);
   });
 
@@ -103,9 +105,31 @@ describe("useSectorTimes", () => {
     rerender({ snapshot: live(1, 2_000_000_000, 9, 0), key: "track-b" });
     // fresh timer for track-b, fed the same snapshot fresh (lap treated as newly seen at S1 -> crossing into S2)
     expect(result.current).toEqual([
-      { sector: "S1", timeMs: 2000 },
-      { sector: "S2", timeMs: null },
-      { sector: "S3", timeMs: null },
+      { sector: "S1", timeMs: 2000, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
+    ]);
+  });
+
+  it("restores a track's sticky sectors from storage on a fresh mount (refresh)", () => {
+    const first = renderHook(
+      ({ snapshot }) => useSectorTimes(snapshot, geometry, "track-a"),
+      { initialProps: { snapshot: live(1, 0, 0, 0) as LiveSnapshot | null } },
+    );
+    first.rerender({ snapshot: live(1, 2_000_000_000, 9, 0) }); // S1 = 2000 recorded + persisted
+    expect(first.result.current![0].timeMs).toBe(2000);
+    first.unmount();
+
+    // Fresh mount, same track + same session: seeded from storage, so the first snapshot
+    // returns the restored S1 rather than a cleared null.
+    const second = renderHook(
+      ({ snapshot }) => useSectorTimes(snapshot, geometry, "track-a"),
+      { initialProps: { snapshot: live(1, 0, 0, 0) as LiveSnapshot | null } },
+    );
+    expect(second.result.current).toEqual([
+      { sector: "S1", timeMs: 2000, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
     ]);
   });
 });
