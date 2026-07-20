@@ -61,9 +61,19 @@ make live IP=192.168.1.99
 # options: STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port
 ```
 
-The TUI runs in the foreground; Ctrl-C stops all three. There is also `make dist-joshua IP=...` which
-cross-builds the Linux binaries, copies them to a LAN host, and starts them there — useful when the
-dev box (e.g. WSL2) cannot receive the console's UDP directly.
+The TUI runs in the foreground; Ctrl-C stops all three.
+
+To run just the backend + collector as background daemons (no TUI) — logging to `bin/rtps.log` and
+`bin/collector.log` — use `make deploy-stack`:
+
+```bash
+make deploy-stack IP=192.168.1.99
+# options: STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port
+make stop-stack   # stop them
+```
+
+Bind the API wide (`API_ADDR=0.0.0.0:8080`) if another host, such as the web dashboard, needs to
+reach it.
 
 ## Verify it's working
 

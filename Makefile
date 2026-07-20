@@ -4,21 +4,20 @@
 GO      ?= go
 PKG     ?= ./...
 
-# `make live` / `make dist-joshua` knobs
+# `make live` / `make deploy-stack` knobs
 IP       ?=
 STORAGE  ?= memory
 DB_DSN   ?=
 API_ADDR ?= localhost:8080
-JOSHUA   ?= salil@joshua
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live dist-joshua
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live deploy-stack stop-stack
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
 
 ## build: compile all packages
 build:
-	$(GO) build $(PKG)
+	$(GO) build -o ./bin/ $(PKG)
 
 ## test: run all tests
 test:
@@ -85,22 +84,26 @@ live:
 		./bin/collector --ps5.ip=$(IP) --log.level=warn & COL=$$!; \
 		./bin/tui --api http://$(API_ADDR)"
 
-## dist-joshua: build linux rtps+collector, copy to the joshua LAN host, and (re)start them there.
-## joshua sits on the PS5's LAN and receives the console's UDP natively (WSL2 NAT cannot). rtps binds
-## its API wide (0.0.0.0:8080) so a WSL/dev box can curl http://<joshua-lan-ip>:8080. Usage:
-##   make dist-joshua IP=192.168.1.99 [JOSHUA=user@host]
-dist-joshua:
-	@test -n "$(IP)" || { echo "usage: make dist-joshua IP=<ps5-ip> [JOSHUA=user@host]"; exit 2; }
-	@mkdir -p bin/linux
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/linux/rtps ./cmd/rtps
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o bin/linux/collector ./cmd/collector
-	ssh $(JOSHUA) 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 2; rm -f ~/rtps ~/collector' || true
-	scp bin/linux/rtps bin/linux/collector $(JOSHUA):~/
-	ssh $(JOSHUA) 'nohup ~/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=0.0.0.0:8080 --ingest.addr=localhost:50051 --log.level=info >~/rtps.log 2>&1 & disown; \
+## deploy-stack: build and start the rtps + collector stack in the background against a PS5, logging
+## to bin/. Local (native Linux) — no ssh/cross-compile. Re-run to restart; `make stop-stack` to stop.
+## Bind the API wide (API_ADDR=0.0.0.0:8080) if another host (e.g. the web dashboard) must reach it.
+##   make deploy-stack IP=192.168.1.99 [STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port]
+deploy-stack:
+	@test -n "$(IP)" || { echo "usage: make deploy-stack IP=<ps5-ip> [STORAGE=postgres DB_DSN=... API_ADDR=host:port]"; exit 2; }
+	@mkdir -p bin
+	$(GO) build -o bin/rtps ./cmd/rtps
+	$(GO) build -o bin/collector ./cmd/collector
+	@bash -c 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 2; \
+		nohup ./bin/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=$(API_ADDR) --ingest.addr=localhost:50051 --log.level=info >bin/rtps.log 2>&1 & disown; \
 		sleep 2; \
-		nohup ~/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >~/collector.log 2>&1 & disown; \
-		echo "started rtps + collector on $(JOSHUA) (logs: ~/rtps.log ~/collector.log)"'
-	@echo ">> rtps API on $(JOSHUA):8080 (bind 0.0.0.0). From a dev box: curl http://<joshua-lan-ip>:8080/v1/live"
+		nohup ./bin/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >bin/collector.log 2>&1 & disown; \
+		echo ">> started rtps ($(API_ADDR)) + collector (PS5 $(IP)) in background (logs: bin/rtps.log bin/collector.log)"'
+	@echo ">> curl http://$(API_ADDR)/v1/live    |    stop: make stop-stack"
+
+## stop-stack: stop a running deploy-stack (rtps + collector).
+stop-stack:
+	@bash -c 'pkill -x rtps && echo "stopped rtps" || echo "rtps not running"; \
+		pkill -x collector && echo "stopped collector" || echo "collector not running"'
 
 ## clean: remove build and coverage artifacts
 clean:
