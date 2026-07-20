@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 // src/hooks/useSession.test.ts
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { StrictMode } from "react";
 import { act, renderHook } from "@testing-library/react";
 import { useSession } from "./useSession";
 import type { LiveHandlers, LiveSource } from "../lib/liveSource";
 import type { LiveSnapshot } from "../contract/live";
+import { saveVersioned } from "../lib/persistState";
 
 const enr = { analysis: null, car_name: null, track: null, delta_to_best_ns: null };
 const liveFrame = {
@@ -16,10 +17,16 @@ const liveFrame = {
   best_lap: "77.210s", last_lap: "78.004s", in_race: true, is_paused: false,
 };
 // Realistic snapshots (a live one has a real frame/derived, matching what subscribeLive would deliver).
-const snap = (status: "live" | "idle"): LiveSnapshot =>
+const snap = (status: "live" | "idle", sessionId?: string): LiveSnapshot =>
   status === "live"
-    ? { served_at: "2026-07-07T00:00:00Z", status, frame: { ...liveFrame }, derived: { current_lap_time_ns: 77210000000, fuel_pct: 23.7, source: "LIVE" }, enrichment: { ...enr } }
-    : { served_at: "2026-07-07T00:00:00Z", status, frame: null, derived: null, enrichment: { ...enr } };
+    ? { served_at: "2026-07-07T00:00:00Z", status, frame: { ...liveFrame }, derived: { current_lap_time_ns: 77210000000, fuel_pct: 23.7, source: "LIVE" }, enrichment: { ...enr, session_id: sessionId } }
+    : { served_at: "2026-07-07T00:00:00Z", status, frame: null, derived: null, enrichment: { ...enr, session_id: sessionId } };
+
+const overflowFrame = { ...liveFrame, current_lap: 21, total_laps: 20 };
+const overflowSnap = (): LiveSnapshot =>
+  ({ served_at: "2026-07-07T00:00:00Z", status: "live", frame: overflowFrame, derived: { current_lap_time_ns: 77210000000, fuel_pct: 23.7, source: "LIVE" }, enrichment: { ...enr } });
+
+beforeEach(() => localStorage.clear());
 
 // A controllable fake source: capture handlers, return a spy unsubscribe.
 function makeFakeSource() {
@@ -96,5 +103,66 @@ describe("useSession", () => {
     const { unmount } = renderHook(() => useSession("u", source), { wrapper: StrictMode });
     unmount();
     expect(unsubscribe.mock.calls.length).toBe(captured.subscribeCount);
+  });
+
+  it("first live snapshot -> view non-null, live true, raceKey adopted, newRaceSeq 0", () => {
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(snap("live", "a")));
+    expect(result.current.view).not.toBeNull();
+    expect(result.current.live).toBe(true);
+    expect(result.current.raceKey).toBe("a");
+    expect(result.current.newRaceSeq).toBe(0);
+  });
+
+  it("an idle snapshot after a live one retains sticky values, live false", () => {
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(snap("live", "a")));
+    const liveSpeed = result.current.view!.speed;
+    act(() => captured.handlers!.onSnapshot(snap("idle", "a")));
+    expect(result.current.live).toBe(false);
+    expect(result.current.view!.speed).toBe(liveSpeed);
+  });
+
+  it("session_id \"a\" then \"b\" -> newRaceSeq increments", () => {
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(snap("live", "a")));
+    expect(result.current.newRaceSeq).toBe(0);
+    act(() => captured.handlers!.onSnapshot(snap("live", "b")));
+    expect(result.current.newRaceSeq).toBe(1);
+    expect(result.current.raceKey).toBe("b");
+  });
+
+  it("lap-overflow snapshot (current_lap>total_laps) -> live false", () => {
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(overflowSnap()));
+    expect(result.current.live).toBe(false);
+  });
+
+  it("refresh sim: seeds raceKey + view from saved sticky before any frame", () => {
+    const { source, captured } = makeFakeSource();
+    // Build a real sticky view by rendering a first hook instance and capturing its view.
+    const first = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(snap("live", "a")));
+    const savedSticky = first.result.current.view;
+    first.unmount();
+
+    saveVersioned("gt7:race", { raceKey: "a", sticky: savedSticky });
+
+    const { source: source2, captured: captured2 } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source2));
+    expect(result.current.raceKey).toBe("a");
+    expect(result.current.view).toEqual(savedSticky);
+
+    // same session_id -> no new race
+    act(() => captured2.handlers!.onSnapshot(snap("live", "a")));
+    expect(result.current.newRaceSeq).toBe(0);
+
+    // different session_id -> new race
+    act(() => captured2.handlers!.onSnapshot(snap("live", "b")));
+    expect(result.current.newRaceSeq).toBe(1);
   });
 });
