@@ -111,6 +111,26 @@ describe("useSectorTimes", () => {
     ]);
   });
 
+  it("does not advance sector times when live=false", () => {
+    const { result, rerender } = renderHook(
+      ({ snapshot, live }) => useSectorTimes(snapshot, geometry, "track-a", live),
+      { initialProps: { snapshot: live(1, 0, 0, 0) as LiveSnapshot | null, live: true } },
+    );
+    expect(result.current).toEqual([
+      { sector: "S1", timeMs: null, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
+    ]);
+
+    // Flip to not-live, then feed a snapshot that WOULD record a split (crossing into S2).
+    rerender({ snapshot: live(1, 2_000_000_000, 9, 0), live: false });
+    expect(result.current).toEqual([
+      { sector: "S1", timeMs: null, deltaMs: null },
+      { sector: "S2", timeMs: null, deltaMs: null },
+      { sector: "S3", timeMs: null, deltaMs: null },
+    ]);
+  });
+
   it("restores a track's sticky sectors from storage on a fresh mount (refresh)", () => {
     const first = renderHook(
       ({ snapshot }) => useSectorTimes(snapshot, geometry, "track-a"),

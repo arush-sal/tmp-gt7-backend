@@ -28,6 +28,7 @@ export function useSectorTimes(
   snapshot: LiveSnapshot | null,
   geometry: DrawGeometry | null,
   trackKey: string | null,
+  live = true,
 ): SectorTime[] | null {
   const holder = useRef<{ key: string | null; timer: SectorTimer } | null>(null);
 
@@ -57,6 +58,7 @@ export function useSectorTimes(
   const lastPersisted = useRef<string>("");
 
   useEffect(() => {
+    if (!live) return;
     if (!timer.hasPartition()) return;
     const f = snapshot?.frame;
     const d = snapshot?.derived;
@@ -84,7 +86,7 @@ export function useSectorTimes(
     // `timer` is included so a mid-flight rebuild (geometry arriving after the initial
     // no-partition timer was built, on the same trackKey) re-runs against the new,
     // partitioned timer immediately -- not just on the next snapshot/trackKey change.
-  }, [snapshot, trackKey, timer]);
+  }, [snapshot, trackKey, timer, live]);
 
   return timer.hasPartition() ? times : null;
 }
