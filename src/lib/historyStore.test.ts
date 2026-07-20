@@ -103,13 +103,32 @@ describe("historyStore — completed-lap retention", () => {
     expect(s.completedLapCount()).toBe(20);
   });
 
-  it("resets everything on session change", () => {
+  it("does NOT self-reset on a session_id change (external reset() only)", () => {
+    const s = createHistoryStore();
+    s.push(snap({ t: 1, lap: 1, sid: "a" }));
+    s.push(snap({ t: 2, lap: 1, sid: "b" })); // session_id changed mid-lap
+    expect(s.size()).toBe(2); // both retained
+  });
+
+  it("reset() clears everything (the controller-driven path)", () => {
     const s = createHistoryStore();
     s.push(snap({ t: 1, lap: 1, sid: "a" }));
     s.push(snap({ t: 1, lap: 2, sid: "a" }));
-    s.push(snap({ t: 1, lap: 1, sid: "b" })); // new session
+    s.reset();
     expect(s.completedLapCount()).toBe(0);
+    expect(s.size()).toBe(0);
+  });
+
+  it("push is a no-op while not live", () => {
+    const s = createHistoryStore();
+    s.push(snap({ t: 1, lap: 1 }));
     expect(s.size()).toBe(1);
+    s.setLive(false);
+    s.push(snap({ t: 2, lap: 1 }));
+    expect(s.size()).toBe(1); // ignored while not live
+    s.setLive(true);
+    s.push(snap({ t: 3, lap: 1 }));
+    expect(s.size()).toBe(2);
   });
 
   it("retains the full current lap (no time-window eviction) so a long lap keeps early samples", () => {
@@ -357,35 +376,19 @@ describe("historyStore — persistence (dump/load)", () => {
     expect(a.dump()!.completed.length).toBe(PERSIST_MAX_LAPS);
   });
 
-  it("a null/absent session_id never wipes accumulated history (backend omits it)", () => {
-    const withSession = (lap: number, ns: number, sid: string | undefined): LiveSnapshot => {
-      const f = frame(lap, ns, 50);
-      return { ...f, enrichment: { ...f.enrichment, session_id: sid } };
-    };
-    const s = createHistoryStore();
-    s.push(withSession(1, 1e9, "sess-1"));  // adopt sess-1
-    s.push(withSession(1, 2e9, undefined));       // null -> must NOT wipe
-    s.push(withSession(1, 3e9, undefined));
-    expect(s.size()).toBe(3);
-  });
-
-  it("keeps rehydrated laps when the first live frame carries no session_id (the refresh case)", () => {
-    const withSession = (lap: number, ns: number, sid: string | undefined): LiveSnapshot => {
-      const f = frame(lap, ns, 50);
-      return { ...f, enrichment: { ...f.enrichment, session_id: sid } };
-    };
+  it("load(dump()) then a push does not clear the loaded laps", () => {
     const a = createHistoryStore();
-    a.push(withSession(1, 1e9, "sess-1"));
-    a.push(withSession(1, 2e9, "sess-1"));
-    a.push(withSession(2, 0.5e9, "sess-1")); // rollover -> 1 completed lap
+    a.push(frame(1, 1e9, 40));
+    a.push(frame(1, 2e9, 60));
+    a.push(frame(2, 0.5e9, 80)); // rollover -> 1 completed lap
     const data = a.dump();
 
     const b = createHistoryStore();
-    b.load(data);                            // hydrated with session "sess-1"
+    b.load(data);
     expect(b.completedLapCount()).toBe(1);
-    b.push(withSession(2, 1e9, undefined));       // live frame after refresh: session_id null
-    expect(b.completedLapCount()).toBe(1);   // NOT wiped
-    expect(b.size()).toBeGreaterThanOrEqual(1);
+    b.push(frame(2, 1e9, 90)); // same lap, later t -> appended, not a reset
+    expect(b.completedLapCount()).toBe(1);
+    expect(b.size()).toBe(2);
   });
 
   it("ignores a malformed / wrong-version payload", () => {

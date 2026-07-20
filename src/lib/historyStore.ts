@@ -71,6 +71,8 @@ export type PersistedHistory = {
 
 export type HistoryStore = {
   push(s: LiveSnapshot): void;
+  /** Gate append: while not live (paused/idle/race-over), push() is a no-op. Default true. */
+  setLive(live: boolean): void;
   columns(chs: Channel[]): number[][];
   medianColumn(ch: Channel): number[];
   size(): number;
@@ -115,8 +117,9 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
   let buf: Sample[] = [];
   let completed: Sample[][] = [];
   let lap: number | null = null;
-  let session: string | undefined;
+  let session: string | undefined; // informational only (dump/load); push no longer resets on it
   let totalLaps: number | null = null;
+  let live = true;
 
   // Median cache: values change only when the completed-lap set OR the scope (totalLaps) changes.
   // `version` bumps then; per-x medians are reused across rAF frames otherwise.
@@ -136,19 +139,12 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
   };
 
   return {
+    setLive(v) { live = v; },
     push(s) {
+      if (!live) return; // paused/idle/race-over: no-op, short-circuit before any mutation
       if (s.status !== "live" || !s.frame || !s.derived) return;
-      // Reset only on a GENUINE session change: a real, different session id. The backend
-      // frequently omits session_id (null) and it can flap between frames, so treating null
-      // -- or the first id seen after a refresh-restore -- as a change would wrongly wipe the
-      // rehydrated buffer (the refresh-persistence bug). Null never resets; the first real id
-      // is adopted without wiping.
-      const sid = s.enrichment.session_id ?? null;
-      if (sid !== null && session != null && sid !== session) {
-        session = sid; buf = []; completed = []; lap = null; totalLaps = null; bump(); revision++;
-      } else if (sid !== null && session == null) {
-        session = sid;
-      }
+      // Session reset is owned externally by reset() (called by the race controller on a new
+      // race); push() no longer wipes on session_id change. See task C1.
       if (lap !== null && s.frame.current_lap !== lap) {
         if (buf.length) {
           completed.push(buf);                 // full lap (no time-eviction happened)
