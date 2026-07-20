@@ -31,4 +31,17 @@ describe("persistState", () => {
     expect(() => saveVersioned("k", { a: 1 })).not.toThrow();
     spy.mockRestore();
   });
+
+  it("returns null for an old/unversioned blob (discard-on-upgrade)", () => {
+    localStorage.setItem("k", JSON.stringify({ foo: 1 }));
+    expect(loadVersioned("k")).toBeNull();
+  });
+
+  it("returns null when getItem throws", () => {
+    const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(loadVersioned("k")).toBeNull();
+    spy.mockRestore();
+  });
 });
