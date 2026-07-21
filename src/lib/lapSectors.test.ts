@@ -34,7 +34,7 @@ test("replays a completed lap's points into final sector splits", () => {
   expect(lapSectors(points, geometry)).toEqual([
     { sector: "S1", timeMs: 2000, deltaMs: null },
     { sector: "S2", timeMs: 3000, deltaMs: null },
-    { sector: "S3", timeMs: null, deltaMs: null },
+    { sector: "S3", timeMs: 2000, deltaMs: null },
   ]);
 });
 
