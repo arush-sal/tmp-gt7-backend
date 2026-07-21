@@ -21,6 +21,14 @@ const withTyreFl = (c: number) => ({ ...base, frame: { ...base.frame!, tyre_temp
 describe("toLiveView (live)", () => {
   const v = toLiveView(base);
   it("formats lap counter", () => expect(v.lap).toBe("8/20"));
+  it("caps displayed lap at total_laps (post-race cooldown)", () => {
+    const capped = toLiveView({ ...base, frame: { ...base.frame!, current_lap: 11, total_laps: 10 } });
+    expect(capped.lap).toBe("10/10");
+  });
+  it("leaves lap uncapped when total_laps is 0 (time trial)", () => {
+    const uncapped = toLiveView({ ...base, frame: { ...base.frame!, current_lap: 3, total_laps: 0 } });
+    expect(uncapped.lap).toBe("3/0");
+  });
   it("formats position", () => expect(v.position).toBe("P3/16"));
   it("formats best lap from Duration", () => expect(v.bestLap).toBe("1:17.210"));
   it("formats delta from ns", () => expect(v.delta).toBe("−0.910s"));

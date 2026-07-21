@@ -57,7 +57,9 @@ export function toLiveView(s: LiveSnapshot): LiveView {
     speed: f ? `${Math.round(f.car_speed)}` : PLACEHOLDER,
     gear: f ? `${f.current_gear}` : PLACEHOLDER,
     rpm: f ? `${Math.round(f.rpm)}` : PLACEHOLDER,
-    lap: f ? `${f.current_lap}/${f.total_laps}` : PLACEHOLDER,
+    lap: f
+      ? `${f.total_laps > 0 ? Math.min(f.current_lap, f.total_laps) : f.current_lap}/${f.total_laps}`
+      : PLACEHOLDER,
     position: f ? `P${f.current_position}/${f.total_positions}` : PLACEHOLDER,
     fuelPct: d ? `${Math.round(d.fuel_pct)}%` : PLACEHOLDER,
     currentLapTime: d ? nsToClock(d.current_lap_time_ns) : PLACEHOLDER,
