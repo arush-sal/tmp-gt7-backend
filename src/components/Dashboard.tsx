@@ -10,6 +10,7 @@ import { toDrawGeometry } from "../lib/rkbGeometry";
 import { insideFraction, isMismatch } from "../lib/trackMismatch";
 import { initialSel, reduceAuto, reduceManual } from "../lib/trackSelection";
 import { clampIndex } from "../lib/trackScrub";
+import { loadVersioned, saveVersioned } from "../lib/persistState";
 import SessionHeader from "./SessionHeader";
 import { TrackPicker, type TrackListItem } from "./track/TrackPicker";
 import TrackTraceCanvas from "./track/TrackTraceCanvas";
@@ -72,10 +73,12 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   }, []);
 
   // Track selection: auto-detect within the first observed lap, else stay pickable manually.
-  const [sel, setSel] = useState(initialSel);
-  useEffect(() => {
-    setSel(initialSel);
-  }, [snapshot?.enrichment?.session_id]);
+  const [sel, setSel] = useState(() => {
+    const saved = loadVersioned<string>("gt7:track");
+    return saved ? { ...initialSel, slug: saved } : initialSel;
+  });
+  useEffect(() => { if (sel.slug) saveVersioned("gt7:track", sel.slug); }, [sel.slug]);
+  useEffect(() => { if (newRaceSeq > 0) setSel(initialSel); }, [newRaceSeq]);
   useEffect(() => {
     setSel(s => reduceAuto(
       s,
@@ -108,9 +111,9 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     return out.slice(0, 3);
   }, [trackList, sel.slug, snapshot?.enrichment?.track]);
 
-  // Lap selection: which lap's trace is drawn on the canvas. Defaults to "all"
+  // Lap selection: which lap's trace is drawn on the canvas. Defaults to "current"
   // (current behaviour: faint completed laps + full current lap).
-  const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("all");
+  const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("current");
   const completedLapCount = history.completedLapCount();
 
   // Analysis mode: a completed lap is selected -> a scrub cursor can be placed/stepped

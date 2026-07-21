@@ -14,7 +14,7 @@ interface Props {
 export default function AppBar({ theme, onToggleTheme, live }: Props) {
   return (
     <div className="appbar">
-      <span className="appbar__brand">GT7 <b>Race Coach</b> · Dashboard</span>
+      <span className="appbar__brand"><b>Garage</b> · Dashboard</span>
       <div className="appbar__controls">
         <StatusDot live={live} />
         <button className="toggle" onClick={onToggleTheme}>
