@@ -69,6 +69,14 @@ export type PersistedHistory = {
   buf: Sample[];
 };
 
+export type FrameValues = {
+  t: number;            // lap-time seconds of this frame
+  fuel: number;         // fuel_pct 0..100
+  tyreFL: number; tyreFR: number; tyreRL: number; tyreRR: number; // degC
+  delta: number;        // seconds vs best; NaN if none
+  speed: number; gear: number; rpm: number; throttle: number; brake: number;
+};
+
 export type HistoryStore = {
   push(s: LiveSnapshot): void;
   /** Gate append: while not live (paused/idle/race-over), push() is a no-op. Default true. */
@@ -83,6 +91,8 @@ export type HistoryStore = {
   revision(): number;
   lapColumns(i: number, chs: Channel[]): number[][] | null;
   lapSampleCount(i: number): number;
+  /** Values of completed lap `lap` at sample index `i`; null if lap or index is out of range. */
+  frameAt(lap: number, i: number): FrameValues | null;
   /** Decimated, lap-capped serializable state for persistence; null when empty. */
   dump(): PersistedHistory | null;
   /** Rehydrate from a dump()'d payload (best-effort; ignores anything malformed). */
@@ -214,6 +224,16 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
     lapSampleCount(i) {
       const lap = completed[i];
       return lap ? lap.length : 0;
+    },
+    frameAt(lapIdx, i) {
+      const s = completed[lapIdx]?.[i];
+      if (!s) return null;
+      return {
+        t: s.t, fuel: s.fuel,
+        tyreFL: s.tyreFL, tyreFR: s.tyreFR, tyreRL: s.tyreRL, tyreRR: s.tyreRR,
+        delta: s.delta, speed: s.speed, gear: s.gear, rpm: s.rpm,
+        throttle: s.throttle, brake: s.brake,
+      };
     },
     dump() {
       if (buf.length === 0 && completed.length === 0) return null;

@@ -337,6 +337,25 @@ describe("historyStore — lapColumns / lapSampleCount", () => {
   });
 });
 
+describe("historyStore — frameAt", () => {
+  it("returns the completed lap's frame values at a sample index", () => {
+    const s = createHistoryStore();
+    s.push(snap({ t: 1, lap: 1, throttle: 50, speed: 100, tfl: 90, tfr: 91, trl: 92, trr: 93, fuelPct: 77 }));
+    s.push(snap({ t: 2, lap: 1, throttle: 80, speed: 110 }));
+    s.push(snap({ t: 0.5, lap: 2, throttle: 10 })); // rollover -> lap 1 completed with 2 samples
+
+    const f0 = s.frameAt(0, 0);
+    expect(f0).not.toBeNull();
+    expect(f0).toMatchObject({ t: 1, throttle: 50, speed: 100, tyreFL: 90, tyreFR: 91, tyreRL: 92, tyreRR: 93, fuel: 77 });
+
+    const f1 = s.frameAt(0, 1);
+    expect(f1).toMatchObject({ t: 2, throttle: 80, speed: 110 });
+
+    expect(s.frameAt(0, 5)).toBeNull();  // index out of range
+    expect(s.frameAt(9, 0)).toBeNull();  // lap out of range
+  });
+});
+
 describe("historyStore — persistence (dump/load)", () => {
   it("dump() returns null for an empty store", () => {
     expect(createHistoryStore().dump()).toBeNull();
