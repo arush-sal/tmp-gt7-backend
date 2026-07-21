@@ -9,7 +9,7 @@ import { loadVersioned, saveVersioned } from "../lib/persistState";
 
 const RACE_STORAGE_KEY = "gt7:race";
 
-type RaceMeta = { raceKey: string | null; sticky: StickyView | null };
+type RaceMeta = { raceKey: string | null; lastLap: number; sticky: StickyView | null };
 
 export type SessionState = {
   snapshot: LiveSnapshot | null;
@@ -42,7 +42,7 @@ export function useSession(
     initRef.current = true;
     const saved = loadVersioned<RaceMeta>(RACE_STORAGE_KEY);
     if (saved) {
-      raceRef.current = { raceKey: saved.raceKey, lastLap: 0 };
+      raceRef.current = { raceKey: saved.raceKey, lastLap: saved.lastLap ?? 0 };
       stickyRef.current = saved.sticky;
     }
   }
@@ -73,7 +73,7 @@ export function useSession(
       onError: (e) => { if (active) setError(e); },
     });
 
-    const flush = () => saveVersioned(RACE_STORAGE_KEY, { raceKey: raceRef.current.raceKey, sticky: stickyRef.current });
+    const flush = () => saveVersioned(RACE_STORAGE_KEY, { raceKey: raceRef.current.raceKey, lastLap: raceRef.current.lastLap, sticky: stickyRef.current });
     const id = setInterval(flush, 2000);
     window.addEventListener("beforeunload", flush);
     window.addEventListener("pagehide", flush);

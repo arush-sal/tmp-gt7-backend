@@ -65,4 +65,11 @@ describe("stepRace", () => {
     const { newRace } = stepRace(prev, s);
     expect(newRace).toBe(false);
   });
+
+  it("same session_id but lap resets 1 from >1 -> newRace true (rtps restart reused id)", () => {
+    const prev = { raceKey: "a", lastLap: 8 };
+    const s = { ...withLap(1), enrichment: { ...base.enrichment, session_id: "a" } };
+    const { newRace } = stepRace(prev, s);
+    expect(newRace).toBe(true);
+  });
 });

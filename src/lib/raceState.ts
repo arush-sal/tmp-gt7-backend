@@ -22,7 +22,7 @@ export function stepRace(prev: RaceKeyState, s: LiveSnapshot): { state: RaceKeyS
 
   const newRace =
     (id != null && prev.raceKey != null && id !== prev.raceKey) ||
-    (id == null && s.frame?.current_lap === 1 && prev.lastLap > 1);
+    (s.frame?.current_lap === 1 && prev.lastLap > 1);
 
   const state: RaceKeyState = { raceKey: id ?? prev.raceKey, lastLap: lap };
   return { state, newRace };

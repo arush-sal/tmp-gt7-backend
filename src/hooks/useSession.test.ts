@@ -165,4 +165,17 @@ describe("useSession", () => {
     act(() => captured2.handlers!.onSnapshot(snap("live", "b")));
     expect(result.current.newRaceSeq).toBe(1);
   });
+
+  it("refresh sim: seeded lastLap makes a same-id lap-reset a new race (rtps restart reused id)", () => {
+    saveVersioned("gt7:race", { raceKey: "a", lastLap: 8, sticky: null });
+
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    expect(result.current.raceKey).toBe("a");
+    expect(result.current.newRaceSeq).toBe(0);
+
+    const lap1 = { ...snap("live", "a"), frame: { ...liveFrame, current_lap: 1 } };
+    act(() => captured.handlers!.onSnapshot(lap1));
+    expect(result.current.newRaceSeq).toBe(1);
+  });
 });
