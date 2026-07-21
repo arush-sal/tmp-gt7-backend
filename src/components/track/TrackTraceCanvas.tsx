@@ -43,7 +43,7 @@ function flatten(pts: ReadonlyArray<[number, number]>, view: View): number[] {
 export default function TrackTraceCanvas(props: {
   store: HistoryStore; geometry: DrawGeometry | null; theme: "light" | "dark";
   footer?: ReactNode;
-  selectedLap?: "all" | "current" | number;
+  selectedLap?: "all" | number;
   analysisLap?: ReadonlyArray<{ posX: number; posZ: number }> | null;
   scrubIndex?: number | null;
   onScrub?: (i: number) => void;

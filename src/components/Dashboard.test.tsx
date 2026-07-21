@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // src/components/Dashboard.test.tsx
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act, waitFor } from "@testing-library/react";
+import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
 import Dashboard from "./Dashboard";
 import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import { validateLive } from "../lib/validateLive";
@@ -287,5 +287,94 @@ describe("Dashboard (live)", () => {
     // Assert the RESTORED slug specifically (not just that the picker rendered): the seed came from
     // storage, since the pushed frame's enrichment.track was null (feed not detecting).
     expect(screen.getByLabelText<HTMLSelectElement>("Track").value).toBe("test-track");
+  });
+
+  // Task J3: the lap dropdown drops "Current lap", defaults to the latest completed lap
+  // (auto-follow), auto-follow only switches to a specific lap once live ends (stays "all"
+  // mid-race so the header/right-panel keep showing the live feed, not a frozen lap-end
+  // snapshot), and selecting an earlier lap drives the right panel from that lap's stored
+  // data (frameAt) rather than the live snapshot.
+  function j3Source() {
+    const subscribers: LiveHandlers[] = [];
+    const source: LiveSource = (_url, h) => { subscribers.push(h); return () => {}; };
+    const push = (overrides: { lap: number; t: number; fuel: number; totalLaps?: number; session?: string }) => {
+      const s = structuredClone(liveSample) as {
+        frame: Record<string, unknown>; derived: Record<string, unknown>; enrichment: Record<string, unknown>;
+      };
+      s.frame.current_lap = overrides.lap;
+      s.frame.total_laps = overrides.totalLaps ?? 90;
+      s.derived.current_lap_time_ns = overrides.t;
+      s.derived.fuel_pct = overrides.fuel;
+      s.enrichment.session_id = overrides.session ?? "sess-j3";
+      subscribers.forEach(h => h.onSnapshot(validateLive(s)));
+    };
+    return { source, push };
+  }
+
+  it("drops 'Current lap'; stays 'All laps' while live even once laps complete", () => {
+    const { source, push } = j3Source();
+    render(<Dashboard source={source} />);
+
+    // Priming push: history.setLive(true) hasn't committed yet on the very first snapshot
+    // (same gate as the race-lifecycle test above), so this one is dropped by the store.
+    act(() => push({ lap: 1, t: 1_000_000_000, fuel: 99 }));
+    // Lap 2 (fuel 91%) then lap 3 (fuel 55%) then lap 4 rolls lap 3 into `completed` — all
+    // still mid-race (current_lap <= total_laps), so `live` stays true throughout.
+    act(() => push({ lap: 2, t: 2_000_000_000, fuel: 91 }));
+    act(() => push({ lap: 3, t: 3_000_000_000, fuel: 55 }));
+    act(() => push({ lap: 4, t: 4_000_000_000, fuel: 20 }));
+
+    const select = screen.getByLabelText<HTMLSelectElement>("Lap");
+    const optionLabels = Array.from(select.options).map(o => o.textContent);
+    expect(optionLabels).not.toContain("Current lap");
+    expect(optionLabels).toEqual(["All laps", "Lap 2", "Lap 1"]);
+    // Auto-follow does not jump to a completed lap while still live.
+    expect(select.value).toBe("all");
+  });
+
+  it("auto-selects the latest completed lap once live ends; an earlier lap shows its stored data at lap-end", () => {
+    const { source, push } = j3Source();
+    render(<Dashboard source={source} />);
+
+    act(() => push({ lap: 1, t: 1_000_000_000, fuel: 99 })); // primer, dropped (see above)
+    act(() => push({ lap: 2, t: 2_000_000_000, fuel: 91 }));
+    act(() => push({ lap: 3, t: 3_000_000_000, fuel: 55 }));
+    act(() => push({ lap: 4, t: 4_000_000_000, fuel: 20 }));
+    // Race-over frame (current_lap > total_laps -> live=false); also rolls lap 4 into
+    // `completed`, giving 3 completed laps: [lap2(91%), lap3(55%), lap4(20%)].
+    act(() => push({ lap: 91, t: 5_000_000_000, fuel: 5, totalLaps: 90 }));
+
+    const select = screen.getByLabelText<HTMLSelectElement>("Lap");
+    // Latest completed lap (index 2, the lap-4 data) is auto-selected now that live has ended.
+    expect(select.value).toBe("2");
+    expect(screen.getByText("20%")).toBeTruthy();
+
+    // Selecting an earlier lap (index 0, the lap-2 data) switches the right panel to that
+    // lap's stored frame, scrubbed to its LAST sample by default (lap-end) — the same index
+    // the telemetry graphs and trace-canvas cursor default to, since Dashboard now derives
+    // all three from the single `scrubIndex` state.
+    fireEvent.change(select, { target: { value: "0" } });
+    expect(screen.getByText("91%")).toBeTruthy();
+  });
+
+  it("resets a stale numeric selection back to 'All laps' on a new race", () => {
+    const { source, push } = j3Source();
+    render(<Dashboard source={source} />);
+
+    act(() => push({ lap: 1, t: 1_000_000_000, fuel: 99 })); // primer, dropped
+    act(() => push({ lap: 2, t: 2_000_000_000, fuel: 91 }));
+    act(() => push({ lap: 3, t: 3_000_000_000, fuel: 55 }));
+    // Race over (rolls lap 3 into `completed` too -> [lap2, lap3]) -> auto-follow lands on
+    // a numeric selectedLap (the latest completed lap, index 1).
+    act(() => push({ lap: 91, t: 4_000_000_000, fuel: 5, totalLaps: 90 }));
+    const select = screen.getByLabelText<HTMLSelectElement>("Lap");
+    expect(select.value).toBe("1");
+
+    // New race (different session_id, lap 1): newRaceSeq bumps -> selectedLap must reset to
+    // "all" immediately, even though the fresh completedLapCount (0) alone wouldn't otherwise
+    // re-trigger auto-follow's "all" branch until a lap completes — a stale numeric value
+    // with no matching <option> would otherwise linger.
+    act(() => push({ lap: 1, t: 100_000_000, fuel: 100, session: "sess-j3-race2" }));
+    expect(select.value).toBe("all");
   });
 });

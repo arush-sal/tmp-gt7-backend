@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { toLiveView, isStale } from "./liveView";
+import { toLiveView, isStale, frameToDisplay } from "./liveView";
 import type { LiveSnapshot } from "../contract/live";
+import type { FrameValues } from "./historyStore";
 
 const base: LiveSnapshot = {
   served_at: "2026-07-07T00:00:00.000Z", status: "live",
@@ -120,6 +121,28 @@ describe("toLiveView — format-C CONFIRMED fields", () => {
     expect(v.steering).toBe("—");
     expect(v.surface).toBe("—");
     expect(v.carCategory).toBe("—");
+  });
+});
+
+describe("frameToDisplay", () => {
+  const fr: FrameValues = {
+    t: 77.21, fuel: 23.7,
+    tyreFL: 42.15736, tyreFR: 30.689157, tyreRL: 86.77724, tyreRR: 80.08314,
+    delta: -0.91, speed: 214.3, gear: 4, rpm: 7200, throttle: 1, brake: 0,
+  };
+  it("formats a stored frame into display fields", () => {
+    const d = frameToDisplay(fr);
+    expect(d.currentLapTime).toBe("1:17.210");
+    expect(d.fuelPct).toBe("24%");
+    expect(d.fuelTone).toBe("red");
+    expect(d.tyreTemps.rl.value).toBe("87°C");
+    expect(d.delta).toBe("−0.910s");
+    expect(d.deltaTone).toBe("blue");
+  });
+  it("placeholders a NaN delta", () => {
+    const d = frameToDisplay({ ...fr, delta: NaN });
+    expect(d.delta).toBe("—");
+    expect(d.deltaTone).toBe("none");
   });
 });
 

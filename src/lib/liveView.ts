@@ -1,4 +1,5 @@
 import type { LiveSnapshot } from "../contract/live";
+import type { FrameValues } from "./historyStore";
 import { nsToClock, nsToDeltaSeconds, parseDuration, PLACEHOLDER } from "./format";
 
 // Tyre-temperature bands (grip-window semantics, not raw hot/cold):
@@ -75,6 +76,29 @@ export function toLiveView(s: LiveSnapshot): LiveView {
       ? { fl: tyre(f.tyre_temp_fl), fr: tyre(f.tyre_temp_fr), rl: tyre(f.tyre_temp_rl), rr: tyre(f.tyre_temp_rr) }
       : { fl: { value: PLACEHOLDER, tone: "none" }, fr: { value: PLACEHOLDER, tone: "none" },
           rl: { value: PLACEHOLDER, tone: "none" }, rr: { value: PLACEHOLDER, tone: "none" } },
+  };
+}
+
+// The subset of LiveView fields that a scrubbed stored frame (FrameValues, from
+// historyStore.frameAt) can populate — position/lap-counter/best/last stay from live `view`.
+export type FrameDisplay = Pick<LiveView, "currentLapTime" | "fuelPct" | "fuelTone" | "tyreTemps" | "delta" | "deltaTone">;
+
+// Rehydrated (post-refresh, decimated) frames can carry a non-finite value -- guard rather
+// than render NaN/Infinity.
+const tyreOrPlaceholder = (c: number): TyreTemp => (Number.isFinite(c) ? tyre(c) : { value: PLACEHOLDER, tone: "none" });
+
+export function frameToDisplay(fr: FrameValues): FrameDisplay {
+  const fuelOk = Number.isFinite(fr.fuel);
+  return {
+    currentLapTime: nsToClock(Math.round(fr.t * 1e9)),
+    fuelPct: fuelOk ? `${Math.round(fr.fuel)}%` : PLACEHOLDER,
+    fuelTone: fuelOk ? fuelToneOf(fr.fuel) : "none",
+    tyreTemps: {
+      fl: tyreOrPlaceholder(fr.tyreFL), fr: tyreOrPlaceholder(fr.tyreFR),
+      rl: tyreOrPlaceholder(fr.tyreRL), rr: tyreOrPlaceholder(fr.tyreRR),
+    },
+    delta: !Number.isFinite(fr.delta) ? PLACEHOLDER : nsToDeltaSeconds(Math.round(fr.delta * 1e9)),
+    deltaTone: !Number.isFinite(fr.delta) || fr.delta === 0 ? "none" : fr.delta < 0 ? "blue" : "red",
   };
 }
 

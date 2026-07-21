@@ -6,6 +6,8 @@ import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
+import { frameToDisplay } from "../lib/liveView";
+import { lapSectors } from "../lib/lapSectors";
 import { toDrawGeometry } from "../lib/rkbGeometry";
 import { insideFraction, isMismatch } from "../lib/trackMismatch";
 import { initialSel, reduceAuto, reduceManual } from "../lib/trackSelection";
@@ -111,18 +113,37 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     return out.slice(0, 3);
   }, [trackList, sel.slug, snapshot?.enrichment?.track]);
 
-  // Lap selection: which lap's trace is drawn on the canvas. Defaults to "current"
-  // (current behaviour: faint completed laps + full current lap).
-  const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("current");
+  // Lap selection: which lap's trace is drawn on the canvas. Auto-follows: "all" (live view)
+  // while live, the latest completed lap once live ends -- until the user picks explicitly.
+  const [selectedLap, setSelectedLap] = useState<"all" | number>("all");
+  const [userPickedLap, setUserPickedLap] = useState(false);
   const completedLapCount = history.completedLapCount();
+  useEffect(() => {
+    if (userPickedLap) return;
+    setSelectedLap(live ? "all" : completedLapCount > 0 ? completedLapCount - 1 : "all");
+  }, [live, completedLapCount, userPickedLap]);
+  // New race: drop back to auto-follow AND clear a stale numeric selectedLap (completedLapCount
+  // resets to 0 too, but not necessarily in the same tick -- the <select> must never hold a
+  // value with no matching option).
+  useEffect(() => { if (newRaceSeq > 0) { setUserPickedLap(false); setSelectedLap("all"); } }, [newRaceSeq]);
 
   // Analysis mode: a completed lap is selected -> a scrub cursor can be placed/stepped
   // along that lap's trace, and the telemetry graphs switch to showing that lap's data.
   const analysisLap = typeof selectedLap === "number" ? (history.trace().completed[selectedLap] ?? null) : null;
   const [scrubIndex, setScrubIndex] = useState<number | null>(null);
+  // Header, graphs, and canvas cursor must agree on the default scrub position: a specific
+  // lap starts scrubbed to its LAST index (lap-end), not null/0.
   useEffect(() => {
-    setScrubIndex(null);
+    setScrubIndex(typeof selectedLap === "number" ? (history.trace().completed[selectedLap]?.length ?? 1) - 1 : null);
   }, [selectedLap]);
+  const frameIndex = scrubIndex;
+  const frame = typeof selectedLap === "number" && frameIndex !== null
+    ? history.frameAt(selectedLap, frameIndex)
+    : null;
+  const displayView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
+  const shownSectors = typeof selectedLap === "number"
+    ? lapSectors(history.trace().completed[selectedLap] ?? [], geometry)
+    : sectorTimes;
   useEffect(() => {
     if (!analysisLap) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -169,7 +190,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
       )}
 
       <SessionHeader
-        view={view}
+        view={displayView}
         selectedCorner={selectedCornerDetail}
         trackPicker={
           // No selected/detected track (e.g. right after a refresh, before auto-detect
@@ -189,11 +210,11 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
             value={String(selectedLap)}
             onChange={e => {
               const v = e.target.value;
-              setSelectedLap(v === "all" || v === "current" ? v : Number(v));
+              setSelectedLap(v === "all" ? "all" : Number(v));
+              setUserPickedLap(true);
             }}
           >
             <option value="all">All laps</option>
-            <option value="current">Current lap</option>
             {Array.from({ length: completedLapCount }, (_, i) => completedLapCount - 1 - i).map(i => (
               <option key={i} value={i}>Lap {i + 1}</option>
             ))}
@@ -267,14 +288,14 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
 
         <div className="right-panel-wrap">
           <RightPanel
-            view={view}
+            view={displayView}
             corners={corners}
             selectedCornerId={selectedCornerId}
             onCornerSelect={handleCornerSelect}
             selectedCornerDetail={selectedCornerDetail}
             usedPerLap={usedPerLap}
             lapsLeft={lapsLeft}
-            sectorTimes={sectorTimes}
+            sectorTimes={shownSectors}
           />
         </div>
       </div>
