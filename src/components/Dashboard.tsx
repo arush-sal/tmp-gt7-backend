@@ -11,6 +11,7 @@ import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
 import { frameToDisplay } from "../lib/liveView";
 import { lapDtoToSectorTimes } from "../lib/lapView";
+import { resetLapCache } from "../lib/lapCache";
 import { toDrawGeometry } from "../lib/rkbGeometry";
 import { insideFraction, isMismatch } from "../lib/trackMismatch";
 import { initialSel, reduceAuto, reduceManual } from "../lib/trackSelection";
@@ -42,7 +43,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // stops growth) and wipe on a genuine new race. The sector timer resets itself on
   // session_id change via its own sessionKey, so it needs no explicit reset here.
   useEffect(() => { history.setLive(live); }, [history, live]);
-  useEffect(() => { if (newRaceSeq > 0) history.reset(); }, [history, newRaceSeq]);
+  useEffect(() => { if (newRaceSeq > 0) { history.reset(); resetLapCache(); } }, [history, newRaceSeq]);
   useEffect(() => { onLiveChange?.(live); }, [onLiveChange, live]);
 
   // Fuel card: used/lap from the most recently completed lap; laps left projects the
