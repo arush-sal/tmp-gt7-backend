@@ -8,7 +8,7 @@ test("drawTrace strokes the current lap path", () => {
     set: () => true,
   }) as any;
   drawTrace(ctx, {
-    trace: { completed: [], current: [
+    trace: { current: [
       { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
       { posX: 10, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
       { posX: 20, posZ: 0, throttle: 0, brake: 80, surface: "TTTT" },
@@ -42,7 +42,7 @@ test("drawTrace uses a thin racing line so the grey track band reads as the wide
   }) as any;
 
   drawTrace(ctx, {
-    trace: { completed: [], current: [
+    trace: { current: [
       { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
       { posX: 10, posZ: 0, throttle: 0, brake: 80, surface: "TTTT" },
       { posX: 20, posZ: 0, throttle: 0, brake: 80, surface: "TTTT" },
@@ -87,7 +87,7 @@ test("brake-zone sawtooth ribbon is confined to actual brake spans, not scattere
   // brake never dips into the 12-20 "light brake" band that used to smear the zigzag
   // across the rest of the lap.
   drawTrace(ctx, {
-    trace: { completed: [], current: [
+    trace: { current: [
       { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
       { posX: 5, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
       { posX: 10, posZ: 0, throttle: 0, brake: 80, surface: "TTTT" },
@@ -127,7 +127,7 @@ test("brake-zone sawtooth ribbon does not appear on an all-throttle lap", () => 
   }) as any;
 
   drawTrace(ctx, {
-    trace: { completed: [], current: [
+    trace: { current: [
       { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
       { posX: 5, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
       { posX: 10, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
@@ -141,7 +141,7 @@ test("brake-zone sawtooth ribbon does not appear on an all-throttle lap", () => 
   expect(sawtoothStrokes.length).toBe(0);
 });
 
-test("select=\"current\" draws the full driven line (completed + current), same as \"all\"", () => {
+test("select=\"current\" draws the current lap, same as \"all\"", () => {
   const lap = [
     { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
     { posX: 10, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
@@ -155,7 +155,7 @@ test("select=\"current\" draws the full driven line (completed + current), same 
       set: () => true,
     }) as any;
     drawTrace(ctx, {
-      trace: { completed: [lap, lap], current: lap },
+      trace: { current: lap },
       view: { scale: 1, offsetX: 0, offsetZ: 0 }, theme: "dark",
       select,
     });
@@ -164,19 +164,15 @@ test("select=\"current\" draws the full driven line (completed + current), same 
 
   const allStrokes = countStrokes("all");
   const currentStrokes = countStrokes("current");
-  // "current" now plots the full driven line (completed laps + current), identical to "all".
+  // completed laps are no longer retained; both "all" and "current" draw the current lap only.
   expect(currentStrokes).toBe(allStrokes);
   expect(currentStrokes).toBeGreaterThan(0);
 });
 
-test("select=0 draws only completed[0]", () => {
-  const lapA = [
+test("a numeric select draws the passed analysisLap", () => {
+  const analysisLap = [
     { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
     { posX: 10, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
-  ];
-  const lapB = [
-    { posX: 0, posZ: 5, throttle: 100, brake: 0, surface: "TTTT" },
-    { posX: 10, posZ: 5, throttle: 100, brake: 0, surface: "TTTT" },
   ];
   const current = [
     { posX: 0, posZ: 10, throttle: 100, brake: 0, surface: "TTTT" },
@@ -195,21 +191,18 @@ test("select=0 draws only completed[0]", () => {
   }) as any;
 
   drawTrace(ctx, {
-    trace: { completed: [lapA, lapB], current },
+    trace: { current },
     view: { scale: 1, offsetX: 0, offsetZ: 0 }, theme: "dark",
-    select: 0,
+    select: 3,
+    analysisLap,
   });
 
-  // only lapA's points should ever appear as a moveTo origin (posZ 0 -> screen y 0)
+  // only analysisLap's points (posZ 0 -> screen y 0) should appear, never `current` (posZ 10).
   expect(moveTos.length).toBeGreaterThan(0);
   expect(moveTos.every(p => p.y === 0)).toBe(true);
 });
 
-test("select out of range draws nothing", () => {
-  const lap = [
-    { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
-    { posX: 10, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
-  ];
+test("a numeric select with no analysisLap draws nothing", () => {
   const calls: string[] = [];
   const ctx = new Proxy({}, {
     get: (_t, p) => typeof p === "string" && ["beginPath", "moveTo", "lineTo", "stroke", "save", "restore"].includes(p)
@@ -217,9 +210,12 @@ test("select out of range draws nothing", () => {
     set: () => true,
   }) as any;
   drawTrace(ctx, {
-    trace: { completed: [lap], current: lap },
+    trace: { current: [
+      { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
+      { posX: 10, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
+    ] },
     view: { scale: 1, offsetX: 0, offsetZ: 0 }, theme: "dark",
-    select: 5,
+    select: 2,
   });
   expect(calls.length).toBe(0);
 });

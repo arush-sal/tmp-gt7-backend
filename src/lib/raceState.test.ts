@@ -52,11 +52,13 @@ describe("stepRace", () => {
     expect(state.raceKey).toBe("a");
   });
 
-  it("id null, lap 3->1 -> newRace true", () => {
+  it("lap-reset alone is NOT a new race (session_id is the only signal)", () => {
+    // id null with no prior raceKey, lap 3->1: the old H1 lap-reset fallback would have flagged
+    // this as a new race; it no longer does.
     const prev = { raceKey: null, lastLap: 3 };
     const s = { ...withLap(1), enrichment: { ...base.enrichment, session_id: undefined } };
     const { newRace } = stepRace(prev, s);
-    expect(newRace).toBe(true);
+    expect(newRace).toBe(false);
   });
 
   it("id null, lap 5->4 -> newRace false", () => {
@@ -66,10 +68,10 @@ describe("stepRace", () => {
     expect(newRace).toBe(false);
   });
 
-  it("same session_id but lap resets 1 from >1 -> newRace true (rtps restart reused id)", () => {
+  it("same session_id but lap resets 1 from >1 -> newRace false (session_id unchanged)", () => {
     const prev = { raceKey: "a", lastLap: 8 };
     const s = { ...withLap(1), enrichment: { ...base.enrichment, session_id: "a" } };
     const { newRace } = stepRace(prev, s);
-    expect(newRace).toBe(true);
+    expect(newRace).toBe(false);
   });
 });

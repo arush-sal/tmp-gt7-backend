@@ -11,9 +11,9 @@ describe("TelemetryGraph — dev guard", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const store = createHistoryStore();
     const { rerender } = render(
-      <TelemetryGraph store={store} channels={["speed"]} label="Speed" median={true} />,
+      <TelemetryGraph store={store} channels={["speed"]} label="Speed" />,
     );
-    rerender(<TelemetryGraph store={store} channels={["speed"]} label="Speed" median={true} />);
+    rerender(<TelemetryGraph store={store} channels={["speed"]} label="Speed" />);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -24,9 +24,9 @@ describe("TelemetryGraph — dev guard", () => {
     try {
       const store = createHistoryStore();
       const { rerender } = render(
-        <TelemetryGraph store={store} channels={["speed"]} label="Speed" median={true} />,
+        <TelemetryGraph store={store} channels={["speed"]} label="Speed" />,
       );
-      rerender(<TelemetryGraph store={store} channels={["throttle"]} label="Throttle" median={true} />);
+      rerender(<TelemetryGraph store={store} channels={["throttle"]} label="Throttle" />);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("channels/median changed after mount"));
     } finally {
       warn.mockRestore();

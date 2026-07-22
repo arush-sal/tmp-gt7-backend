@@ -197,7 +197,9 @@ describe("useSession", () => {
     expect(result.current.view!.lap).toBe("8/20");
   });
 
-  it("refresh sim: seeded lastLap makes a same-id lap-reset a new race (rtps restart reused id)", () => {
+  it("refresh sim: a same-id lap-reset is NOT a new race (session_id is the only signal)", () => {
+    // The old H1 fallback flagged a lap 1 after a seeded lastLap>1 as a new race even with an
+    // unchanged session_id; that fallback is gone — same session_id means same race.
     saveVersioned("gt7:race", { raceKey: "a", lastLap: 8, sticky: null });
 
     const { source, captured } = makeFakeSource();
@@ -207,6 +209,6 @@ describe("useSession", () => {
 
     const lap1 = { ...snap("live", "a"), frame: { ...liveFrame, current_lap: 1 } };
     act(() => captured.handlers!.onSnapshot(lap1));
-    expect(result.current.newRaceSeq).toBe(1);
+    expect(result.current.newRaceSeq).toBe(0);
   });
 });

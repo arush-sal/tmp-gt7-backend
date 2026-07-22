@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import type { HistoryStore } from "../../lib/historyStore";
+import type { LapView } from "../../lib/lapView";
 import { getCard, type CardDef } from "./cardCatalog";
 import { loadCardConfig, saveCardConfig, defaultCardConfig, type PanelConfig, type CardState } from "../../lib/panelConfig";
 import TelemetryGraph from "./TelemetryGraph";
@@ -24,7 +25,7 @@ import { CSS } from "@dnd-kit/utilities";
 
 interface Props {
   store: HistoryStore; storageKey?: string;
-  analysisLapIndex?: number | null;
+  analysisLap?: LapView | null;
   analysisScrubIndex?: number | null;
 }
 
@@ -39,11 +40,11 @@ export function reorder(order: string[], activeKey: string, overKey: string): st
 
 function TelemetryCard({
   card, store, state, onToggleCollapse, onToggleSeries, onRemove,
-  analysisLapIndex, analysisScrubIndex,
+  analysisLap, analysisScrubIndex,
 }: {
   card: CardDef; store: HistoryStore; state: CardState;
   onToggleCollapse: () => void; onToggleSeries: (k: string) => void; onRemove: () => void;
-  analysisLapIndex?: number | null; analysisScrubIndex?: number | null;
+  analysisLap?: LapView | null; analysisScrubIndex?: number | null;
 }) {
   const isMulti = card.kind === "multi";
   const collapsed = state.collapsed;
@@ -85,9 +86,8 @@ function TelemetryCard({
             label={card.title}
             unit={card.unit}
             id={`tg-${card.key}`}
-            median={!isMulti}
             hidden={state.hidden}
-            analysisLapIndex={analysisLapIndex}
+            analysisLap={analysisLap}
             analysisScrubIndex={analysisScrubIndex}
           />
           <GraphLegend
@@ -111,7 +111,7 @@ function TelemetryCard({
  * floats (via the caller's FloatingPanel) over the center track-map canvas.
  */
 export default function TelemetryPanel({
-  store, storageKey = "gt7:telemetry-cards", analysisLapIndex = null, analysisScrubIndex = null,
+  store, storageKey = "gt7:telemetry-cards", analysisLap = null, analysisScrubIndex = null,
 }: Props) {
   const [cfg, setCfg] = useState<PanelConfig>(() => loadCardConfig(storageKey, defaultCardConfig()));
   // Mutators read the latest cfg via this ref (not the render closure) so a same-tick
@@ -181,7 +181,7 @@ export default function TelemetryPanel({
                 onToggleCollapse={() => toggleCollapse(card.key)}
                 onToggleSeries={sk => toggleSeries(card.key, sk)}
                 onRemove={() => remove(card.key)}
-                analysisLapIndex={analysisLapIndex}
+                analysisLap={analysisLap}
                 analysisScrubIndex={analysisScrubIndex}
               />
             ))}

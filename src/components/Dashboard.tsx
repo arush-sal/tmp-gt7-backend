@@ -2,13 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import type { Corner, CornerAnalysis } from "../contract/corner";
 import { useSession } from "../hooks/useSession";
 import { useHistory } from "../hooks/useHistory";
+import { useLaps } from "../hooks/useLaps";
+import { useLapTrace } from "../hooks/useLapTrace";
 import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
 import { frameToDisplay } from "../lib/liveView";
-import { lapSectors } from "../lib/lapSectors";
+import { lapDtoToSectorTimes } from "../lib/lapView";
 import { toDrawGeometry } from "../lib/rkbGeometry";
 import { insideFraction, isMismatch } from "../lib/trackMismatch";
 import { initialSel, reduceAuto, reduceManual } from "../lib/trackSelection";
@@ -29,11 +31,13 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // Gate the stream once, share it with both subscriptions: after a race finishes, one latch
   // stops cooldown frames reaching history, sectors, view, and track alike (see gateAfterRace).
   const gated = useMemo(() => gateAfterRace(source), [source]);
-  const { snapshot, error, view, live, newRaceSeq } = useSession(undefined, gated);
+  const { snapshot, error, view, live, newRaceSeq, raceKey } = useSession(undefined, gated);
+  const sessionId = raceKey;
   // Independent live subscription (per the plan: fan-out to a single subscription is a
   // later pass) — feeds the graph buffer only, reuses the same gated `source` as
-  // useSession so tests (and a future single-subscription refactor) see one seam.
-  const history = useHistory(gated);
+  // useSession so tests (and a future single-subscription refactor) see one seam. On each lap
+  // rollover the store hands the finished lap to lapCache keyed by `sessionId`.
+  const history = useHistory(gated, sessionId);
   // Single writer into the history store: gate append by `live` (paused/idle/race-over
   // stops growth) and wipe on a genuine new race. The sector timer resets itself on
   // session_id change via its own sessionKey, so it needs no explicit reset here.
@@ -117,44 +121,48 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     return out.slice(0, 3);
   }, [trackList, sel.slug, snapshot?.enrichment?.track]);
 
-  // Lap selection: which lap's trace is drawn on the canvas. Auto-follows: "current" (live view)
-  // while live, the latest completed lap once live ends -- until the user picks explicitly.
+  // Lap selection: which lap's trace is drawn on the canvas. A numeric `selectedLap` is a
+  // lap_number (1-based). Auto-follows: "current" (live view) while live, the latest completed
+  // lap once live ends -- until the user picks explicitly.
   const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("current");
   const [userPickedLap, setUserPickedLap] = useState(false);
   const completedLapCount = history.completedLapCount();
   useEffect(() => {
     if (userPickedLap) return;
-    setSelectedLap(live ? "current" : completedLapCount > 0 ? completedLapCount - 1 : "current");
+    setSelectedLap(live ? "current" : completedLapCount > 0 ? completedLapCount : "current");
   }, [live, completedLapCount, userPickedLap]);
   // New race: drop back to auto-follow AND clear a stale numeric selectedLap (completedLapCount
   // resets to 0 too, but not necessarily in the same tick -- the <select> must never hold a
   // value with no matching option).
   useEffect(() => { if (newRaceSeq > 0) { setUserPickedLap(false); setSelectedLap("current"); } }, [newRaceSeq]);
 
+  // A completed lap's per-lap metadata (sector splits) + full trace come from the backend,
+  // cache-first (the live lapCache serves in-session laps with no fetch).
+  const laps = useLaps(sessionId);
+  const lapTrace = useLapTrace(sessionId, typeof selectedLap === "number" ? selectedLap : null);
+  const lapView = lapTrace.view;
   // Analysis mode: a completed lap is selected -> a scrub cursor can be placed/stepped
   // along that lap's trace, and the telemetry graphs switch to showing that lap's data.
-  const analysisLap = typeof selectedLap === "number" ? (history.trace().completed[selectedLap] ?? null) : null;
+  const analysisLap = lapView?.points ?? null;
   const [scrubIndex, setScrubIndex] = useState<number | null>(null);
   // Header, graphs, and canvas cursor must agree on the default scrub position: a specific
-  // lap starts scrubbed to its LAST index (lap-end), not null/0.
+  // lap starts scrubbed to its LAST index (lap-end), not null/0. Re-keys off lapView so it
+  // settles once the (possibly async) trace resolves.
   useEffect(() => {
-    setScrubIndex(typeof selectedLap === "number" ? (history.trace().completed[selectedLap]?.length ?? 1) - 1 : null);
-  }, [selectedLap]);
-  const frameIndex = scrubIndex;
-  const frame = typeof selectedLap === "number" && frameIndex !== null
-    ? history.frameAt(selectedLap, frameIndex)
+    setScrubIndex(typeof selectedLap === "number" ? (lapView?.length ?? 1) - 1 : null);
+  }, [selectedLap, lapView]);
+  const frame = typeof selectedLap === "number" && scrubIndex !== null
+    ? lapView?.frameAt(scrubIndex) ?? null
     : null;
   const displayView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
-  // lapSectors replays the whole lap through a fresh SectorTimer (per-point centerline
-  // projection) -- expensive. Memoize on the completed-lap ref + geometry ONLY. It must NOT
-  // depend on the live `sectorTimes` (which changes every frame): selecting a completed lap while
-  // the feed is still live would otherwise re-run lapSectors at 60Hz and peg the CPU. Also keeps
-  // arrow-key scrubbing cheap (scrubIndex doesn't affect it).
-  const lapSecs = useMemo(
-    () => (analysisLap ? lapSectors(analysisLap, geometry) : null),
-    [analysisLap, geometry],
-  );
-  const shownSectors = typeof selectedLap === "number" ? lapSecs : sectorTimes;
+  // Sector splits for a selected lap come straight from its LapDTO (backend-computed); live
+  // sector timing only applies to the current lap.
+  const selectedLapDto = typeof selectedLap === "number"
+    ? laps.laps.find(l => l.lap_number === selectedLap)
+    : undefined;
+  const shownSectors = typeof selectedLap === "number"
+    ? (selectedLapDto ? lapDtoToSectorTimes(selectedLapDto) : null)
+    : sectorTimes;
   useEffect(() => {
     if (!analysisLap) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -180,13 +188,19 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // The track name itself is redundant here -- it's already shown in the header picker --
   // so the canvas footer only carries actionable status text (error / still-detecting /
   // no-match), alongside the confidence badges.
+  const lapNote =
+    typeof selectedLap === "number" && lapTrace.loading ? `loading lap ${selectedLap}…`
+      : typeof selectedLap === "number" && lapTrace.error ? `couldn't load lap ${selectedLap}`
+        : null;
   const statusMessage = error
     ? `stream error: ${error.message}`
-    : sel.slug
-      ? null
-      : !sel.autoClosed
-        ? "detecting track..."
-        : "no track detected";
+    : lapNote
+      ? lapNote
+      : sel.slug
+        ? null
+        : !sel.autoClosed
+          ? "detecting track..."
+          : "no track detected";
 
   return (
     <>
@@ -227,8 +241,8 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
           >
             <option value="all">All laps</option>
             <option value="current">Current lap</option>
-            {Array.from({ length: completedLapCount }, (_, i) => completedLapCount - 1 - i).map(i => (
-              <option key={i} value={i}>Lap {i + 1}</option>
+            {Array.from({ length: completedLapCount }, (_, i) => completedLapCount - i).map(n => (
+              <option key={n} value={n}>Lap {n}</option>
             ))}
           </select>
         }
@@ -249,7 +263,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               </button>
               <TelemetryPanel
                 store={history}
-                analysisLapIndex={typeof selectedLap === "number" ? selectedLap : null}
+                analysisLap={lapView}
                 analysisScrubIndex={scrubIndex}
               />
             </aside>

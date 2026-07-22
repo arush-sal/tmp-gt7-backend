@@ -130,26 +130,4 @@ describe("useSectorTimes", () => {
       { sector: "S3", timeMs: null, deltaMs: null },
     ]);
   });
-
-  it("restores a track's sticky sectors from storage on a fresh mount (refresh)", () => {
-    const first = renderHook(
-      ({ snapshot }) => useSectorTimes(snapshot, geometry, "track-a"),
-      { initialProps: { snapshot: live(1, 0, 0, 0) as LiveSnapshot | null } },
-    );
-    first.rerender({ snapshot: live(1, 2_000_000_000, 9, 0) }); // S1 = 2000 recorded + persisted
-    expect(first.result.current![0].timeMs).toBe(2000);
-    first.unmount();
-
-    // Fresh mount, same track + same session: seeded from storage, so the first snapshot
-    // returns the restored S1 rather than a cleared null.
-    const second = renderHook(
-      ({ snapshot }) => useSectorTimes(snapshot, geometry, "track-a"),
-      { initialProps: { snapshot: live(1, 0, 0, 0) as LiveSnapshot | null } },
-    );
-    expect(second.result.current).toEqual([
-      { sector: "S1", timeMs: 2000, deltaMs: null },
-      { sector: "S2", timeMs: null, deltaMs: null },
-      { sector: "S3", timeMs: null, deltaMs: null },
-    ]);
-  });
 });

@@ -15,14 +15,13 @@ export type RaceKeyState = { raceKey: string | null; lastLap: number };
 export const initialRaceKey: RaceKeyState = { raceKey: null, lastLap: 0 };
 
 // Advance race identity by one snapshot. newRace=true means THIS snapshot begins a new race and
-// the caller must reset its stores. session_id is authoritative; lap-reset is fallback only.
+// the caller must reset its stores. session_id is authoritative — a change of session_id is the
+// only signal for a new race (the old lap-reset fallback is gone; backend session_id is reliable).
 export function stepRace(prev: RaceKeyState, s: LiveSnapshot): { state: RaceKeyState; newRace: boolean } {
   const id = s.enrichment.session_id ?? null;
   const lap = s.frame?.current_lap ?? prev.lastLap;
 
-  const newRace =
-    (id != null && prev.raceKey != null && id !== prev.raceKey) ||
-    (s.frame?.current_lap === 1 && prev.lastLap > 1);
+  const newRace = id != null && prev.raceKey != null && id !== prev.raceKey;
 
   const state: RaceKeyState = { raceKey: id ?? prev.raceKey, lastLap: lap };
   return { state, newRace };

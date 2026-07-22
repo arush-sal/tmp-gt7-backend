@@ -15,9 +15,9 @@ export type LapSample = { t: number; posX: number; posZ: number; surface: string
 export type LapView = {
   readonly points: readonly TracePoint[];
   readonly length: number;
-  /** [xs, ...perChannel] where xs is lap-time seconds — same shape as historyStore.lapColumns. */
+  /** [xs, ...perChannel] where xs is lap-time seconds — same shape as historyStore.columns. */
   columns(chs: Channel[]): number[][];
-  /** FrameValues at sample i (same shape as historyStore.frameAt); null out of range. */
+  /** FrameValues at sample i (shape shared with liveView.frameToDisplay); null out of range. */
   frameAt(i: number): FrameValues | null;
 };
 

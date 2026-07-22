@@ -31,20 +31,17 @@ describe("useHistory", () => {
     expect(unsub).toHaveBeenCalledOnce();
   });
 
-  it("persists on page hide and rehydrates the buffer on a fresh mount (refresh)", () => {
+  it("caches a completed lap to lapCache keyed by (sessionId, lap) on rollover", async () => {
+    const { getLap, resetLapCache } = await import("../lib/lapCache");
+    resetLapCache();
     let handlers: LiveHandlers | undefined;
     const source: LiveSource = (_u, h) => { handlers = h; return vi.fn(); };
-
-    const first = renderHook(() => useHistory(source));
+    renderHook(() => useHistory(source, "sess-x"));
     act(() => { handlers!.onSnapshot(live(1, 1e9)); handlers!.onSnapshot(live(1, 2e9)); });
-    expect(first.result.current.size()).toBe(2);
+    act(() => { handlers!.onSnapshot(live(2, 1e8)); }); // rollover -> lap 1 finished, cached
 
-    // Simulate a refresh: page hide flushes to localStorage, then the hook remounts fresh.
-    act(() => { window.dispatchEvent(new Event("pagehide")); });
-    first.unmount();
-
-    const second = renderHook(() => useHistory(source));
-    expect(second.result.current.size()).toBe(2);                          // buffer restored
-    expect(second.result.current.columns(["throttle"])[1]).toEqual([42, 42]);
+    const cached = getLap("sess-x", 1);
+    expect(cached?.length).toBe(2);
+    expect(cached?.map(s => s.throttle)).toEqual([42, 42]);
   });
 });

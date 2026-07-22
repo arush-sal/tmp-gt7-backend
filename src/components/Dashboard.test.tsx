@@ -6,15 +6,7 @@ import Dashboard from "./Dashboard";
 import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import { validateLive } from "../lib/validateLive";
 import { liveSample } from "../mock/liveSample";
-
-// Wrap lapSectors in a spy so a perf regression test can assert it is NOT re-run on every live
-// frame while a completed lap is selected (it must be memoized on the lap data, not on the
-// per-frame live sectorTimes). Keeps the real implementation.
-vi.mock("../lib/lapSectors", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/lapSectors")>();
-  return { ...actual, lapSectors: vi.fn(actual.lapSectors) };
-});
-import { lapSectors as lapSectorsSpy } from "../lib/lapSectors";
+import { resetLapCache } from "../lib/lapCache";
 
 // Force `sectorTimes` to be a FRESH reference on every render, mirroring the live case (real
 // geometry recomputes it each frame). This is what the perf regression test needs so a memo that
@@ -39,6 +31,8 @@ vi.mock("react-konva", () => ({
 // `fetch` global — stub it for every test in this file so none of them hit the network.
 beforeEach(() => {
   localStorage.clear();
+  resetLapCache();
+  // Catch-all stub: /v1/tracks -> [], /v1/sessions/{id}/laps -> [], .../trace -> [] (all JSON []).
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => [] })) as unknown as typeof fetch);
 });
 afterEach(() => {
@@ -347,7 +341,7 @@ describe("Dashboard (live)", () => {
     expect(select.value).toBe("current");
   });
 
-  it("auto-selects the latest completed lap once live ends; an earlier lap shows its stored data at lap-end", () => {
+  it("auto-selects the latest completed lap once live ends; an earlier lap shows its cached data at lap-end", async () => {
     const { source, push } = j3Source();
     render(<Dashboard source={source} />);
 
@@ -355,68 +349,70 @@ describe("Dashboard (live)", () => {
     act(() => push({ lap: 2, t: 2_000_000_000, fuel: 91 }));
     act(() => push({ lap: 3, t: 3_000_000_000, fuel: 55 }));
     act(() => push({ lap: 4, t: 4_000_000_000, fuel: 20 }));
-    // Race-over frame (current_lap > total_laps -> live=false); also rolls lap 4 into
-    // `completed`, giving 3 completed laps: [lap2(91%), lap3(55%), lap4(20%)].
+    // Race-over frame (current_lap > total_laps -> live=false); also finishes lap 4, giving 3
+    // completed laps (each finished lap's samples were handed to lapCache on rollover).
     act(() => push({ lap: 91, t: 5_000_000_000, fuel: 5, totalLaps: 90 }));
 
     const select = screen.getByLabelText<HTMLSelectElement>("Lap");
-    // Latest completed lap (index 2, the lap-4 data) is auto-selected now that live has ended.
-    expect(select.value).toBe("2");
-    expect(screen.getByText("20%")).toBeTruthy();
+    // 3 completed laps -> auto-follow lands on the latest lap_number (3) now that live ended.
+    await waitFor(() => expect(select.value).toBe("3"));
+    // lap_number 3's cached trace (single sample, fuel 55%) drives the right panel at lap-end.
+    await waitFor(() => expect(screen.getByText("55%")).toBeTruthy());
 
-    // Selecting an earlier lap (index 0, the lap-2 data) switches the right panel to that
-    // lap's stored frame, scrubbed to its LAST sample by default (lap-end) — the same index
-    // the telemetry graphs and trace-canvas cursor default to, since Dashboard now derives
-    // all three from the single `scrubIndex` state.
-    fireEvent.change(select, { target: { value: "0" } });
-    expect(screen.getByText("91%")).toBeTruthy();
+    // Selecting an earlier lap (lap_number 2) switches the right panel to that lap's cached
+    // frame, scrubbed to its LAST sample by default (lap-end) — the same index the telemetry
+    // graphs and trace-canvas cursor default to, all derived from the single `scrubIndex` state.
+    fireEvent.change(select, { target: { value: "2" } });
+    await waitFor(() => expect(screen.getByText("91%")).toBeTruthy());
   });
 
-  it("resets a stale numeric selection back to 'Current lap' on a new race", () => {
+  it("resets a stale numeric selection back to 'Current lap' on a new race", async () => {
     const { source, push } = j3Source();
     render(<Dashboard source={source} />);
 
     act(() => push({ lap: 1, t: 1_000_000_000, fuel: 99 })); // primer, dropped
     act(() => push({ lap: 2, t: 2_000_000_000, fuel: 91 }));
     act(() => push({ lap: 3, t: 3_000_000_000, fuel: 55 }));
-    // Race over (rolls lap 3 into `completed` too -> [lap2, lap3]) -> auto-follow lands on
-    // a numeric selectedLap (the latest completed lap, index 1).
+    // Race over (finishes lap 3 too -> 2 completed laps) -> auto-follow lands on a numeric
+    // selectedLap (the latest lap_number, 2).
     act(() => push({ lap: 91, t: 4_000_000_000, fuel: 5, totalLaps: 90 }));
     const select = screen.getByLabelText<HTMLSelectElement>("Lap");
-    expect(select.value).toBe("1");
+    await waitFor(() => expect(select.value).toBe("2"));
 
     // New race (different session_id, lap 1): newRaceSeq bumps -> selectedLap must reset to
     // "current" immediately, even though the fresh completedLapCount (0) alone wouldn't otherwise
     // re-trigger auto-follow's "current" branch until a lap completes — a stale numeric value
     // with no matching <option> would otherwise linger.
     act(() => push({ lap: 1, t: 100_000_000, fuel: 100, session: "sess-j3-race2" }));
-    expect(select.value).toBe("current");
+    await waitFor(() => expect(select.value).toBe("current"));
   });
 
-  // Perf regression: selecting a completed lap while the feed is STILL LIVE must not re-run the
-  // expensive lapSectors replay on every incoming frame. It was memoized with `sectorTimes` in the
-  // deps -- and sectorTimes changes every frame while live -- so mid-race lap selection re-ran
-  // lapSectors at ~60Hz, pegging the CPU, freezing the dropdown, and starving the canvas. It must
-  // be memoized on the (immutable) completed-lap data + geometry only.
-  it("does NOT re-run lapSectors on every live frame while a completed lap is selected", () => {
+  // Perf regression: selecting a completed lap while the feed is STILL LIVE must serve the lap
+  // from the in-session lapCache (populated on rollover), not re-fetch its trace from the backend
+  // every incoming frame. A cached lap must fire ZERO /trace fetches, no matter how many live
+  // frames arrive while it's selected.
+  it("selecting a completed lap while live does not refetch its trace per frame", async () => {
+    const traceFetches = { n: 0 };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (String(url).includes("/trace")) traceFetches.n++;
+      return { ok: true, json: async () => [] };
+    }) as unknown as typeof fetch);
+
     const { source, push } = j3Source();
     render(<Dashboard source={source} />);
     // Complete >=2 laps while staying live (current_lap <= total_laps=90 throughout).
     act(() => push({ lap: 1, t: 1_000_000_000, fuel: 99 })); // primer (store setLive not committed yet)
     act(() => push({ lap: 2, t: 2_000_000_000, fuel: 95 }));
     act(() => push({ lap: 3, t: 3_000_000_000, fuel: 90 }));
-    act(() => push({ lap: 4, t: 4_000_000_000, fuel: 85 })); // rollovers -> >=2 completed laps
+    act(() => push({ lap: 4, t: 4_000_000_000, fuel: 85 })); // rollovers -> >=2 completed laps cached
 
     const select = screen.getByLabelText<HTMLSelectElement>("Lap");
-    // Pick the first completed lap (index 0) -> analysis mode, feed still live.
-    fireEvent.change(select, { target: { value: "0" } });
-    const spy = lapSectorsSpy as unknown as { mock: { calls: unknown[] } };
-    const baseline = spy.mock.calls.length;
-    expect(baseline).toBeGreaterThanOrEqual(1); // the selection itself computes it once
+    // Pick a cached completed lap (lap_number 2) -> analysis mode, feed still live.
+    fireEvent.change(select, { target: { value: "2" } });
+    const baseline = traceFetches.n;
 
-    // Feed 20 more LIVE frames of the same lap (advancing lap time) -> sectorTimes changes each
-    // frame. Memoized correctly, lapSectors is NOT called again; with the bug it fired ~20x.
+    // Feed 20 more LIVE frames of the same lap -> the selected (cached) lap must never refetch.
     for (let i = 0; i < 20; i++) act(() => push({ lap: 4, t: (5 + i) * 1_000_000_000, fuel: 84 - i }));
-    expect(spy.mock.calls.length - baseline).toBeLessThanOrEqual(1);
+    expect(traceFetches.n - baseline).toBe(0);
   });
 });

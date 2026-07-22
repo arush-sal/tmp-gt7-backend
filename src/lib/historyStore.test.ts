@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createHistoryStore, PERSIST_TARGET_SAMPLES, PERSIST_MAX_LAPS } from "./historyStore";
+import { createHistoryStore } from "./historyStore";
 import type { LiveSnapshot } from "../contract/live";
 
 const frame = (lap: number, lapTimeNs: number, throttle: number): LiveSnapshot => ({
@@ -84,26 +84,13 @@ describe("historyStore — new channels", () => {
   });
 });
 
-describe("historyStore — completed-lap retention", () => {
-  it("pushes the finished lap onto completed laps on rollover and clears current", () => {
+describe("historyStore — current-lap buffer + rollover", () => {
+  it("clears the current buffer on rollover, keeping only the new lap's sample", () => {
     const s = createHistoryStore();
     s.push(snap({ t: 1, lap: 1, speed: 100 }));
     s.push(snap({ t: 2, lap: 1, speed: 110 }));
-    s.push(snap({ t: 1, lap: 2, speed: 200 })); // rollover -> lap 1 retained, current reset
+    s.push(snap({ t: 1, lap: 2, speed: 200 })); // rollover -> current reset
     expect(s.size()).toBe(1); // only the lap-2 sample in the current buffer
-  });
-
-  it("bounds retention to the last 20 completed laps", () => {
-    const s = createHistoryStore();
-    // total high enough that completedLapCount's overflow cap (never report more than total_laps)
-    // does not trip -- this test exercises the array retention bound (MAX_COMPLETED_LAPS), not the
-    // post-race display cap.
-    for (let lap = 1; lap <= 25; lap++) {
-      s.push(snap({ t: 1, lap, total: 30, speed: lap }));
-      s.push(snap({ t: 2, lap, total: 30, speed: lap }));
-    }
-    // 24 laps completed (lap 25 is current). Retention capped at 20.
-    expect(s.completedLapCount()).toBe(20);
   });
 
   it("does NOT self-reset on a session_id change (external reset() only)", () => {
@@ -134,91 +121,36 @@ describe("historyStore — completed-lap retention", () => {
     expect(s.size()).toBe(2);
   });
 
-  it("retains the full current lap (no time-window eviction) so a long lap keeps early samples", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 0, lap: 1, speed: 100 }));
-    s.push(snap({ t: 130, lap: 1, speed: 200 })); // lap spans >120s
-    s.push(snap({ t: 0, lap: 2, speed: 100 }));
-    s.push(snap({ t: 130, lap: 2, speed: 200 }));
-    s.push(snap({ t: 10, lap: 3, speed: 999 })); // early x -> finite median (early samples retained)
-    expect(Number.isFinite(s.medianColumn("speed")[0])).toBe(true);
-  });
-
   it("bounds the current-lap buffer to maxSamplesPerLap (drop-oldest)", () => {
-    const s = createHistoryStore(3);
+    const s = createHistoryStore(undefined, 3);
     for (let i = 1; i <= 5; i++) s.push(snap({ t: i, lap: 1, speed: i * 10 }));
     expect(s.size()).toBe(3); // newest 3 kept
   });
 });
 
-describe("historyStore — medianColumn", () => {
-  it("returns all-NaN with fewer than 2 completed laps", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 1, lap: 1, speed: 100 }));
-    s.push(snap({ t: 1, lap: 2, speed: 120 })); // 1 completed lap
-    const med = s.medianColumn("speed");
-    expect(med.every(v => Number.isNaN(v))).toBe(true);
+describe("historyStore — onLapComplete + completedCount", () => {
+  it("fires onLapComplete once per rollover with the finished buffer; completedCount increments", () => {
+    const laps: { lap: number; n: number }[] = [];
+    const s = createHistoryStore((lap, samples) => laps.push({ lap, n: samples.length }));
+    s.push(snap({ t: 1, lap: 1 }));
+    s.push(snap({ t: 2, lap: 1 }));
+    expect(s.completedLapCount()).toBe(0);
+    s.push(snap({ t: 0.5, lap: 2 })); // rollover -> lap 1 finished (2 samples)
+    expect(laps).toEqual([{ lap: 1, n: 2 }]);
+    expect(s.completedLapCount()).toBe(1);
+    s.push(snap({ t: 1.5, lap: 2 }));
+    s.push(snap({ t: 0.5, lap: 3 })); // rollover -> lap 2 finished
+    expect(laps).toEqual([{ lap: 1, n: 2 }, { lap: 2, n: 2 }]);
+    expect(s.completedLapCount()).toBe(2);
   });
 
-  it("computes a per-point median across completed laps, interpolating by lap-time", () => {
+  it("caps completedLapCount at total_laps (GT7 cooldown 'N+1/N' never inflates the count)", () => {
     const s = createHistoryStore();
-    // lap 1: (t=0,speed=100),(t=2,speed=200)
-    s.push(snap({ t: 0, lap: 1, speed: 100 }));
-    s.push(snap({ t: 2, lap: 1, speed: 200 }));
-    // lap 2: (t=0,speed=200),(t=2,speed=300)
-    s.push(snap({ t: 0, lap: 2, speed: 200 }));
-    s.push(snap({ t: 2, lap: 2, speed: 300 }));
-    // current lap 3 sampled at t=1 -> lap1 interp=150, lap2 interp=250, median=200
-    s.push(snap({ t: 1, lap: 3, speed: 999 }));
-    expect(s.medianColumn("speed")).toEqual([200]);
-  });
-
-  it("gaps (NaN) where the current x is beyond every completed lap's range", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 0, lap: 1, speed: 100 })); s.push(snap({ t: 1, lap: 1, speed: 100 }));
-    s.push(snap({ t: 0, lap: 2, speed: 100 })); s.push(snap({ t: 1, lap: 2, speed: 100 }));
-    s.push(snap({ t: 5, lap: 3, speed: 100 })); // beyond both laps' max t=1
-    expect(s.medianColumn("speed")).toEqual([NaN]);
-  });
-
-  it("uses last 5 laps when total_laps > 20", () => {
-    const s = createHistoryStore();
-    // 6 completed laps of constant speed=lap#, total_laps=30 -> scope = last 5 (laps 2..6) -> median 4
-    for (let lap = 1; lap <= 6; lap++) {
-      s.push(snap({ t: 0, lap, total: 30, speed: lap }));
-      s.push(snap({ t: 2, lap, total: 30, speed: lap }));
-    }
-    s.push(snap({ t: 1, lap: 7, total: 30, speed: 999 }));
-    expect(s.medianColumn("speed")).toEqual([4]); // median of [2,3,4,5,6]
-  });
-
-  it("uses all laps when total_laps == 20 (<=20 boundary)", () => {
-    const s = createHistoryStore();
-    for (let lap = 1; lap <= 6; lap++) {
-      s.push(snap({ t: 0, lap, total: 20, speed: lap }));
-      s.push(snap({ t: 2, lap, total: 20, speed: lap }));
-    }
-    s.push(snap({ t: 1, lap: 7, total: 20, speed: 999 }));
-    expect(s.medianColumn("speed")).toEqual([3.5]); // median of [1,2,3,4,5,6]
-  });
-
-  it("treats total_laps 0/null (unlimited) as the >20 rule (last 5)", () => {
-    const s = createHistoryStore();
-    for (let lap = 1; lap <= 6; lap++) {
-      s.push(snap({ t: 0, lap, total: 0, speed: lap }));
-      s.push(snap({ t: 2, lap, total: 0, speed: lap }));
-    }
-    s.push(snap({ t: 1, lap: 7, total: 0, speed: 999 }));
-    expect(s.medianColumn("speed")).toEqual([4]);
-  });
-
-  it("handles a degenerate single-sample completed lap without dividing by zero", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 1, lap: 1, speed: 100 })); // single-sample lap 1
-    s.push(snap({ t: 0, lap: 2, speed: 200 })); s.push(snap({ t: 2, lap: 2, speed: 300 }));
-    s.push(snap({ t: 1, lap: 3, speed: 999 }));
-    // lap1 has only t=1 -> interp at t=1 = 100; lap2 interp at t=1 = 250; median = 175
-    expect(s.medianColumn("speed")).toEqual([175]);
+    s.push(snap({ t: 1, lap: 1, total: 2 }));
+    s.push(snap({ t: 1, lap: 2, total: 2 })); // rollover lap 1 -> raw 1
+    s.push(snap({ t: 1, lap: 3, total: 2 })); // rollover lap 2 -> raw 2
+    s.push(snap({ t: 1, lap: 4, total: 2 })); // rollover lap 3 (cooldown) -> raw 3
+    expect(s.completedLapCount()).toBe(2); // capped at total_laps
   });
 });
 
@@ -235,15 +167,15 @@ function snapSpatial(lap: number, t: number, x: number, z: number, extra: Partia
   };
 }
 
-test("trace() exposes posX/posZ/surface across completed + current laps", () => {
-  const h = createHistoryStore();
+test("trace() exposes only the current lap; a finished lap is handed to onLapComplete", () => {
+  const completed: { lap: number; posX: number[] }[] = [];
+  const h = createHistoryStore((lap, samples) => completed.push({ lap, posX: samples.map(s => s.posX) }));
   h.push(snapSpatial(1, 0.1, 10, 20));
   h.push(snapSpatial(1, 0.2, 11, 21));
   h.push(snapSpatial(2, 0.1, 12, 22, { surface_type: "TTCC" })); // lap rollover
   const tr = h.trace();
-  expect(tr.completed.length).toBe(1);
-  expect(tr.completed[0].map(p => p.posX)).toEqual([10, 11]);
   expect(tr.current[0]).toMatchObject({ posX: 12, posZ: 22, surface: "TTCC" });
+  expect(completed).toEqual([{ lap: 1, posX: [10, 11] }]);
 });
 
 test("revision() increments on push and lap rollover", () => {
@@ -294,12 +226,12 @@ describe("historyStore — lastLapFuelUsedPct", () => {
     expect(s.lastLapFuelUsedPct()).toBe(15);
   });
 
-  it("returns null on a refuel/anomaly (non-positive delta)", () => {
+  it("keeps the last good value on a refuel/anomaly (non-positive delta)", () => {
     const s = createHistoryStore();
     s.push(snap({ t: 0, lap: 1, fuelPct: 50 }));
     s.push(snap({ t: 1, lap: 1, fuelPct: 90 })); // refuelled mid-lap
-    s.push(snap({ t: 0, lap: 2, fuelPct: 90 })); // rollover -> lap 1 completed
-    expect(s.lastLapFuelUsedPct()).toBeNull();
+    s.push(snap({ t: 0, lap: 2, fuelPct: 90 })); // rollover -> lap 1 completed (anomaly)
+    expect(s.lastLapFuelUsedPct()).toBeNull(); // no prior good value -> stays null
   });
 });
 
@@ -307,117 +239,4 @@ test("Channel excludes spatial fields (compile-time guard)", () => {
   const h = createHistoryStore();
   // @ts-expect-error posX is a spatial field, not a graphable Channel
   h.columns(["posX"]);
-});
-
-describe("historyStore — lapColumns / lapSampleCount", () => {
-  it("returns [xs, ...channels] for a completed lap, same shape as columns()", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 1, lap: 1, throttle: 50 }));
-    s.push(snap({ t: 2, lap: 1, throttle: 80 }));
-    s.push(snap({ t: 0.5, lap: 2, throttle: 10 })); // rollover -> lap 1 completed
-    const cols = s.lapColumns(0, ["throttle"]);
-    expect(cols).not.toBeNull();
-    const [xs, thr] = cols!;
-    expect(xs).toEqual([1, 2]);
-    expect(thr).toEqual([50, 80]);
-  });
-
-  it("returns null when the lap index is out of range", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 1, lap: 1 }));
-    expect(s.lapColumns(0, ["throttle"])).toBeNull();
-    expect(s.lapColumns(-1, ["throttle"])).toBeNull();
-  });
-
-  it("lapSampleCount returns the completed lap's sample count, 0 if out of range", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 1, lap: 1 }));
-    s.push(snap({ t: 2, lap: 1 }));
-    s.push(snap({ t: 0.5, lap: 2 })); // rollover -> lap 1 completed with 2 samples
-    expect(s.lapSampleCount(0)).toBe(2);
-    expect(s.lapSampleCount(1)).toBe(0);
-    expect(s.lapSampleCount(-1)).toBe(0);
-  });
-});
-
-describe("historyStore — frameAt", () => {
-  it("returns the completed lap's frame values at a sample index", () => {
-    const s = createHistoryStore();
-    s.push(snap({ t: 1, lap: 1, throttle: 50, speed: 100, tfl: 90, tfr: 91, trl: 92, trr: 93, fuelPct: 77 }));
-    s.push(snap({ t: 2, lap: 1, throttle: 80, speed: 110 }));
-    s.push(snap({ t: 0.5, lap: 2, throttle: 10 })); // rollover -> lap 1 completed with 2 samples
-
-    const f0 = s.frameAt(0, 0);
-    expect(f0).not.toBeNull();
-    expect(f0).toMatchObject({ t: 1, throttle: 50, speed: 100, tyreFL: 90, tyreFR: 91, tyreRL: 92, tyreRR: 93, fuel: 77 });
-
-    const f1 = s.frameAt(0, 1);
-    expect(f1).toMatchObject({ t: 2, throttle: 80, speed: 110 });
-
-    expect(s.frameAt(0, 5)).toBeNull();  // index out of range
-    expect(s.frameAt(9, 0)).toBeNull();  // lap out of range
-  });
-});
-
-describe("historyStore — persistence (dump/load)", () => {
-  it("dump() returns null for an empty store", () => {
-    expect(createHistoryStore().dump()).toBeNull();
-  });
-
-  it("round-trips completed laps + the running buffer into a fresh store", () => {
-    const a = createHistoryStore();
-    a.push(frame(1, 1e9, 40));
-    a.push(frame(1, 2e9, 60));
-    a.push(frame(2, 0.5e9, 80)); // rollover: lap 1 completed (2 samples), lap 2 running (1)
-    const data = a.dump()!;
-    expect(data).not.toBeNull();
-
-    const b = createHistoryStore();
-    b.load(data);
-    expect(b.completedLapCount()).toBe(1);
-    expect(b.size()).toBe(1);                                 // running lap 2 has 1 sample
-    expect(b.lapColumns(0, ["throttle"])![1]).toEqual([40, 60]); // lap 1 restored
-    expect(b.columns(["throttle"])[1]).toEqual([80]);         // running lap restored
-  });
-
-  it("thins a huge lap to the sample cap, preserving first + last", () => {
-    const a = createHistoryStore();
-    for (let i = 0; i < 5000; i++) a.push(frame(1, (i + 1) * 1e6, i % 100));
-    const data = a.dump()!;
-    expect(data.buf.length).toBeLessThanOrEqual(PERSIST_TARGET_SAMPLES + 1);
-    expect(data.buf[0].throttle).toBe(0);                     // first
-    expect(data.buf[data.buf.length - 1].throttle).toBe(4999 % 100); // last preserved
-  });
-
-  it("persists only the most recent laps (cap)", () => {
-    const a = createHistoryStore();
-    for (let lap = 1; lap <= 12; lap++) {
-      a.push(frame(lap, 1e9, 50));
-      a.push(frame(lap, 2e9, 50));
-    }
-    expect(a.dump()!.completed.length).toBe(PERSIST_MAX_LAPS);
-  });
-
-  it("load(dump()) then a push does not clear the loaded laps", () => {
-    const a = createHistoryStore();
-    a.push(frame(1, 1e9, 40));
-    a.push(frame(1, 2e9, 60));
-    a.push(frame(2, 0.5e9, 80)); // rollover -> 1 completed lap
-    const data = a.dump();
-
-    const b = createHistoryStore();
-    b.load(data);
-    expect(b.completedLapCount()).toBe(1);
-    b.push(frame(2, 1e9, 90)); // same lap, later t -> appended, not a reset
-    expect(b.completedLapCount()).toBe(1);
-    expect(b.size()).toBe(2);
-  });
-
-  it("ignores a malformed / wrong-version payload", () => {
-    const b = createHistoryStore();
-    b.load({ v: 2, completed: [], buf: [] });
-    b.load(null);
-    b.load("garbage");
-    expect(b.dump()).toBeNull();
-  });
 });

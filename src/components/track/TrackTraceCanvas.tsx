@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Stage, Layer, Line, Text, Shape, Circle } from "react-konva";
 import type Konva from "konva";
-import type { HistoryStore } from "../../lib/historyStore";
+import type { HistoryStore, TracePoint } from "../../lib/historyStore";
 import {
   fitView, worldToScreen, screenToWorld, bboxOf, type View,
 } from "../../lib/trackTransform";
@@ -44,7 +44,7 @@ export default function TrackTraceCanvas(props: {
   store: HistoryStore; geometry: DrawGeometry | null; theme: "light" | "dark";
   footer?: ReactNode;
   selectedLap?: "all" | "current" | number;
-  analysisLap?: ReadonlyArray<{ posX: number; posZ: number }> | null;
+  analysisLap?: ReadonlyArray<TracePoint> | null;
   scrubIndex?: number | null;
   onScrub?: (i: number) => void;
 }) {
@@ -297,7 +297,10 @@ export default function TrackTraceCanvas(props: {
             <Shape
               ref={traceShapeRef}
               sceneFunc={(ctx) => {
-                drawTrace(ctx._context, { trace: store.trace(), view, theme, select: selectedLap });
+                drawTrace(ctx._context, {
+                  trace: store.trace(), view, theme, select: selectedLap,
+                  analysisLap: analysisLap ?? undefined,
+                });
               }}
             />
             {analysisLap && scrubIndex !== null && scrubIndex >= 0 && scrubIndex < analysisLap.length && (() => {
