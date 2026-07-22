@@ -12,6 +12,7 @@ import (
 
 	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/live"
+	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/rkb"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
@@ -28,6 +29,13 @@ type Server struct {
 	tracks   rkb.Store // Reference-Knowledge RKB; nil when unavailable (routes then 503)
 	log      *zap.Logger
 
+	// laps/traces/sectors back the per-session lap + trace + sector-timing routes (Task B2). Unlike
+	// hub/enrich these are NOT replaced with safe empties: the routes require real stores, so a nil is
+	// a wiring bug and is left to fault rather than silently serve empty data.
+	laps    processing.LapStore
+	traces  processing.TraceStore
+	sectors processing.SectorProvider
+
 	trackRecMu    sync.Mutex                 // guards trackRecCache
 	trackRecCache map[string]json.RawMessage // slug -> marshalled rkb.Record; records are immutable at runtime, so this never invalidates
 }
@@ -38,7 +46,7 @@ type Server struct {
 // is left nil when not supplied (rather than constructing a fresh DeltaTracker): a detached tracker
 // never receives ingest frames, so it would silently and permanently report ok=false; nil is the
 // honest "no delta overlay" state, and liveEnrichment skips it cleanly.
-func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, delta *live.DeltaTracker, tracks rkb.Store, log *zap.Logger) *Server {
+func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *live.EnrichmentState, delta *live.DeltaTracker, tracks rkb.Store, log *zap.Logger, laps processing.LapStore, traces processing.TraceStore, sectors processing.SectorProvider) *Server {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -48,7 +56,7 @@ func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *liv
 	if enrich == nil {
 		enrich = live.NewEnrichmentState()
 	}
-	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, delta: delta, tracks: tracks, log: log}
+	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, delta: delta, tracks: tracks, log: log, laps: laps, traces: traces, sectors: sectors}
 }
 
 // liveEnrichment returns the current enrichment snapshot with the live per-frame delta overlaid, when a
@@ -69,10 +77,14 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/coaching", s.handleSessionCoaching)
+	mux.HandleFunc("GET /v1/sessions/{id}/laps", s.handleSessionLaps)
+	mux.HandleFunc("GET /v1/sessions/{id}/laps/{n}/trace", s.handleLapTrace)
 	mux.HandleFunc("GET /v1/live", s.handleLive)
 	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
 	mux.HandleFunc("GET /{$}", s.handleLive)                  // "/" alias, exact match only
 	mux.HandleFunc("GET /v1/tracks", s.handleListTracks)
+	// Literal "coverage" beats the "{slug}" wildcard by Go 1.22 mux precedence (most-specific wins).
+	mux.HandleFunc("GET /v1/tracks/coverage", s.handleTracksCoverage)
 	mux.HandleFunc("GET /v1/tracks/{slug}", s.handleTrack)
 	return mux
 }

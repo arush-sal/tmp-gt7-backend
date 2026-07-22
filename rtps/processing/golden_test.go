@@ -63,6 +63,15 @@ func loadGoldenFrames(t *testing.T) []*telemetryv1.TelemetryFrame {
 
 func atoi(s string) int64 { v, _ := strconv.ParseInt(s, 10, 64); return v }
 
+// goldenNewID reproduces the detector's historical monotonic "sess-N" id generator (its pre-UUID
+// default). The production default now mints UUIDs (uuid.NewString), so these golden tests must pin a
+// deterministic generator to keep the expectation maps keyed on sess-1/3/5/6 stable. The gaps
+// (sess-2, sess-4) are the unconfirmed finish-line-flap sessions the detector opens and then drops.
+func goldenNewID() func() string {
+	n := 0
+	return func() string { n++; return "sess-" + strconv.Itoa(n) }
+}
+
 // TestSegmenter_Golden4Race runs the real capture through Detector -> LapSegmenter and reports the
 // per-session lap breakdown, then asserts structural invariants.
 func TestSegmenter_Golden4Race(t *testing.T) {
@@ -71,7 +80,7 @@ func TestSegmenter_Golden4Race(t *testing.T) {
 	lapStore := NewMemLapStore()
 	seg := NewLapSegmenter(lapStore)
 	sessStore := session.NewMemStore()
-	d := session.NewDetector(seg, sessStore, session.Config{})
+	d := session.NewDetector(seg, sessStore, session.Config{NewID: goldenNewID()})
 	for _, f := range frames {
 		d.Observe(f)
 	}

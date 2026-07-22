@@ -65,7 +65,7 @@ func newTrackTestServer() (*Server, *live.Hub, *live.EnrichmentState) {
 	store := fakeTracks{
 		byID: map[string]*rkb.Record{"hsr": {Slug: "hsr", Name: "High Speed Ring"}},
 	}
-	srv := NewServer(coach.Coach{}, nil, hub, enrich, nil, store, nil)
+	srv := NewServer(coach.Coach{}, nil, hub, enrich, nil, store, nil, nil, nil, nil)
 	return srv, hub, enrich
 }
 

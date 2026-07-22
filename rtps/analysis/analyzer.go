@@ -87,7 +87,7 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best 
 		if err != nil {
 			return res, err
 		}
-		if !sectorAnalyzable(l.Duration, samples) {
+		if !processing.SectorAnalyzable(l.Duration, samples) {
 			continue
 		}
 		norm := processing.Normalize(samples)
@@ -122,7 +122,7 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best 
 		// No PB-lap sectors to anchor the prediction to at all — can't produce a trustworthy <= PB
 		// number, so suppress outright.
 		res.PredictedBest, res.BestSectors, res.TimeOnTable = 0, nil, 0
-	case res.PredictedBest > res.PBTime+sectorJitterTol(res.PBTime):
+	case res.PredictedBest > res.PBTime+processing.SectorJitterTol(res.PBTime):
 		// Exceeds PB by more than trace-timestamp jitter can explain (see sectorAnalyzable) — the
 		// prediction is untrustworthy, not just imprecise. Suppress rather than publish it.
 		res.PredictedBest, res.BestSectors, res.TimeOnTable = 0, nil, 0
@@ -176,54 +176,6 @@ func matchLap(laps []processing.Lap, gt7Best time.Duration) int32 {
 		}
 	}
 	return 0
-}
-
-// Sector-analyzability tolerance. A lap's trace is trusted for sector timing only when its wall-clock
-// span sits within this band of the lap's authoritative GT7 duration. Because contiguous mini-sectors
-// telescope (Σ sector times == lastSample − firstSample == trace span), a span that disagrees with the
-// real lap time means the trace does not cover exactly one clean lap. Clean 60Hz laps matched their
-// GT7 time within ~0.1s across the 4-race capture; the floor leaves margin for the one-frame boundary
-// (the next lap's first frame — which GT7 stamps the lap time from — is not in this lap's trace).
-// Deliberately strict; widen only with evidence. (Mid-lap dropouts are already excluded upstream:
-// Lap.Valid requires gapCount == 0.)
-const (
-	sectorSpanAbsTol = 300 * time.Millisecond
-	sectorSpanPctTol = 0.005 // 0.5% of the lap duration
-)
-
-// sectorAnalyzable reports whether a valid lap's trace faithfully covers it, so its distance-fraction
-// sector times reconcile with the lap's authoritative duration. It rejects traces that are empty, have
-// no usable distance axis, or whose wall-clock span diverges from the lap duration beyond the tolerance
-// — the join-lap / standing-start / splice cases whose sector times would otherwise collapse the
-// predicted best.
-func sectorAnalyzable(dur time.Duration, samples []processing.Sample) bool {
-	if dur <= 0 || len(samples) < 2 {
-		return false
-	}
-	if samples[len(samples)-1].Distance <= 0 { // stationary/degenerate: no distance axis to split on
-		return false
-	}
-	span := samples[len(samples)-1].RecvTime.Sub(samples[0].RecvTime)
-	diff := span - dur
-	if diff < 0 {
-		diff = -diff
-	}
-	return diff <= sectorJitterTol(dur)
-}
-
-// sectorJitterTol is the wall-clock jitter band trace-derived sector times are allowed to diverge from
-// a lap's authoritative GT7 duration by (see sectorAnalyzable's doc comment for why this exists —
-// contiguous mini-sectors telescope to the trace span, and the trace span never lands exactly on the
-// game-clock duration even for a clean lap). Shared with the BUG-4 PredictedBest<=PBTime guard: a
-// predicted best built from the PB lap's own sectors carries the same jitter, so it must be judged
-// against the same tolerance sectorAnalyzable already uses to admit that lap's sectors in the first
-// place — not a hard zero-tolerance comparison, which would suppress essentially every prediction.
-func sectorJitterTol(dur time.Duration) time.Duration {
-	tol := sectorSpanAbsTol
-	if p := time.Duration(sectorSpanPctTol * float64(dur)); p > tol {
-		tol = p
-	}
-	return tol
 }
 
 // recommend turns the deltas into short, data-supported statements (no invented advice — this is the

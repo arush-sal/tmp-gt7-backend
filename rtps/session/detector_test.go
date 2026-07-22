@@ -2,10 +2,12 @@ package session
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -271,6 +273,27 @@ func TestDetector_SaveErrorNotConfirmed(t *testing.T) {
 	}
 	if errs == 0 {
 		t.Error("OnError not called on save failure")
+	}
+}
+
+// TestDetector_DefaultIDIsUUID: with a nil cfg.NewID, NewDetector must default to a globally-unique
+// UUID generator — not the old monotonic "sess-N" counter. Two independently constructed Detectors
+// must mint distinct ids (the counter reset to sess-1 per instance, so it collided across restarts).
+// We inspect the defaulted generator through the same-package d.cfg seam the existing tests rely on.
+func TestDetector_DefaultIDIsUUID(t *testing.T) {
+	d1 := NewDetector(&capSink{}, NewMemStore(), Config{})
+	d2 := NewDetector(&capSink{}, NewMemStore(), Config{})
+	id1 := d1.cfg.NewID()
+	id2 := d2.cfg.NewID()
+
+	if strings.HasPrefix(id1, "sess-") {
+		t.Errorf("default id %q still uses the old sess-N format", id1)
+	}
+	if id1 == id2 {
+		t.Errorf("two Detectors minted the same id %q; ids must be globally unique", id1)
+	}
+	if _, err := uuid.Parse(id1); err != nil {
+		t.Errorf("default id %q is not a valid UUID: %v", id1, err)
 	}
 }
 

@@ -33,7 +33,7 @@ func tracksServer() *Server {
 		index: []rkb.IndexEntry{{Slug: "hsr", Name: "High Speed Ring", CoordinateUsability: "generated-coarse"}},
 		byID:  map[string]*rkb.Record{"hsr": {Slug: "hsr", Name: "High Speed Ring"}},
 	}
-	return NewServer(coach.New(fakeAnalyzer{}), session.NewMemStore(), nil, nil, nil, f, nil)
+	return NewServer(coach.New(fakeAnalyzer{}), session.NewMemStore(), nil, nil, nil, f, nil, nil, nil, nil)
 }
 
 func TestAPI_Tracks(t *testing.T) {

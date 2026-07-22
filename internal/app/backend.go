@@ -20,8 +20,8 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/ingest"
 	"github.com/arush-sal/garage/backend/rtps/live"
 	"github.com/arush-sal/garage/backend/rtps/processing"
-	"github.com/arush-sal/garage/backend/rtps/reference"
 	"github.com/arush-sal/garage/backend/rtps/rkb"
+	"github.com/arush-sal/garage/backend/rtps/rkbref"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -90,6 +90,23 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	}
 	defer func() { _ = rkbStore.Close() }()
 
+	// slugFor maps a session id to its detected track slug from live enrichment (the TrackDetector
+	// writes it there, and it is RETAINED after the session ends — see EnrichSink.OnSessionEnd), so the
+	// RKB adapter can resolve real sectors for the live and just-finished session. Older sessions have
+	// no slug here and fall back to mini-sectors (surfaced, not hidden, via the serving path's reason).
+	slugFor := func(sessionID string) (string, bool) {
+		en := enrich.Get()
+		if en.SessionID == sessionID && en.Track != nil {
+			return *en.Track, true
+		}
+		return "", false
+	}
+	// rkbAdapter bridges the turn-labeled RKB (centerline + sector labels) to reference.KB's arc-length
+	// sector fractions. It backs BOTH the analyzer's KB (fixing live /v1/live sector geometry) and the
+	// lap-serving path (processing.SectorProvider) via one instance, so a slug logs its missing-geometry
+	// warning at most once across both consumers.
+	rkbAdapter := rkbref.New(rkbStore, slugFor, log)
+
 	// Fan out the session stream to the lap segmenter + trace recorder (Processing), a logging sink,
 	// the enrichment sink, and the live track detector. Persistence failures are surfaced via error
 	// hooks (the Sink/Observe API is error-less).
@@ -98,9 +115,10 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	recorder := processing.NewTraceRecorder(traceStore)
 	recorder.OnError = func(err error) { log.Error("trace persistence failed", zap.Error(err)) }
 
-	// Analysis -> Coaching (placeholder, D-B21). The KB is a stub for now, so Analysis falls back to
-	// mini-sectors (the pipeline works without the real RKB).
-	analyzer := analysis.Analyzer{Laps: lapStore, Traces: traceStore, KB: reference.NewStaticKB(), FallbackSectors: 3}
+	// Analysis -> Coaching (placeholder, D-B21). The KB is the live RKB adapter, so Analysis splits laps
+	// on the RKB's real sector geometry (centerline + labels); it still falls back to mini-sectors when a
+	// track is unresolved or lacks centerline/labels.
+	analyzer := analysis.Analyzer{Laps: lapStore, Traces: traceStore, KB: rkbAdapter, FallbackSectors: 3}
 	enrichSink := live.NewEnrichSink(analyzer, enrich, func(err error) { log.Error("enrichment failed", zap.Error(err)) })
 	defer enrichSink.Close()
 
@@ -126,7 +144,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	telemetryv1.RegisterTelemetryServer(gs, ingestSrv)
 
 	// Read side: Analysis -> Coaching -> HTTP API.
-	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, rkbStore, log)
+	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, rkbStore, log, lapStore, traceStore, rkbAdapter)
 	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	// Bind the ingest listener only once we're committed to serving (after storage init), so a failed

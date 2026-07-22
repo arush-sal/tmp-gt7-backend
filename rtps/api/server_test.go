@@ -24,7 +24,7 @@ func (fakeAnalyzer) AnalyzeSession(_ context.Context, id string, _ time.Duration
 func testServer() (*Server, *session.MemStore) {
 	store := session.NewMemStore()
 	_ = store.Save(&session.Record{ID: "s1", CarID: 1384, CarName: "Nissan Fairlady Z Version S (Z33)", Status: session.StatusFinished})
-	return NewServer(coach.New(fakeAnalyzer{}), store, live.New(), live.NewEnrichmentState(), nil, nil, nil), store
+	return NewServer(coach.New(fakeAnalyzer{}), store, live.New(), live.NewEnrichmentState(), nil, nil, nil, nil, nil, nil), store
 }
 
 func TestAPI_ListSessions(t *testing.T) {

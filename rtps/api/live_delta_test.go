@@ -60,7 +60,7 @@ func TestHandleLive_DeltaOverlay_Present(t *testing.T) {
 		t.Fatal("test setup: DeltaTracker.Delta() ok=false, want a mapped delta")
 	}
 
-	srv := NewServer(coach.Coach{}, nil, hub, live.NewEnrichmentState(), d, nil, nil)
+	srv := NewServer(coach.Coach{}, nil, hub, live.NewEnrichmentState(), d, nil, nil, nil, nil, nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/live", nil))
 	if rr.Code != http.StatusOK {
@@ -86,7 +86,7 @@ func TestHandleLive_DeltaOverlay_NilTracker(t *testing.T) {
 	hub := live.New()
 	hub.Publish(&telemetryv1.TelemetryFrame{RecvTimestamp: timestamppb.Now()})
 
-	srv := NewServer(coach.Coach{}, nil, hub, live.NewEnrichmentState(), nil, nil, nil)
+	srv := NewServer(coach.Coach{}, nil, hub, live.NewEnrichmentState(), nil, nil, nil, nil, nil, nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/live", nil))
 	if rr.Code != http.StatusOK {

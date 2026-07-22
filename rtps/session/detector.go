@@ -2,10 +2,10 @@ package session
 
 import (
 	"fmt"
-	"strconv"
 	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
+	"github.com/google/uuid"
 )
 
 // Default detector tuning, derived empirically from the 4-race capture (D-B4). Both windows are ~0.5s:
@@ -24,7 +24,7 @@ type Config struct {
 	Debounce                time.Duration // how long in_race must hold an edge before it takes effect
 	MinSession              time.Duration // a session shorter than this at close is dropped as noise
 	PackageIDResetThreshold uint32        // backward package_id jump beyond this = defensive reset
-	NewID                   func() string // session id generator; injected for deterministic tests
+	NewID                   func() string // session id generator; injected for deterministic tests (default: uuid.NewString)
 	// OnError, if set, is called when persisting a session fails. The Sink/Observe API is error-less,
 	// so this surfaces store failures (e.g. DB down) that would otherwise be silent. nil = ignore
 	// (fine for MemStore, which never errors).
@@ -51,7 +51,7 @@ type Detector struct {
 }
 
 // NewDetector returns a Detector wired to sink and store. Zero-value cfg fields are filled with the
-// empirical defaults; NewID defaults to a monotonic "sess-N" counter (unique per Detector instance).
+// empirical defaults; NewID defaults to uuid.NewString, giving globally-unique session ids.
 func NewDetector(sink Sink, store Store, cfg Config) *Detector {
 	if cfg.Debounce <= 0 {
 		cfg.Debounce = defaultDebounce
@@ -63,11 +63,9 @@ func NewDetector(sink Sink, store Store, cfg Config) *Detector {
 		cfg.PackageIDResetThreshold = defaultResetThreshold
 	}
 	if cfg.NewID == nil {
-		n := 0
-		cfg.NewID = func() string {
-			n++
-			return "sess-" + strconv.Itoa(n)
-		}
+		// uuid.NewString gives collision-free ids across process restarts. The old monotonic "sess-N"
+		// counter reset to sess-1 every restart, so the same id mapped to different races across runs.
+		cfg.NewID = uuid.NewString
 	}
 	return &Detector{sink: sink, store: store, cfg: cfg}
 }

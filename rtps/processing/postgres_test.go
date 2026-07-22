@@ -163,7 +163,7 @@ func TestPostgresLapStore_Golden(t *testing.T) {
 	lapStore := NewPostgresLapStore(pool)
 
 	seg := NewLapSegmenter(lapStore)
-	d := session.NewDetector(seg, sessStore, session.Config{})
+	d := session.NewDetector(seg, sessStore, session.Config{NewID: goldenNewID()})
 	for _, f := range loadGoldenFrames(t) {
 		d.Observe(f)
 	}
