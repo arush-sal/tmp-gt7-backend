@@ -114,6 +114,11 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 	segmenter.OnError = func(err error) { log.Error("lap persistence failed", zap.Error(err)) }
 	recorder := processing.NewTraceRecorder(traceStore)
 	recorder.OnError = func(err error) { log.Error("trace persistence failed", zap.Error(err)) }
+	// Capture the live delta-to-best onto each stored trace sample. Safe because ingest is publish-first
+	// (ingest.go: Publisher.Publish -> Detector.Observe -> recorder.OnFrame), so delta.Delta() already
+	// reflects the current frame when the recorder reads it. Inherits DeltaTracker's single-active-session
+	// assumption (fine for the MVP one-collector case).
+	recorder.DeltaFn = delta.Delta
 
 	// Analysis -> Coaching (placeholder, D-B21). The KB is the live RKB adapter, so Analysis splits laps
 	// on the RKB's real sector geometry (centerline + labels); it still falls back to mini-sectors when a

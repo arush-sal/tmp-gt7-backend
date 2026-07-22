@@ -26,6 +26,19 @@ type Sample struct {
 	Gear      int32
 	Yaw       float32
 	AngVelY   float32
+	// Fuel is current fuel as a percentage of tank capacity (0-100), 0 when capacity is unknown.
+	Fuel float32
+	// TyreTemp{FL,FR,RL,RR} are per-tyre surface temperatures (degrees C) for the four corners.
+	TyreTempFL float32
+	TyreTempFR float32
+	TyreTempRL float32
+	TyreTempRR float32
+	// Clutch is clutch pedal / engagement (0-1). Boost is turbo boost pressure.
+	Clutch float32
+	Boost  float32
+	// DeltaToBestNs is the live delta-to-best (nanoseconds) captured for this frame, or nil when no
+	// per-sample delta was available (no reference lap yet / DeltaFn unset).
+	DeltaToBestNs *int64
 }
 
 // TraceStore persists per-frame trace samples in batches (the recorder buffers per lap and bulk-loads,

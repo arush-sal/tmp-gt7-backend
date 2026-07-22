@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/coaching", s.handleSessionCoaching)
 	mux.HandleFunc("GET /v1/sessions/{id}/laps", s.handleSessionLaps)
 	mux.HandleFunc("GET /v1/sessions/{id}/laps/{n}/trace", s.handleLapTrace)
+	mux.HandleFunc("GET /v1/sessions/{id}/reference", s.handleSessionReference)
 	mux.HandleFunc("GET /v1/live", s.handleLive)
 	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
 	mux.HandleFunc("GET /{$}", s.handleLive)                  // "/" alias, exact match only

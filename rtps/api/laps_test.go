@@ -156,6 +156,59 @@ func TestAPI_SessionLaps_NoPBNoSectors(t *testing.T) {
 	}
 }
 
+// TestAPI_LapTrace_Channels: the extra channels (fuel/tyre temps/clutch/boost) round-trip into the
+// trace DTO, and delta_to_best_ns serializes as a number when set and JSON null when the Sample's
+// pointer is nil.
+func TestAPI_LapTrace_Channels(t *testing.T) {
+	srv, _, laps, traces := lapsServer(fakeSectors{})
+	base := time.Unix(4000, 0).UTC()
+	_ = laps.Save(&processing.Lap{SessionID: "s1", LapNumber: 1, StartTime: base, Duration: time.Second})
+
+	d := int64(777)
+	_ = traces.SaveBatch([]processing.Sample{
+		{SessionID: "s1", LapNumber: 1, Seq: 0, RecvTime: base,
+			Fuel: 42, TyreTempFL: 80, TyreTempFR: 81, TyreTempRL: 82, TyreTempRR: 83,
+			Clutch: 0.5, Boost: 1.5, DeltaToBestNs: &d},
+		{SessionID: "s1", LapNumber: 1, Seq: 1, RecvTime: base.Add(time.Second),
+			Fuel: 41, DeltaToBestNs: nil}, // nil delta -> JSON null
+	})
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions/s1/laps/1/trace", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	// Assert the raw JSON keys/null explicitly (DTO decode would hide the null-vs-0 distinction).
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rr.Body.String())
+	}
+	if len(raw) != 2 {
+		t.Fatalf("samples = %d, want 2", len(raw))
+	}
+	for _, key := range []string{"fuel", "tyre_temp_fl", "tyre_temp_fr", "tyre_temp_rl", "tyre_temp_rr", "clutch", "boost", "delta_to_best_ns"} {
+		if _, ok := raw[0][key]; !ok {
+			t.Errorf("missing key %q in trace DTO", key)
+		}
+	}
+
+	var got []traceSampleDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode DTO: %v", err)
+	}
+	s0 := got[0]
+	if s0.Fuel != 42 || s0.TyreTempFL != 80 || s0.TyreTempRR != 83 || s0.Clutch != 0.5 || s0.Boost != 1.5 {
+		t.Errorf("sample0 channels = %+v, want fuel42/fl80/rr83/clutch0.5/boost1.5", s0)
+	}
+	if s0.DeltaToBestNs == nil || *s0.DeltaToBestNs != 777 {
+		t.Errorf("sample0 delta_to_best_ns = %v, want 777", s0.DeltaToBestNs)
+	}
+	if string(raw[1]["delta_to_best_ns"]) != "null" {
+		t.Errorf("sample1 delta_to_best_ns = %s, want null", raw[1]["delta_to_best_ns"])
+	}
+}
+
 func TestAPI_LapTrace_BadN(t *testing.T) {
 	srv, _, _, _ := lapsServer(fakeSectors{})
 	rr := httptest.NewRecorder()

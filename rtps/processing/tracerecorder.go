@@ -26,6 +26,10 @@ type TraceRecorder struct {
 
 	// OnError, if set, surfaces a batch-persist failure (the Sink API is error-less). nil = ignore.
 	OnError func(error)
+
+	// DeltaFn, if set, supplies the live delta-to-best (ns, ok) captured for the current frame; wired
+	// to live.DeltaTracker.Delta by the app. nil = no per-sample delta.
+	DeltaFn func() (int64, bool)
 }
 
 type traceState struct {
@@ -36,6 +40,17 @@ type traceState struct {
 	prevX     float32
 	prevZ     float32
 	buf       []Sample
+}
+
+// fuelPct returns current fuel as a percentage of tank capacity, or 0 when capacity is unknown/zero
+// (some cars report no fuel data) to avoid a division by zero. Reimplemented here rather than imported
+// from rtps/live so processing carries no dependency on the live package (mirrors live.fuelPct).
+func fuelPct(f *telemetryv1.TelemetryFrame) float32 {
+	capacity := f.GetFuelCapacity()
+	if capacity <= 0 {
+		return 0
+	}
+	return f.GetCurrentFuel() / capacity * 100
 }
 
 // NewTraceRecorder returns a recorder writing to store.
@@ -88,23 +103,39 @@ func (r *TraceRecorder) appendLocked(sessionID string, f *telemetryv1.TelemetryF
 	}
 	st.prevX, st.prevZ, st.havePrev = x, z, true
 
-	st.buf = append(st.buf, Sample{
-		RecvTime:  f.GetRecvTimestamp().AsTime(),
-		SessionID: sessionID,
-		LapNumber: lap,
-		Seq:       f.GetSequence(),
-		Distance:  st.distance,
-		PosX:      x,
-		PosY:      f.GetPositionY(),
-		PosZ:      z,
-		Speed:     f.GetCarSpeed(),
-		Throttle:  f.GetThrottle(),
-		Brake:     f.GetBrake(),
-		RPM:       f.GetRpm(),
-		Gear:      int32(f.GetCurrentGear()),
-		Yaw:       f.GetRotationYaw(),
-		AngVelY:   f.GetAngularVelocityY(),
-	})
+	s := Sample{
+		RecvTime:   f.GetRecvTimestamp().AsTime(),
+		SessionID:  sessionID,
+		LapNumber:  lap,
+		Seq:        f.GetSequence(),
+		Distance:   st.distance,
+		PosX:       x,
+		PosY:       f.GetPositionY(),
+		PosZ:       z,
+		Speed:      f.GetCarSpeed(),
+		Throttle:   f.GetThrottle(),
+		Brake:      f.GetBrake(),
+		RPM:        f.GetRpm(),
+		Gear:       int32(f.GetCurrentGear()),
+		Yaw:        f.GetRotationYaw(),
+		AngVelY:    f.GetAngularVelocityY(),
+		Fuel:       fuelPct(f),
+		TyreTempFL: f.GetTyreTempFl(),
+		TyreTempFR: f.GetTyreTempFr(),
+		TyreTempRL: f.GetTyreTempRl(),
+		TyreTempRR: f.GetTyreTempRr(),
+		Clutch:     f.GetClutch(),
+		Boost:      f.GetBoost(),
+	}
+	// Ingest publishes to live BEFORE it Observe()s the segmenter (ingest.go: Publish then Observe), so
+	// DeltaFn (= live.DeltaTracker.Delta) already reflects THIS frame when OnFrame runs.
+	if r.DeltaFn != nil {
+		if ns, ok := r.DeltaFn(); ok {
+			v := ns
+			s.DeltaToBestNs = &v
+		}
+	}
+	st.buf = append(st.buf, s)
 	// A boundary detach empties the buffer, so the cap can't also trip in the same call — at most one
 	// batch is returned per frame.
 	if len(st.buf) >= r.batch {

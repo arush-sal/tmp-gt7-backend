@@ -89,6 +89,104 @@ func TestTraceRecorder_BatchFlush(t *testing.T) {
 	}
 }
 
+// mkChannelFrame builds a frame carrying the extra telemetry channels (fuel/tyre temps/clutch/boost)
+// P2-1 threads into the trace, on top of the position/lap/seq the recorder always needs.
+func mkChannelFrame() *telemetryv1.TelemetryFrame {
+	f := mkTraceFrame(0, 1, 1, 0, 0)
+	f.FuelCapacity = 100
+	f.CurrentFuel = 50 // -> 50%
+	f.TyreTempFl = 80
+	f.TyreTempFr = 81
+	f.TyreTempRl = 82
+	f.TyreTempRr = 83
+	f.Clutch = 0.5
+	f.Boost = 1.5
+	return f
+}
+
+// TestTraceRecorder_Channels: the extra channels (fuel percent, tyre temps, clutch, boost) are copied
+// from the frame into the persisted Sample.
+func TestTraceRecorder_Channels(t *testing.T) {
+	store := NewMemTraceStore()
+	r := NewTraceRecorder(store)
+	rec := &session.Record{ID: "s1"}
+	r.OnSessionStart(rec)
+	r.OnFrame("s1", mkChannelFrame())
+	r.OnSessionEnd(rec)
+
+	got, _ := store.ByLap("s1", 1)
+	if len(got) != 1 {
+		t.Fatalf("samples = %d, want 1", len(got))
+	}
+	s := got[0]
+	if s.Fuel != 50 {
+		t.Errorf("Fuel = %v, want 50 (50/100*100)", s.Fuel)
+	}
+	if s.TyreTempFL != 80 || s.TyreTempFR != 81 || s.TyreTempRL != 82 || s.TyreTempRR != 83 {
+		t.Errorf("tyre temps = %v/%v/%v/%v, want 80/81/82/83", s.TyreTempFL, s.TyreTempFR, s.TyreTempRL, s.TyreTempRR)
+	}
+	if s.Clutch != 0.5 || s.Boost != 1.5 {
+		t.Errorf("clutch/boost = %v/%v, want 0.5/1.5", s.Clutch, s.Boost)
+	}
+}
+
+// TestTraceRecorder_FuelZeroCapacity: capacity <= 0 yields 0% (no division by zero), mirroring
+// live.fuelPct.
+func TestTraceRecorder_FuelZeroCapacity(t *testing.T) {
+	store := NewMemTraceStore()
+	r := NewTraceRecorder(store)
+	rec := &session.Record{ID: "s1"}
+	r.OnSessionStart(rec)
+	f := mkTraceFrame(0, 1, 1, 0, 0)
+	f.CurrentFuel = 10 // capacity 0 -> guard returns 0
+	r.OnFrame("s1", f)
+	r.OnSessionEnd(rec)
+
+	got, _ := store.ByLap("s1", 1)
+	if len(got) != 1 || got[0].Fuel != 0 {
+		t.Errorf("Fuel = %v, want 0 (capacity<=0)", got)
+	}
+}
+
+// TestTraceRecorder_DeltaFn: DeltaFn supplies the per-sample live delta-to-best. ok=true stores a
+// pointer to the value; ok=false and a nil DeltaFn both leave DeltaToBestNs nil.
+func TestTraceRecorder_DeltaFn(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   func() (int64, bool)
+		want *int64
+	}{
+		{"ok", func() (int64, bool) { return 12345, true }, ptr(int64(12345))},
+		{"not-ok", func() (int64, bool) { return 999, false }, nil},
+		{"nil", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemTraceStore()
+			r := NewTraceRecorder(store)
+			r.DeltaFn = tc.fn
+			rec := &session.Record{ID: "s1"}
+			r.OnSessionStart(rec)
+			r.OnFrame("s1", mkTraceFrame(0, 1, 1, 0, 0))
+			r.OnSessionEnd(rec)
+
+			got, _ := store.ByLap("s1", 1)
+			if len(got) != 1 {
+				t.Fatalf("samples = %d, want 1", len(got))
+			}
+			d := got[0].DeltaToBestNs
+			switch {
+			case tc.want == nil && d != nil:
+				t.Errorf("DeltaToBestNs = %d, want nil", *d)
+			case tc.want != nil && (d == nil || *d != *tc.want):
+				t.Errorf("DeltaToBestNs = %v, want %d", d, *tc.want)
+			}
+		})
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
 // TestTraceRecorder_DropsStrayFrames: frames before OnSessionStart or after OnSessionEnd are dropped
 // (no state resurrection), mirroring the segmenter.
 func TestTraceRecorder_DropsStrayFrames(t *testing.T) {

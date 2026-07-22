@@ -13,6 +13,10 @@ type derived struct {
 	CurrentLapTimeNs int64   `json:"current_lap_time_ns"`
 	FuelPct          float32 `json:"fuel_pct"`
 	Source           string  `json:"source"`
+	// LapNumber is the current 1-based flying lap (GT7 current_lap), or null on the formation lap (0),
+	// the post-race cool-down lap (> total_laps), and when idle. The frontend keys completed-lap
+	// selection to /laps lap_number, which uses the same GT7 current_lap convention.
+	LapNumber *int32 `json:"lap_number"`
 }
 
 // livePayload is the wire shape. Frame + Enrichment are pre-marshaled RawMessage so the frame can use
@@ -53,11 +57,21 @@ func BuildPayload(frame *telemetryv1.TelemetryFrame, lapStart time.Time, ok bool
 		}
 		p.Status = "live"
 		p.Frame = fb
-		p.Derived = &derived{
+		d := &derived{
 			CurrentLapTimeNs: frame.GetRecvTimestamp().AsTime().Sub(lapStart).Nanoseconds(),
 			FuelPct:          fuelPct(frame),
 			Source:           frame.GetSource().String(),
 		}
+		// Expose a stable 1-based flying lap. Skip the formation lap (cl == 0) and the post-race
+		// cool-down lap (cl > tl). The tl <= 0 guard keeps practice/time-trial (no lap target) working:
+		// any flying lap counts. Copy to a local before taking its address to avoid aliasing.
+		cl := frame.GetCurrentLap()
+		tl := frame.GetTotalLaps()
+		if cl > 0 && (tl <= 0 || cl <= tl) {
+			n := cl
+			d.LapNumber = &n
+		}
+		p.Derived = d
 	}
 	return json.Marshal(p)
 }

@@ -45,6 +45,77 @@ func TestBuildPayload_Live(t *testing.T) {
 	}
 }
 
+func TestBuildPayload_LapNumber(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	cases := []struct {
+		name       string
+		currentLap int32
+		totalLaps  int32
+		wantNull   bool
+		wantVal    float64 // JSON numbers unmarshal to float64
+	}{
+		{"formation", 0, 5, true, 0},
+		{"flying", 3, 5, false, 3},
+		{"last_flying", 5, 5, false, 5},
+		{"cooldown", 6, 5, true, 0},
+		{"practice_no_target", 4, 0, false, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &telemetryv1.TelemetryFrame{
+				CurrentLap: tc.currentLap, TotalLaps: tc.totalLaps,
+				RecvTimestamp: timestamppb.New(base.Add(time.Second)),
+			}
+			b, err := BuildPayload(f, base, true, Enrichment{})
+			if err != nil {
+				t.Fatalf("BuildPayload: %v", err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("payload not valid JSON: %v", err)
+			}
+			var derived map[string]any
+			if err := json.Unmarshal(got["derived"], &derived); err != nil {
+				t.Fatalf("derived not valid JSON: %v", err)
+			}
+			v, present := derived["lap_number"]
+			if !present {
+				t.Fatalf("derived missing lap_number key: %v", derived)
+			}
+			if tc.wantNull {
+				if v != nil {
+					t.Errorf("lap_number = %v, want null", v)
+				}
+				return
+			}
+			n, ok := v.(float64)
+			if !ok {
+				t.Fatalf("lap_number = %v (%T), want number", v, v)
+			}
+			if n != tc.wantVal {
+				t.Errorf("lap_number = %v, want %v", n, tc.wantVal)
+			}
+		})
+	}
+}
+
+func TestBuildPayload_LapNumber_Idle(t *testing.T) {
+	b, err := BuildPayload(nil, time.Time{}, false, Enrichment{})
+	if err != nil {
+		t.Fatalf("BuildPayload idle: %v", err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("payload not valid JSON: %v", err)
+	}
+	// Idle has no Derived block: derived serializes as null, so lap_number is simply absent. No panic.
+	var derived map[string]any
+	_ = json.Unmarshal(got["derived"], &derived)
+	if derived["lap_number"] != nil {
+		t.Errorf("idle lap_number = %v, want absent/null", derived["lap_number"])
+	}
+}
+
 func TestBuildPayload_Idle(t *testing.T) {
 	b, err := BuildPayload(nil, time.Time{}, false, Enrichment{})
 	if err != nil {

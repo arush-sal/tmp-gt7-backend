@@ -42,16 +42,25 @@ type lapDTO struct {
 // traceSampleDTO is one kept trace sample. TNs is nanoseconds since the lap's t0 (StartTime, or the
 // first sample's RecvTime when the lap isn't found).
 type traceSampleDTO struct {
-	Seq      uint64  `json:"seq"`
-	TNs      int64   `json:"t_ns"`
-	Distance float64 `json:"distance"`
-	PosX     float32 `json:"pos_x"`
-	PosZ     float32 `json:"pos_z"`
-	Throttle float32 `json:"throttle"`
-	Brake    float32 `json:"brake"`
-	Speed    float32 `json:"speed"`
-	Gear     int32   `json:"gear"`
-	RPM      float32 `json:"rpm"`
+	Seq        uint64  `json:"seq"`
+	TNs        int64   `json:"t_ns"`
+	Distance   float64 `json:"distance"`
+	PosX       float32 `json:"pos_x"`
+	PosZ       float32 `json:"pos_z"`
+	Throttle   float32 `json:"throttle"`
+	Brake      float32 `json:"brake"`
+	Speed      float32 `json:"speed"`
+	Gear       int32   `json:"gear"`
+	RPM        float32 `json:"rpm"`
+	Fuel       float32 `json:"fuel"`
+	TyreTempFL float32 `json:"tyre_temp_fl"`
+	TyreTempFR float32 `json:"tyre_temp_fr"`
+	TyreTempRL float32 `json:"tyre_temp_rl"`
+	TyreTempRR float32 `json:"tyre_temp_rr"`
+	Clutch     float32 `json:"clutch"`
+	Boost      float32 `json:"boost"`
+	// DeltaToBestNs is a pointer so it serializes JSON null (not 0) when the sample carried no delta.
+	DeltaToBestNs *int64 `json:"delta_to_best_ns"`
 }
 
 // handleSessionLaps: GET /v1/sessions/{id}/laps -> every lap with its sector splits + deltas. Unlike
@@ -163,16 +172,24 @@ func (s *Server) handleLapTrace(w http.ResponseWriter, r *http.Request) {
 	out := make([]traceSampleDTO, len(kept))
 	for i, sm := range kept {
 		out[i] = traceSampleDTO{
-			Seq:      sm.Seq,
-			TNs:      sm.RecvTime.Sub(t0).Nanoseconds(),
-			Distance: sm.Distance,
-			PosX:     sm.PosX,
-			PosZ:     sm.PosZ,
-			Throttle: sm.Throttle,
-			Brake:    sm.Brake,
-			Speed:    sm.Speed,
-			Gear:     sm.Gear,
-			RPM:      sm.RPM,
+			Seq:           sm.Seq,
+			TNs:           sm.RecvTime.Sub(t0).Nanoseconds(),
+			Distance:      sm.Distance,
+			PosX:          sm.PosX,
+			PosZ:          sm.PosZ,
+			Throttle:      sm.Throttle,
+			Brake:         sm.Brake,
+			Speed:         sm.Speed,
+			Gear:          sm.Gear,
+			RPM:           sm.RPM,
+			Fuel:          sm.Fuel,
+			TyreTempFL:    sm.TyreTempFL,
+			TyreTempFR:    sm.TyreTempFR,
+			TyreTempRL:    sm.TyreTempRL,
+			TyreTempRR:    sm.TyreTempRR,
+			Clutch:        sm.Clutch,
+			Boost:         sm.Boost,
+			DeltaToBestNs: sm.DeltaToBestNs,
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
