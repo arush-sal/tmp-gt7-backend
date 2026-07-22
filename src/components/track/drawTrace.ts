@@ -100,10 +100,11 @@ export function drawTrace(ctx: CanvasRenderingContext2D, opts: {
   select?: "all" | "current" | number;
 }) {
   const select = opts.select ?? "all";
-  if (select === "all") {
+  // "all" and "current" both plot the full driven line -- every completed lap faint plus the
+  // in-progress lap at full strength. (They differ only in the right panel / header, which follow
+  // live either way.) A numeric selection isolates that one lap for analysis.
+  if (select === "all" || select === "current") {
     for (const lap of opts.trace.completed) drawLap(ctx, lap, opts.view, opts.theme, 0.35);
-    drawLap(ctx, opts.trace.current, opts.view, opts.theme, 1);
-  } else if (select === "current") {
     drawLap(ctx, opts.trace.current, opts.view, opts.theme, 1);
   } else {
     const lap = opts.trace.completed[select];

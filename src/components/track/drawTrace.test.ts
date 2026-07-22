@@ -141,7 +141,7 @@ test("brake-zone sawtooth ribbon does not appear on an all-throttle lap", () => 
   expect(sawtoothStrokes.length).toBe(0);
 });
 
-test("select=\"current\" draws only the current lap, not completed laps", () => {
+test("select=\"current\" draws the full driven line (completed + current), same as \"all\"", () => {
   const lap = [
     { posX: 0, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
     { posX: 10, posZ: 0, throttle: 100, brake: 0, surface: "TTTT" },
@@ -164,7 +164,8 @@ test("select=\"current\" draws only the current lap, not completed laps", () => 
 
   const allStrokes = countStrokes("all");
   const currentStrokes = countStrokes("current");
-  expect(currentStrokes).toBeLessThan(allStrokes);
+  // "current" now plots the full driven line (completed laps + current), identical to "all".
+  expect(currentStrokes).toBe(allStrokes);
   expect(currentStrokes).toBeGreaterThan(0);
 });
 

@@ -145,9 +145,16 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     ? history.frameAt(selectedLap, frameIndex)
     : null;
   const displayView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
-  const shownSectors = typeof selectedLap === "number"
-    ? lapSectors(history.trace().completed[selectedLap] ?? [], geometry)
-    : sectorTimes;
+  // lapSectors replays the whole lap through a fresh SectorTimer (per-point centerline
+  // projection) -- expensive. Memoize on the completed-lap ref + geometry ONLY. It must NOT
+  // depend on the live `sectorTimes` (which changes every frame): selecting a completed lap while
+  // the feed is still live would otherwise re-run lapSectors at 60Hz and peg the CPU. Also keeps
+  // arrow-key scrubbing cheap (scrubIndex doesn't affect it).
+  const lapSecs = useMemo(
+    () => (analysisLap ? lapSectors(analysisLap, geometry) : null),
+    [analysisLap, geometry],
+  );
+  const shownSectors = typeof selectedLap === "number" ? lapSecs : sectorTimes;
   useEffect(() => {
     if (!analysisLap) return;
     const onKeyDown = (e: KeyboardEvent) => {

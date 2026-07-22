@@ -7,6 +7,22 @@ import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import { validateLive } from "../lib/validateLive";
 import { liveSample } from "../mock/liveSample";
 
+// Wrap lapSectors in a spy so a perf regression test can assert it is NOT re-run on every live
+// frame while a completed lap is selected (it must be memoized on the lap data, not on the
+// per-frame live sectorTimes). Keeps the real implementation.
+vi.mock("../lib/lapSectors", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/lapSectors")>();
+  return { ...actual, lapSectors: vi.fn(actual.lapSectors) };
+});
+import { lapSectors as lapSectorsSpy } from "../lib/lapSectors";
+
+// Force `sectorTimes` to be a FRESH reference on every render, mirroring the live case (real
+// geometry recomputes it each frame). This is what the perf regression test needs so a memo that
+// (wrongly) depends on sectorTimes would recompute every frame; the correct memo ignores it.
+vi.mock("../hooks/useSectorTimes", () => ({
+  useSectorTimes: () => [{ sector: "S1", timeMs: 1000, deltaMs: null }],
+}));
+
 // jsdom has no <canvas> 2D context, so react-konva's real DOM/canvas plumbing can't run
 // here. Stub the handful of primitives TrackTraceCanvas uses with inert passthroughs —
 // Dashboard only needs the tree to mount without crashing, not to inspect Konva output.
@@ -375,5 +391,32 @@ describe("Dashboard (live)", () => {
     // with no matching <option> would otherwise linger.
     act(() => push({ lap: 1, t: 100_000_000, fuel: 100, session: "sess-j3-race2" }));
     expect(select.value).toBe("current");
+  });
+
+  // Perf regression: selecting a completed lap while the feed is STILL LIVE must not re-run the
+  // expensive lapSectors replay on every incoming frame. It was memoized with `sectorTimes` in the
+  // deps -- and sectorTimes changes every frame while live -- so mid-race lap selection re-ran
+  // lapSectors at ~60Hz, pegging the CPU, freezing the dropdown, and starving the canvas. It must
+  // be memoized on the (immutable) completed-lap data + geometry only.
+  it("does NOT re-run lapSectors on every live frame while a completed lap is selected", () => {
+    const { source, push } = j3Source();
+    render(<Dashboard source={source} />);
+    // Complete >=2 laps while staying live (current_lap <= total_laps=90 throughout).
+    act(() => push({ lap: 1, t: 1_000_000_000, fuel: 99 })); // primer (store setLive not committed yet)
+    act(() => push({ lap: 2, t: 2_000_000_000, fuel: 95 }));
+    act(() => push({ lap: 3, t: 3_000_000_000, fuel: 90 }));
+    act(() => push({ lap: 4, t: 4_000_000_000, fuel: 85 })); // rollovers -> >=2 completed laps
+
+    const select = screen.getByLabelText<HTMLSelectElement>("Lap");
+    // Pick the first completed lap (index 0) -> analysis mode, feed still live.
+    fireEvent.change(select, { target: { value: "0" } });
+    const spy = lapSectorsSpy as unknown as { mock: { calls: unknown[] } };
+    const baseline = spy.mock.calls.length;
+    expect(baseline).toBeGreaterThanOrEqual(1); // the selection itself computes it once
+
+    // Feed 20 more LIVE frames of the same lap (advancing lap time) -> sectorTimes changes each
+    // frame. Memoized correctly, lapSectors is NOT called again; with the bug it fired ~20x.
+    for (let i = 0; i < 20; i++) act(() => push({ lap: 4, t: (5 + i) * 1_000_000_000, fuel: 84 - i }));
+    expect(spy.mock.calls.length - baseline).toBeLessThanOrEqual(1);
   });
 });
