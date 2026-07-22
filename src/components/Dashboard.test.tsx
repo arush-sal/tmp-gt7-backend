@@ -289,11 +289,10 @@ describe("Dashboard (live)", () => {
     expect(screen.getByLabelText<HTMLSelectElement>("Track").value).toBe("test-track");
   });
 
-  // Task J3: the lap dropdown drops "Current lap", defaults to the latest completed lap
-  // (auto-follow), auto-follow only switches to a specific lap once live ends (stays "all"
-  // mid-race so the header/right-panel keep showing the live feed, not a frozen lap-end
-  // snapshot), and selecting an earlier lap drives the right panel from that lap's stored
-  // data (frameAt) rather than the live snapshot.
+  // Lap dropdown: keeps a "Current lap" entry and defaults to it while live (header/right-panel
+  // follow the live feed, not a frozen lap-end snapshot); auto-follow only switches to a specific
+  // completed lap once live ends; selecting an earlier lap drives the right panel from that lap's
+  // stored data (frameAt) rather than the live snapshot.
   function j3Source() {
     const subscribers: LiveHandlers[] = [];
     const source: LiveSource = (_url, h) => { subscribers.push(h); return () => {}; };
@@ -311,7 +310,7 @@ describe("Dashboard (live)", () => {
     return { source, push };
   }
 
-  it("drops 'Current lap'; stays 'All laps' while live even once laps complete", () => {
+  it("keeps 'Current lap'; defaults to 'current' while live even once laps complete", () => {
     const { source, push } = j3Source();
     render(<Dashboard source={source} />);
 
@@ -326,10 +325,10 @@ describe("Dashboard (live)", () => {
 
     const select = screen.getByLabelText<HTMLSelectElement>("Lap");
     const optionLabels = Array.from(select.options).map(o => o.textContent);
-    expect(optionLabels).not.toContain("Current lap");
-    expect(optionLabels).toEqual(["All laps", "Lap 2", "Lap 1"]);
-    // Auto-follow does not jump to a completed lap while still live.
-    expect(select.value).toBe("all");
+    expect(optionLabels).toContain("Current lap");
+    expect(optionLabels).toEqual(["All laps", "Current lap", "Lap 2", "Lap 1"]);
+    // Auto-follow stays on the live "current" view while still live; no jump to a completed lap.
+    expect(select.value).toBe("current");
   });
 
   it("auto-selects the latest completed lap once live ends; an earlier lap shows its stored data at lap-end", () => {
@@ -357,7 +356,7 @@ describe("Dashboard (live)", () => {
     expect(screen.getByText("91%")).toBeTruthy();
   });
 
-  it("resets a stale numeric selection back to 'All laps' on a new race", () => {
+  it("resets a stale numeric selection back to 'Current lap' on a new race", () => {
     const { source, push } = j3Source();
     render(<Dashboard source={source} />);
 
@@ -371,10 +370,10 @@ describe("Dashboard (live)", () => {
     expect(select.value).toBe("1");
 
     // New race (different session_id, lap 1): newRaceSeq bumps -> selectedLap must reset to
-    // "all" immediately, even though the fresh completedLapCount (0) alone wouldn't otherwise
-    // re-trigger auto-follow's "all" branch until a lap completes — a stale numeric value
+    // "current" immediately, even though the fresh completedLapCount (0) alone wouldn't otherwise
+    // re-trigger auto-follow's "current" branch until a lap completes — a stale numeric value
     // with no matching <option> would otherwise linger.
     act(() => push({ lap: 1, t: 100_000_000, fuel: 100, session: "sess-j3-race2" }));
-    expect(select.value).toBe("all");
+    expect(select.value).toBe("current");
   });
 });

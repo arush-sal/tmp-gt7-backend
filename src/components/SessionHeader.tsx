@@ -52,7 +52,7 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
         ) : (
           <>
             <div className="header-cell">
-              <span className="label">Live delta</span>
+              <span className="label">Lap delta</span>
               <span className={`mono header-val ${deltaClass}`}>{view ? view.delta : ph}</span>
             </div>
             <div className="header-cell">

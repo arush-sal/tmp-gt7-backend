@@ -195,7 +195,10 @@ export function createHistoryStore(maxSamplesPerLap = DEFAULT_MAX_SAMPLES_PER_LA
       });
     },
     size() { return buf.length; },
-    completedLapCount() { return completed.length; },
+    completedLapCount() {
+      if (totalLaps != null && completed.length > totalLaps) { return completed.length - 1; }
+      return completed.length;
+    },
     lastLapFuelUsedPct() {
       if (completed.length === 0) return null;
       const last = completed[completed.length - 1];

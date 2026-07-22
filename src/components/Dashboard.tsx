@@ -6,6 +6,7 @@ import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
+import { gateAfterRace } from "../lib/gateAfterRace";
 import { frameToDisplay } from "../lib/liveView";
 import { lapSectors } from "../lib/lapSectors";
 import { toDrawGeometry } from "../lib/rkbGeometry";
@@ -25,11 +26,14 @@ import RightPanel from "./RightPanel";
 export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange }: {
   source?: LiveSource; theme?: "light" | "dark"; onLiveChange?: (live: boolean) => void;
 }) {
-  const { snapshot, error, view, live, newRaceSeq } = useSession(undefined, source);
+  // Gate the stream once, share it with both subscriptions: after a race finishes, one latch
+  // stops cooldown frames reaching history, sectors, view, and track alike (see gateAfterRace).
+  const gated = useMemo(() => gateAfterRace(source), [source]);
+  const { snapshot, error, view, live, newRaceSeq } = useSession(undefined, gated);
   // Independent live subscription (per the plan: fan-out to a single subscription is a
-  // later pass) — feeds the graph buffer only, reuses the same injectable `source` as
+  // later pass) — feeds the graph buffer only, reuses the same gated `source` as
   // useSession so tests (and a future single-subscription refactor) see one seam.
-  const history = useHistory(source);
+  const history = useHistory(gated);
   // Single writer into the history store: gate append by `live` (paused/idle/race-over
   // stops growth) and wipe on a genuine new race. The sector timer resets itself on
   // session_id change via its own sessionKey, so it needs no explicit reset here.
@@ -113,19 +117,19 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     return out.slice(0, 3);
   }, [trackList, sel.slug, snapshot?.enrichment?.track]);
 
-  // Lap selection: which lap's trace is drawn on the canvas. Auto-follows: "all" (live view)
+  // Lap selection: which lap's trace is drawn on the canvas. Auto-follows: "current" (live view)
   // while live, the latest completed lap once live ends -- until the user picks explicitly.
-  const [selectedLap, setSelectedLap] = useState<"all" | number>("all");
+  const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("current");
   const [userPickedLap, setUserPickedLap] = useState(false);
   const completedLapCount = history.completedLapCount();
   useEffect(() => {
     if (userPickedLap) return;
-    setSelectedLap(live ? "all" : completedLapCount > 0 ? completedLapCount - 1 : "all");
+    setSelectedLap(live ? "current" : completedLapCount > 0 ? completedLapCount - 1 : "current");
   }, [live, completedLapCount, userPickedLap]);
   // New race: drop back to auto-follow AND clear a stale numeric selectedLap (completedLapCount
   // resets to 0 too, but not necessarily in the same tick -- the <select> must never hold a
   // value with no matching option).
-  useEffect(() => { if (newRaceSeq > 0) { setUserPickedLap(false); setSelectedLap("all"); } }, [newRaceSeq]);
+  useEffect(() => { if (newRaceSeq > 0) { setUserPickedLap(false); setSelectedLap("current"); } }, [newRaceSeq]);
 
   // Analysis mode: a completed lap is selected -> a scrub cursor can be placed/stepped
   // along that lap's trace, and the telemetry graphs switch to showing that lap's data.
@@ -210,11 +214,12 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
             value={String(selectedLap)}
             onChange={e => {
               const v = e.target.value;
-              setSelectedLap(v === "all" ? "all" : Number(v));
+              setSelectedLap(v === "all" || v === "current" ? v : Number(v));
               setUserPickedLap(true);
             }}
           >
             <option value="all">All laps</option>
+            <option value="current">Current lap</option>
             {Array.from({ length: completedLapCount }, (_, i) => completedLapCount - 1 - i).map(i => (
               <option key={i} value={i}>Lap {i + 1}</option>
             ))}

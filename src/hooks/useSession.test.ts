@@ -166,6 +166,37 @@ describe("useSession", () => {
     expect(result.current.newRaceSeq).toBe(1);
   });
 
+  it("fresh client + first frame non-live (held finished race): blanks race context, keeps fuel", () => {
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(overflowSnap())); // 21/20 -> deriveLive false
+    expect(result.current.live).toBe(false);
+    const v = result.current.view!;
+    expect(v.lap).toBe("—");
+    expect(v.position).toBe("—");
+    expect(v.bestLap).toBe("—");
+    expect(v.delta).toBe("—");
+    expect(v.tyreTemps.fl.value).toBe("—");
+    expect(v.fuelPct).toBe("24%"); // fuel kept
+  });
+
+  it("blank fresh state does not poison sticky: a following live frame shows real data", () => {
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(overflowSnap()));
+    expect(result.current.view!.lap).toBe("—");
+    act(() => captured.handlers!.onSnapshot(snap("live")));
+    expect(result.current.view!.lap).toBe("8/20");
+    expect(result.current.live).toBe(true);
+  });
+
+  it("fresh client + first frame live in-race is NOT blanked", () => {
+    const { source, captured } = makeFakeSource();
+    const { result } = renderHook(() => useSession("u", source));
+    act(() => captured.handlers!.onSnapshot(snap("live")));
+    expect(result.current.view!.lap).toBe("8/20");
+  });
+
   it("refresh sim: seeded lastLap makes a same-id lap-reset a new race (rtps restart reused id)", () => {
     saveVersioned("gt7:race", { raceKey: "a", lastLap: 8, sticky: null });
 

@@ -95,9 +95,12 @@ describe("historyStore — completed-lap retention", () => {
 
   it("bounds retention to the last 20 completed laps", () => {
     const s = createHistoryStore();
+    // total high enough that completedLapCount's overflow cap (never report more than total_laps)
+    // does not trip -- this test exercises the array retention bound (MAX_COMPLETED_LAPS), not the
+    // post-race display cap.
     for (let lap = 1; lap <= 25; lap++) {
-      s.push(snap({ t: 1, lap, speed: lap }));
-      s.push(snap({ t: 2, lap, speed: lap }));
+      s.push(snap({ t: 1, lap, total: 30, speed: lap }));
+      s.push(snap({ t: 2, lap, total: 30, speed: lap }));
     }
     // 24 laps completed (lap 25 is current). Retention capped at 20.
     expect(s.completedLapCount()).toBe(20);
