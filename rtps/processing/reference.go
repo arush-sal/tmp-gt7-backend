@@ -10,27 +10,31 @@ type ReferenceSeries struct {
 	LapCount  int                  `json:"lap_count"` // number of laps pooled
 }
 
-// refChannels maps a channel name to the continuous Sample field it reads (cast to float64). Order is
-// not significant here — the resolved channel names are sorted so output is deterministic.
+// refChannels maps a channel name to the Sample field it reads (cast to float64). This is the driver-
+// input/engine subset the median line overlays; the full per-sample trace (fuel, tyre temps, clutch)
+// lives on /reference (the predicted lap) instead. Order is not significant here — the resolved channel
+// names are sorted so output is deterministic. gear is DISCRETE (see discreteChannels): its median must
+// never average to a fractional gear.
 var refChannels = map[string]func(NormSample) float64{
-	"speed":        func(ns NormSample) float64 { return float64(ns.Speed) },
-	"throttle":     func(ns NormSample) float64 { return float64(ns.Throttle) },
-	"brake":        func(ns NormSample) float64 { return float64(ns.Brake) },
-	"rpm":          func(ns NormSample) float64 { return float64(ns.RPM) },
-	"fuel":         func(ns NormSample) float64 { return float64(ns.Fuel) },
-	"tyre_temp_fl": func(ns NormSample) float64 { return float64(ns.TyreTempFL) },
-	"tyre_temp_fr": func(ns NormSample) float64 { return float64(ns.TyreTempFR) },
-	"tyre_temp_rl": func(ns NormSample) float64 { return float64(ns.TyreTempRL) },
-	"tyre_temp_rr": func(ns NormSample) float64 { return float64(ns.TyreTempRR) },
-	"clutch":       func(ns NormSample) float64 { return float64(ns.Clutch) },
-	"boost":        func(ns NormSample) float64 { return float64(ns.Boost) },
+	"speed":    func(ns NormSample) float64 { return float64(ns.Speed) },
+	"throttle": func(ns NormSample) float64 { return float64(ns.Throttle) },
+	"brake":    func(ns NormSample) float64 { return float64(ns.Brake) },
+	"rpm":      func(ns NormSample) float64 { return float64(ns.RPM) },
+	"boost":    func(ns NormSample) float64 { return float64(ns.Boost) },
+	"gear":     func(ns NormSample) float64 { return float64(ns.Gear) },
 }
+
+// discreteChannels marks channels whose median must be an actually-observed value, not an interpolated
+// average: gear 3 and gear 4 have no meaningful "3.5". For these the lower-middle element is taken
+// instead of averaging the two middles (see medianDiscrete).
+var discreteChannels = map[string]bool{"gear": true}
 
 // MedianReference builds ReferenceSeries for the requested channels. Only FULL RACING laps pool into
 // the median (Timed && Complete && !Fallback && SectorAnalyzable) so a formation/partial/spliced lap
 // can't skew it (same gate as SessionLapSectors' best pool). Each pooled lap is Normalized and sampled
 // at `points` evenly-spaced fractions via NormalizedLap.At; the median across laps is taken per grid
-// point per channel (even count -> average of the two middle values). Empty pool -> zero LapCount and
+// point per channel (continuous channels: even count -> average of the two middle values; discrete
+// channels like gear -> the lower-middle observed value, never an average). Empty pool -> zero LapCount and
 // per-channel slices of zeros (non-nil, length points). Unknown channel names are ignored; when none
 // are known, all continuous channels are used. points is clamped to [2, 5000].
 //
@@ -87,8 +91,13 @@ func MedianReference(traces TraceStore, sessionID string, laps []Lap, channels [
 	series := make(map[string][]float64, len(names))
 	for _, name := range names {
 		vals := make([]float64, points)
+		discrete := discreteChannels[name]
 		for gi := range vals {
-			vals[gi] = median(collected[name][gi]) // no contributor at this grid point -> 0
+			if discrete {
+				vals[gi] = medianDiscrete(collected[name][gi]) // no contributor -> 0
+			} else {
+				vals[gi] = median(collected[name][gi]) // no contributor at this grid point -> 0
+			}
 		}
 		series[name] = vals
 	}
@@ -129,4 +138,17 @@ func median(vals []float64) float64 {
 		return s[n/2]
 	}
 	return (s[n/2-1] + s[n/2]) / 2
+}
+
+// medianDiscrete returns the lower-middle element (index (n-1)/2) of a sorted copy of vals — always a
+// real observed value, never an average. Used for discrete channels (gear) where averaging the two
+// middles would fabricate a value (gear 3.5) that never occurred. Empty slice -> 0.
+func medianDiscrete(vals []float64) float64 {
+	n := len(vals)
+	if n == 0 {
+		return 0
+	}
+	s := append([]float64(nil), vals...)
+	sort.Float64s(s)
+	return s[(n-1)/2]
 }

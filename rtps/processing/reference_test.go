@@ -165,15 +165,52 @@ func TestMedianReference_UnknownChannelFallsBackToAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MedianReference: %v", err)
 	}
-	// All 11 continuous channels present.
-	if len(res.Series) != 11 {
-		t.Fatalf("Series has %d keys, want 11 (fallback to all)", len(res.Series))
+	// All 6 median channels present (trimmed set: driver inputs + rpm/boost/gear).
+	if len(res.Series) != 6 {
+		t.Fatalf("Series has %d keys, want 6 (fallback to all)", len(res.Series))
 	}
-	for _, want := range []string{"speed", "throttle", "brake", "rpm", "fuel", "tyre_temp_fl", "tyre_temp_fr", "tyre_temp_rl", "tyre_temp_rr", "clutch", "boost"} {
+	for _, want := range []string{"speed", "throttle", "brake", "rpm", "boost", "gear"} {
 		if _, ok := res.Series[want]; !ok {
 			t.Errorf("Series missing %q", want)
 		}
 	}
+}
+
+// gearTrace builds a lap's trace at the 3-sector mock boundaries with a constant gear, timed so the
+// span equals dur (SectorAnalyzable admits it). Speed is left 0 — only gear matters here.
+func gearTrace(session string, lap int32, base time.Time, dur time.Duration, gear int32) []Sample {
+	fracs := []float64{0, 0.4, 0.75, 1.0}
+	dists := []float64{0, 40, 75, 100}
+	out := make([]Sample, len(fracs))
+	for i := range fracs {
+		out[i] = Sample{
+			SessionID: session,
+			LapNumber: lap,
+			Distance:  dists[i],
+			RecvTime:  base.Add(time.Duration(fracs[i] * float64(dur))),
+			Gear:      gear,
+		}
+	}
+	return out
+}
+
+// TestMedianReference_GearDiscrete: an EVEN lap count with gears 3 and 4 must yield the lower-middle
+// observed gear (3), NOT the average (3.5) — gear is discrete, a fractional gear never occurred.
+func TestMedianReference_GearDiscrete(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	traces := NewMemTraceStore()
+	_ = traces.SaveBatch(gearTrace("s", 1, base, 90*time.Second, 3))
+	_ = traces.SaveBatch(gearTrace("s", 2, base, 90*time.Second, 4))
+
+	laps := []Lap{racingLap("s", 1, 90*time.Second), racingLap("s", 2, 90*time.Second)}
+	res, err := MedianReference(traces, "s", laps, []string{"gear"}, 5)
+	if err != nil {
+		t.Fatalf("MedianReference: %v", err)
+	}
+	if res.LapCount != 2 {
+		t.Fatalf("LapCount = %d, want 2", res.LapCount)
+	}
+	allEqual(t, "gear", res.Series["gear"], 3)
 }
 
 // TestMedianReference_EmptyPool: no racing laps -> zero LapCount, non-nil per-channel slices, grid intact.
