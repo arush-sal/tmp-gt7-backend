@@ -4,22 +4,24 @@ import type { LapDTO } from "../contract/session";
 
 type LapsState = { laps: LapDTO[]; loading: boolean; error: boolean };
 
-// Fetches the session's lap metadata list (lap times + sector splits + reliability) once per
-// session. Cheap + authoritative — the dropdown/auto-follow stay live-store-driven; this drives the
-// sector card + the delta figures for a selected lap. Refetches when the session UUID changes.
-export function useLaps(sessionId: string | null): LapsState {
+// Fetches the session's lap metadata list (lap times + sector splits + reliability). This is the
+// AUTHORITATIVE lap list — it drives the dropdown + auto-follow (so a page refresh restores every
+// completed lap from the backend, not the live in-memory counter which resets on reload) as well as
+// the sector card. Refetches when the session UUID changes OR `revalidate` changes — pass the live
+// completed-lap count so a freshly-finished lap is picked up mid-race.
+export function useLaps(sessionId: string | null, revalidate = 0): LapsState {
   const [state, setState] = useState<LapsState>({ laps: [], loading: false, error: false });
 
   useEffect(() => {
     if (!sessionId) { setState({ laps: [], loading: false, error: false }); return; }
     const ctrl = new AbortController();
     let active = true;
-    setState({ laps: [], loading: true, error: false });
+    setState(prev => ({ laps: prev.laps, loading: true, error: false })); // keep prior laps while revalidating
     fetchLaps(sessionId, ctrl.signal)
       .then(laps => { if (active) setState({ laps, loading: false, error: false }); })
-      .catch(e => { if (e.name === "AbortError") return; if (active) setState({ laps: [], loading: false, error: true }); });
+      .catch(e => { if (e.name === "AbortError") return; if (active) setState(prev => ({ laps: prev.laps, loading: false, error: true })); });
     return () => { active = false; ctrl.abort(); };
-  }, [sessionId]);
+  }, [sessionId, revalidate]);
 
   return state;
 }

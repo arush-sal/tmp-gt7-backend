@@ -128,18 +128,29 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("current");
   const [userPickedLap, setUserPickedLap] = useState(false);
   const completedLapCount = history.completedLapCount();
+  // Authoritative lap list from the backend (survives a page refresh — the live counter above
+  // resets to 0 on reload). Revalidated whenever a lap finishes live (completedLapCount trigger),
+  // and unioned with the live counter so a just-finished lap appears instantly.
+  const laps = useLaps(sessionId, completedLapCount);
+  // Only real racing laps are selectable: the backend also serves the formation lap (0) and the
+  // cooldown lap (> total_laps) -- exclude both so the dropdown never shows "Lap 0" or a "Lap 11"
+  // for a 10-lap race. total_laps <= 0 (time trial) => no upper cap.
+  const totalLaps = snapshot?.frame?.total_laps ?? 0;
+  const backendMaxLap = laps.laps.reduce(
+    (m, l) => (l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.lap_number > m ? l.lap_number : m),
+    0);
+  const latestLap = Math.max(backendMaxLap, completedLapCount);
   useEffect(() => {
     if (userPickedLap) return;
-    setSelectedLap(live ? "current" : completedLapCount > 0 ? completedLapCount : "current");
-  }, [live, completedLapCount, userPickedLap]);
+    setSelectedLap(live ? "current" : latestLap > 0 ? latestLap : "current");
+  }, [live, latestLap, userPickedLap]);
   // New race: drop back to auto-follow AND clear a stale numeric selectedLap (completedLapCount
   // resets to 0 too, but not necessarily in the same tick -- the <select> must never hold a
   // value with no matching option).
   useEffect(() => { if (newRaceSeq > 0) { setUserPickedLap(false); setSelectedLap("current"); } }, [newRaceSeq]);
 
-  // A completed lap's per-lap metadata (sector splits) + full trace come from the backend,
-  // cache-first (the live lapCache serves in-session laps with no fetch).
-  const laps = useLaps(sessionId);
+  // A completed lap's full trace comes from the backend, cache-first (the live lapCache serves
+  // in-session laps with no fetch); `laps` (above) supplies its sector splits.
   const lapTrace = useLapTrace(sessionId, typeof selectedLap === "number" ? selectedLap : null);
   const lapView = lapTrace.view;
   // Analysis mode: a completed lap is selected -> a scrub cursor can be placed/stepped
@@ -242,7 +253,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
           >
             <option value="all">All laps</option>
             <option value="current">Current lap</option>
-            {Array.from({ length: completedLapCount }, (_, i) => completedLapCount - i).map(n => (
+            {Array.from({ length: latestLap }, (_, i) => latestLap - i).map(n => (
               <option key={n} value={n}>Lap {n}</option>
             ))}
           </select>
