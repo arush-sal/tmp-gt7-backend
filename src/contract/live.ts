@@ -69,9 +69,16 @@ export type Derived = {
   source: string;
 };
 
+// Subset of the backend SessionAnalysis the frontend reads. Other fields exist on the wire
+// (per-lap/sector deltas, consistency, recommendations) but aren't consumed here.
+export type Analysis = {
+  predicted_best_ns?: number;       // sum of the driver's fastest sector times; 0 = no prediction yet
+  [k: string]: unknown;             // other SessionAnalysis fields exist on the wire; tolerated, not read
+};
+
 export type Enrichment = {
   session_id?: string;              // omitempty -> optional
-  analysis: unknown | null;         // SessionAnalysis; not deep-validated this slice
+  analysis: Analysis | null;        // SessionAnalysis subset; not deep-validated this slice
   car_name: string | null;
   track: string | null;
   delta_to_best_ns: number | null;  // ns; null until a reference lap; -ve = ahead

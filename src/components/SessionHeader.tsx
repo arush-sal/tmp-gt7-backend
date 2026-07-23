@@ -57,7 +57,7 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
             </div>
             <div className="header-cell">
               <span className="label">Predicted</span>
-              <span className="mono header-val text-purple">{ph}</span>
+              <span className="mono header-val text-purple">{view ? view.predicted : ph}</span>
             </div>
           </>
         )}

@@ -177,3 +177,14 @@ describe("blankRaceContext", () => {
     expect(b.fuelPct).not.toBe(PLACEHOLDER);
   });
 });
+
+describe("toLiveView predicted", () => {
+  it("formats predicted-best from analysis.predicted_best_ns", () => {
+    const v = toLiveView({ ...base, enrichment: { ...base.enrichment, analysis: { predicted_best_ns: 115_100_000_000 } } });
+    expect(v.predicted).toBe("1:55.100");
+  });
+  it("placeholder when analysis null or predicted 0", () => {
+    expect(toLiveView(base).predicted).toBe("—"); // base has analysis: null
+    expect(toLiveView({ ...base, enrichment: { ...base.enrichment, analysis: { predicted_best_ns: 0 } } }).predicted).toBe("—");
+  });
+});

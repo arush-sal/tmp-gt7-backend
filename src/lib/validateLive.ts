@@ -115,7 +115,7 @@ function validateEnrichment(raw: unknown): Enrichment {
   if (e.analysis !== null && (typeof e.analysis !== "object" || Array.isArray(e.analysis))) throw new Error("enrichment.analysis: expected object or null");
   return {
     ...(typeof e.session_id === "string" ? { session_id: e.session_id } : {}),
-    analysis: (e.analysis as object | null) ?? null,
+    analysis: (e.analysis as Enrichment["analysis"]) ?? null,
     car_name: (e.car_name as string | null),
     track: (e.track as string | null),
     delta_to_best_ns: delta,

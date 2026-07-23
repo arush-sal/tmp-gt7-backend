@@ -18,6 +18,7 @@ export type LiveView = {
   fuelPct: string;
   currentLapTime: string;
   delta: string;
+  predicted: string;     // predicted-best lap (backend analysis.predicted_best_ns); "—" until predicted
   bestLap: string;
   lastLap: string;
   tyreTemps: { fl: TyreTemp; fr: TyreTemp; rl: TyreTemp; rr: TyreTemp };
@@ -42,6 +43,12 @@ function fuelToneOf(pct: number): "green" | "yellow" | "red" {
 }
 const tyre = (c: number): TyreTemp => ({ value: `${Math.round(c)}°C`, tone: tyreTone(c) });
 
+// Predicted-best lap from ns; PLACEHOLDER when absent/null or 0 (backend emits 0 = no prediction
+// yet). Shared by the live view and the post-race /coaching fetch so both format identically.
+export function predictedOf(ns: number | null | undefined): string {
+  return typeof ns === "number" && ns > 0 ? nsToClock(ns) : PLACEHOLDER;
+}
+
 // Averaged front-wheel steer angle in degrees, e.g. "+6.9°"; PLACEHOLDER unless both wheels present.
 function steeringOf(fl?: number, fr?: number): string {
   if (fl === undefined || fr === undefined) return PLACEHOLDER;
@@ -65,6 +72,7 @@ export function toLiveView(s: LiveSnapshot): LiveView {
     fuelPct: d ? `${Math.round(d.fuel_pct)}%` : PLACEHOLDER,
     currentLapTime: d ? nsToClock(d.current_lap_time_ns) : PLACEHOLDER,
     delta: f && delta !== null ? nsToDeltaSeconds(delta) : PLACEHOLDER, // gated by frame: idle -> placeholder
+    predicted: predictedOf(s.enrichment.analysis?.predicted_best_ns),
     bestLap: f && f.best_lap !== null ? nsToClock(parseDuration(f.best_lap)) : PLACEHOLDER,
     lastLap: f && f.last_lap !== null ? nsToClock(parseDuration(f.last_lap)) : PLACEHOLDER,
     deltaTone: delta === null || delta === 0 || !f ? "none" : delta < 0 ? "blue" : "red",
@@ -90,7 +98,7 @@ export function blankRaceContext(v: LiveView): LiveView {
     ...v,
     position: PLACEHOLDER, lap: PLACEHOLDER,
     currentLapTime: PLACEHOLDER, lastLap: PLACEHOLDER, bestLap: PLACEHOLDER,
-    delta: PLACEHOLDER, deltaTone: "none",
+    delta: PLACEHOLDER, deltaTone: "none", predicted: PLACEHOLDER,
     tyreTemps: { fl: PLACEHOLDER_TYRE, fr: PLACEHOLDER_TYRE, rl: PLACEHOLDER_TYRE, rr: PLACEHOLDER_TYRE },
   };
 }

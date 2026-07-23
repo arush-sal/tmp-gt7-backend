@@ -13,6 +13,7 @@ const base: LiveView = {
   fuelPct: "80%",
   currentLapTime: "1:02.500",
   delta: "+0.500s",
+  predicted: "1:55.100",
   bestLap: "1:56.931",
   lastLap: "1:57.842",
   tyreTemps: {
@@ -39,6 +40,7 @@ function placeholderView(): LiveView {
     fuelPct: PLACEHOLDER,
     currentLapTime: PLACEHOLDER,
     delta: PLACEHOLDER,
+    predicted: PLACEHOLDER,
     bestLap: PLACEHOLDER,
     lastLap: PLACEHOLDER,
     tyreTemps: {

@@ -7,7 +7,7 @@ type ScalarField = { [K in keyof LiveView]: LiveView[K] extends string ? K : nev
 
 const SCALAR_FIELDS: readonly ScalarField[] = [
   "speed", "gear", "rpm", "lap", "position", "fuelPct", "currentLapTime",
-  "delta", "bestLap", "lastLap", "steering", "surface", "carCategory",
+  "delta", "predicted", "bestLap", "lastLap", "steering", "surface", "carCategory",
 ] as const;
 
 function keepCorner(prev: TyreTemp, next: TyreTemp): TyreTemp {

@@ -1,7 +1,7 @@
 // src/lib/sessionApi.ts
 // Typed fetch wrappers for the backend session/lap endpoints (see contract/session.ts). Relative
 // URLs — Vite proxies /v1 -> the backend. Each throws on a non-2xx response; callers surface it.
-import type { LapDTO, TraceSampleDTO, ReferenceDTO } from "../contract/session";
+import type { LapDTO, TraceSampleDTO, ReferenceDTO, CoachingReport } from "../contract/session";
 
 async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, signal ? { signal } : undefined);
@@ -16,6 +16,9 @@ export const fetchLapTrace = (
   sessionId: string, lap: number, decimate: number, signal?: AbortSignal,
 ): Promise<TraceSampleDTO[]> =>
   getJSON(`/v1/sessions/${encodeURIComponent(sessionId)}/laps/${lap}/trace?decimate=${decimate}`, signal);
+
+export const fetchCoaching = (sessionId: string, signal?: AbortSignal): Promise<CoachingReport> =>
+  getJSON(`/v1/sessions/${encodeURIComponent(sessionId)}/coaching`, signal);
 
 export const fetchReference = (
   sessionId: string, channels?: string[], points?: number, signal?: AbortSignal,

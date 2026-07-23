@@ -4,6 +4,7 @@ import { useSession } from "../hooks/useSession";
 import { useHistory } from "../hooks/useHistory";
 import { useLaps } from "../hooks/useLaps";
 import { useLapTrace } from "../hooks/useLapTrace";
+import { useCoaching } from "../hooks/useCoaching";
 import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
@@ -176,7 +177,13 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   const frame = typeof selectedLap === "number" && scrubIndex !== null
     ? lapView?.frameAt(scrubIndex) ?? null
     : null;
-  const displayView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
+  // Predicted-best lap: live from enrichment.analysis (in `view`, sticky); once the race is over,
+  // fetch it authoritatively from /coaching (survives a refresh, when the sticky value is gone).
+  const coaching = useCoaching(sessionId, !live);
+  const baseView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
+  const displayView = baseView && !live && coaching.predicted
+    ? { ...baseView, predicted: coaching.predicted }
+    : baseView;
   // Sector splits for a selected lap come straight from its LapDTO (backend-computed); live
   // sector timing only applies to the current lap.
   const selectedLapDto = typeof selectedLap === "number"

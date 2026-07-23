@@ -52,6 +52,13 @@ export type TraceSampleDTO = {
   delta_to_best_ns: number | null;
 };
 
+// GET /v1/sessions/{id}/coaching -> analysis (predicted-best etc.) + a pending coaching layer.
+// 404 if the session is unknown, 409 while it's still active (use /v1/live during a race).
+export type CoachingReport = {
+  analysis: { predicted_best_ns?: number } | null;
+  coaching: { status: string; note: string };
+};
+
 // GET /v1/sessions/{id}/reference?channels=<csv>&points=N -> median across racing laps on a
 // distance-fraction grid.
 export type ReferenceDTO = {
