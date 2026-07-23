@@ -2,16 +2,36 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/reference"
 	"github.com/arush-sal/garage/backend/rtps/session"
 )
+
+// errTraceStore wraps a MemTraceStore and makes ByLap fail — for the whole store (errAll) or one lap
+// number (errLap) — so the handler's 500 (trace read error) branches can be exercised. MemTraceStore
+// itself never errors, so this is the only way to drive those rows of the status contract.
+type errTraceStore struct {
+	inner  *processing.MemTraceStore
+	errAll bool
+	errLap int32
+}
+
+func (e *errTraceStore) SaveBatch(s []processing.Sample) error { return e.inner.SaveBatch(s) }
+
+func (e *errTraceStore) ByLap(sid string, lap int32) ([]processing.Sample, error) {
+	if e.errAll || lap == e.errLap {
+		return nil, errors.New("trace store boom")
+	}
+	return e.inner.ByLap(sid, lap)
+}
 
 // peaksResp mirrors peaksDTO for decoding. Pointer fields decode to nil on JSON null, so the trust
 // axes and delta_ns null-vs-value distinctions are checked directly.
@@ -264,6 +284,57 @@ func TestPeaksHandler_ReferenceLapUntrusted(t *testing.T) {
 		if p.DeltaNs != nil {
 			t.Errorf("point %d: delta_ns=%d, want null", i, *p.DeltaNs)
 		}
+	}
+}
+
+// errStoreServer wires an API server whose TraceStore is an errTraceStore, so the 500 (trace read
+// error) branches can be tested. Mirrors lapsServer's NewServer call.
+func errStoreServer(sec processing.SectorProvider, ts *errTraceStore) (*Server, *session.MemStore, *processing.MemLapStore) {
+	sessions := session.NewMemStore()
+	laps := processing.NewMemLapStore()
+	srv := NewServer(coach.New(fakeAnalyzer{}), sessions, nil, nil, nil, nil, nil, laps, ts, sec)
+	return srv, sessions, laps
+}
+
+// TestPeaksHandler_TraceReadError500: the queried lap exists but its trace read fails -> 500.
+func TestPeaksHandler_TraceReadError500(t *testing.T) {
+	ts := &errTraceStore{inner: processing.NewMemTraceStore(), errAll: true}
+	srv, sessions, laps := errStoreServer(realSectors(), ts)
+	base := time.Unix(1000, 0).UTC()
+	_ = sessions.Save(&session.Record{ID: "s1", Status: session.StatusActive})
+	_ = laps.Save(racingLapRec("s1", 1, base, 90*time.Second)) // lap exists in LapStore
+	rr, _ := getPeaks(t, srv, "/v1/sessions/s1/laps/1/peaks")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500 (trace read error)", rr.Code)
+	}
+}
+
+// TestPeaksHandler_ReferenceABuildError500: the predicted-best build fails (provider error) -> 500.
+func TestPeaksHandler_ReferenceABuildError500(t *testing.T) {
+	srv, sessions, laps, traces := lapsServer(fakeSectors{err: errors.New("provider boom")})
+	base := time.Unix(1000, 0).UTC()
+	_ = sessions.Save(&session.Record{ID: "s1", Status: session.StatusActive})
+	_ = laps.Save(racingLapRec("s1", 1, base, 90*time.Second))
+	_ = traces.SaveBatch(sineSamples("s1", 1, base, 90*time.Second, 240, 2))
+	rr, _ := getPeaks(t, srv, "/v1/sessions/s1/laps/1/peaks") // reference A (default)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500 (reference build error)", rr.Code)
+	}
+}
+
+// TestPeaksHandler_ReferenceBTraceReadError500: the queried lap reads fine but the named reference
+// lap's trace read fails -> 500.
+func TestPeaksHandler_ReferenceBTraceReadError500(t *testing.T) {
+	ts := &errTraceStore{inner: processing.NewMemTraceStore(), errLap: 2} // only lap 2 (the reference) errors
+	srv, sessions, laps := errStoreServer(realSectors(), ts)
+	base := time.Unix(1000, 0).UTC()
+	_ = sessions.Save(&session.Record{ID: "s1", Status: session.StatusActive})
+	_ = laps.Save(racingLapRec("s1", 1, base, 90*time.Second))
+	_ = laps.Save(racingLapRec("s1", 2, base, 90*time.Second))
+	_ = ts.SaveBatch(sineSamples("s1", 1, base, 90*time.Second, 240, 2)) // queried lap 1 reads fine
+	rr, _ := getPeaks(t, srv, "/v1/sessions/s1/laps/1/peaks?reference=2")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500 (reference trace read error)", rr.Code)
 	}
 }
 
