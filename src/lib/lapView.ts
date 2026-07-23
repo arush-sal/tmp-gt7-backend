@@ -44,8 +44,12 @@ function make(samples: LapSample[]): LapView {
 /** In-session lap from the live cache (keeps every channel + surface). */
 export const lapViewFromSamples = (samples: LapSample[]): LapView => make(samples);
 
-/** Backend-served completed lap. The single place snake_case wire fields become camelCase samples. */
-export const lapViewFromTrace = (dtos: TraceSampleDTO[]): LapView => make(dtos.map(dtoToSample));
+/** Remap a backend trace to LapSample rows. The single place snake_case wire fields become
+ *  camelCase samples — exposed so callers can both build a view AND warm the lapCache with it. */
+export const traceToSamples = (dtos: TraceSampleDTO[]): LapSample[] => dtos.map(dtoToSample);
+
+/** Backend-served completed lap. */
+export const lapViewFromTrace = (dtos: TraceSampleDTO[]): LapView => make(traceToSamples(dtos));
 
 function dtoToSample(d: TraceSampleDTO): LapSample {
   return {

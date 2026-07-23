@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchLapTrace } from "../lib/sessionApi";
-import { getLap } from "../lib/lapCache";
-import { lapViewFromSamples, lapViewFromTrace, type LapView } from "../lib/lapView";
+import { getLap, putLap } from "../lib/lapCache";
+import { lapViewFromSamples, traceToSamples, type LapView } from "../lib/lapView";
 
 type TraceState = { view: LapView | null; loading: boolean; error: boolean };
 
@@ -22,7 +22,11 @@ export function useLapTrace(sessionId: string | null, lap: number | null, decima
     let active = true;
     setState({ view: null, loading: true, error: false });
     fetchLapTrace(sessionId, lap, decimate, ctrl.signal)
-      .then(dtos => { if (active) setState({ view: lapViewFromTrace(dtos), loading: false, error: false }); })
+      .then(dtos => {
+        const samples = traceToSamples(dtos);
+        putLap(sessionId, lap, samples); // warm the cache so re-selecting this lap doesn't refetch
+        if (active) setState({ view: lapViewFromSamples(samples), loading: false, error: false });
+      })
       .catch(e => { if (e.name === "AbortError") return; if (active) setState({ view: null, loading: false, error: true }); });
     return () => { active = false; ctrl.abort(); };
   }, [sessionId, lap, decimate]);

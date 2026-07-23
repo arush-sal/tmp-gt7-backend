@@ -41,6 +41,16 @@ describe("useLapTrace", () => {
     expect(spy).toHaveBeenCalledOnce();
     expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/laps/5/trace?decimate=1500");
   });
+  it("warms the cache: a second mount for the same lap does not refetch", async () => {
+    const spy = stubFetch([traceDto(0), traceDto(1)]);
+    const { result, unmount } = renderHook(() => useLapTrace("s1", 7));
+    await waitFor(() => expect(result.current.view?.length).toBe(2));
+    expect(spy).toHaveBeenCalledOnce();
+    unmount();
+    const { result: r2 } = renderHook(() => useLapTrace("s1", 7));
+    expect(r2.current.view?.length).toBe(2); // served from the warmed cache
+    expect(spy).toHaveBeenCalledOnce();       // no second fetch
+  });
   it("null lap -> no view, no fetch", () => {
     const spy = stubFetch([]);
     const { result } = renderHook(() => useLapTrace("s1", null));
