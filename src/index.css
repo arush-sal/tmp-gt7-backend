@@ -950,6 +950,10 @@ body {
 .fuel-none   { color: var(--text-muted); }
 .lap-best-hl { background: color-mix(in srgb, var(--blue) 14%, transparent); border-radius: 6px; padding: 1px 6px; }
 
+/* Lap History: scrollable list bounded to ~4 rows so the card never grows with lap count. */
+.lap-history-list { max-height: 104px; overflow-y: auto; }
+.lap-history-list .data-row:last-child { border-bottom: none; }
+
 /* Tyre temperature bands: under=red, optimal=green, over=lime (yellow-green blend). */
 .tyre-under   { color: var(--red); }
 .tyre-optimal { color: var(--green-dark); }

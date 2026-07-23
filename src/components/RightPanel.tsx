@@ -1,7 +1,7 @@
 import type { LiveView } from "../lib/liveView";
 import type { Corner, CornerAnalysis } from "../contract/corner";
 import type { SectorTime } from "../lib/sectorTimer";
-import { PLACEHOLDER, msToSectorTime, msToSectorDelta } from "../lib/format";
+import { msToSectorTime, msToSectorDelta } from "../lib/format";
 
 interface Props {
   view: LiveView | null;
@@ -12,11 +12,12 @@ interface Props {
   usedPerLap?: number | null;
   lapsLeft?: number | null;
   sectorTimes?: SectorTime[] | null;
+  lapHistory?: { lap: number; time: string; best: boolean }[];
 }
 
 export default function RightPanel({
   view, corners, selectedCornerId, onCornerSelect, selectedCornerDetail,
-  usedPerLap = null, lapsLeft = null, sectorTimes = null,
+  usedPerLap = null, lapsLeft = null, sectorTimes = null, lapHistory = [],
 }: Props) {
   const opportunities = [...corners]
     .filter(c => c.delta > 0.05)
@@ -24,7 +25,6 @@ export default function RightPanel({
     .slice(0, 3);
 
   const activeCoach = selectedCornerDetail ?? null;
-  const hasBest = !!view && view.bestLap !== PLACEHOLDER;
 
   return (
     <div className="right-panel">
@@ -54,20 +54,22 @@ export default function RightPanel({
         )}
       </div>
 
-      {/* ── Lap history ── */}
+      {/* ── Lap history: every completed lap + time, scrollable, fixed height ── */}
       <div className="section">
         <div className="label" style={{ marginBottom: 6 }}>Lap History</div>
-        <div className="data-row">
-          <span className="text-muted">Current</span>
-          <span className="mono text-muted">{view ? view.currentLapTime : "—"}</span>
-        </div>
-        <div className="data-row">
-          <span className="text-muted">Previous</span>
-          <span className="mono">{view ? view.lastLap : "—"}</span>
-        </div>
-        <div className="data-row" style={{ borderBottom: "none" }}>
-          <span className="text-muted">Best lap</span>
-          <span className={`mono ${hasBest ? "text-blue lap-best-hl" : "text-muted"}`}>{view ? view.bestLap : "—"}</span>
+        <div className="lap-history-list">
+          {lapHistory.length === 0 ? (
+            <div className="data-row" style={{ borderBottom: "none" }}>
+              <span className="text-muted">no completed laps</span><span className="mono text-muted">—</span>
+            </div>
+          ) : (
+            lapHistory.map(l => (
+              <div className="data-row" key={l.lap}>
+                <span className="text-muted">Lap {l.lap}</span>
+                <span className={`mono ${l.best ? "text-blue lap-best-hl" : ""}`}>{l.time}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
 

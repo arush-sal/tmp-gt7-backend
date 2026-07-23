@@ -10,6 +10,7 @@ import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
 import { frameToDisplay } from "../lib/liveView";
+import { nsToClock } from "../lib/format";
 import { lapDtoToSectorTimes } from "../lib/lapView";
 import { resetLapCache } from "../lib/lapCache";
 import { toDrawGeometry } from "../lib/rkbGeometry";
@@ -144,6 +145,15 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     if (userPickedLap) return;
     setSelectedLap(live ? "current" : latestLap > 0 ? latestLap : "current");
   }, [live, latestLap, userPickedLap]);
+  // Lap History list: every completed racing lap with its time, ascending; fastest flagged.
+  const lapHistory = useMemo(() => {
+    const rows = laps.laps
+      .filter(l => l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.duration_ns > 0)
+      .sort((a, b) => a.lap_number - b.lap_number)
+      .map(l => ({ lap: l.lap_number, time: nsToClock(l.duration_ns), durationNs: l.duration_ns }));
+    const bestNs = rows.reduce((m, r) => (m === 0 || r.durationNs < m ? r.durationNs : m), 0);
+    return rows.map(r => ({ lap: r.lap, time: r.time, best: r.durationNs === bestNs }));
+  }, [laps.laps, totalLaps]);
   // New race: drop back to auto-follow AND clear a stale numeric selectedLap (completedLapCount
   // resets to 0 too, but not necessarily in the same tick -- the <select> must never hold a
   // value with no matching option).
@@ -334,6 +344,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
             usedPerLap={usedPerLap}
             lapsLeft={lapsLeft}
             sectorTimes={shownSectors}
+            lapHistory={lapHistory}
           />
         </div>
       </div>
