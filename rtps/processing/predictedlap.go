@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+
+	"github.com/arush-sal/garage/backend/rtps/geom"
 )
 
 // RefSectorSeg records which pooled lap owns one sector of the predicted lap and how long that owner's
@@ -81,6 +83,22 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 	}
 	out := PredictedLap{Reliable: reason == "", Reason: reason}
 
+	// Resolve the session's centerline once. Sector boundaries are fractions on the centerline
+	// arc-length axis, but Normalize sets each sample's Fraction on the lap's own racing-line distance
+	// axis (differs per lap). When a usable centerline exists, re-fraction each pooled lap onto the
+	// shared centerline-arc axis so a sector's canonical Start/End cuts every owner at the SAME physical
+	// point (no position discontinuity at a splice seam). No usable centerline -> keep Normalize's
+	// per-lap fractions (unchanged fallback output). A centerline lookup error is non-fatal here (the
+	// same store was already read by SectorsForSession above) and falls back.
+	var cl [][2]float64
+	var arc []float64
+	var totalArc float64
+	if clRaw, _, cErr := provider.CenterlineForSession(ctx, sessionID); cErr == nil && len(clRaw) >= 2 {
+		if a := geom.ClArcLengths(clRaw); a[len(a)-1] > 0 {
+			cl, arc, totalArc = clRaw, a, a[len(a)-1]
+		}
+	}
+
 	// Pool: full racing laps (Timed && Complete && !Fallback) whose trace is sector-analyzable. A lap
 	// with no trace / a read error is skipped rather than failing the whole request.
 	var pool []pooledLap
@@ -96,6 +114,9 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 			continue
 		}
 		norm := Normalize(samples)
+		if totalArc > 0 {
+			refractionOnCenterline(norm, cl, arc, totalArc)
+		}
 		pool = append(pool, pooledLap{lapNumber: l.LapNumber, norm: norm, splits: SplitSectors(norm, sectors)})
 	}
 	// Ascending lap-number order so a per-sector duration tie resolves to the lowest lap number.
@@ -162,24 +183,84 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 	return out, nil
 }
 
+// refractionJumpTol is the largest plausible forward jump in normalized centerline arc between two
+// consecutive (60Hz) trace samples. A real car covers a tiny fraction of the lap per frame (even 300
+// km/h over a 5 km lap is ~0.02%/frame; a multi-second frame gap is still a few percent), so any single
+// step beyond this is a projection artefact — the global-nearest ProjectToClArc snapping to a FAR
+// centerline segment where the track passes near itself (e.g. Suzuka's figure-8 crossover) or across
+// the start/finish seam — not real progress.
+const refractionJumpTol = 0.2
+
+// refractionOnCenterline rewrites each point's Fraction as its centerline-arc projection normalized by
+// totalArc, replacing Normalize's per-lap distance fraction. Fractions are clamped to [0,1] and forced
+// monotonically non-decreasing (max with the previous) so NormalizedLap.locate's binary search stays
+// valid. A lap starts at the start/finish line, so prev seeds at 0; a projection that jumps FORWARD by
+// more than refractionJumpTol is a self-crossing/seam mis-projection and is rejected (the point holds
+// the previous arc) — without this, one bad forward snap would pin every later sample high via the
+// monotonic clamp and collapse the whole lap onto a tiny arc range. Small backward wander (racing line
+// drift) is clamped up to prev as normal. Mutates n.Points in place. arc must be geom.ClArcLengths(cl);
+// caller guarantees len(cl) >= 2 and totalArc > 0.
+func refractionOnCenterline(n NormalizedLap, cl [][2]float64, arc []float64, totalArc float64) {
+	prev := 0.0
+	for i := range n.Points {
+		a, ok := geom.ProjectToClArc(cl, arc, float64(n.Points[i].PosX), float64(n.Points[i].PosZ))
+		if !ok {
+			n.Points[i].Fraction = prev // no projection -> hold position, keep fractions monotonic
+			continue
+		}
+		f := a / totalArc
+		if f < 0 {
+			f = 0
+		} else if f > 1 {
+			f = 1
+		}
+		if f > prev+refractionJumpTol {
+			n.Points[i].Fraction = prev // implausible forward teleport (crossover/seam) -> hold prev
+			continue
+		}
+		if f < prev {
+			f = prev // small backward wander -> clamp monotonic
+		}
+		prev = f
+		n.Points[i].Fraction = f
+	}
+}
+
 // ownerForSector returns the pooled lap with the minimum sector-`index` duration and that lap's split
 // for the sector. pool must already be in ascending lap-number order so a tie (equal durations) resolves
 // to the lowest lap number (the strict `<` keeps the first, lowest lap). ok is false only when no pooled
 // lap has a split for the sector.
+//
+// Off-track sectors (Clean == false, all four tyres off track somewhere in the sector) are NOT eligible
+// to own a sector — that is the whole point of the invalidation. But if EVERY pooled lap ran this sector
+// dirty, we fall back to the min-duration dirty split rather than drop the sector entirely, so the
+// predicted lap stays whole (documented last resort).
 func ownerForSector(pool []pooledLap, index int) (pooledLap, SectorResult, bool) {
-	var bestLap pooledLap
-	var bestSplit SectorResult
-	found := false
+	var cleanLap, anyLap pooledLap
+	var cleanSplit, anySplit SectorResult
+	cleanFound, anyFound := false, false
 	for _, pl := range pool {
 		for _, sp := range pl.splits {
 			if sp.Index != index {
 				continue
 			}
-			if !found || sp.Duration < bestSplit.Duration {
-				bestLap, bestSplit, found = pl, sp, true
+			// A zero/negative duration means this lap did not actually drive the sector (its trace does
+			// not cover the range, so TimeAt(start)==TimeAt(end)). Such a split is vacuously "clean" (no
+			// samples in range) but must never own a sector — skip it, mirroring analysis.predictedBest.
+			if sp.Duration <= 0 {
+				break
+			}
+			if !anyFound || sp.Duration < anySplit.Duration {
+				anyLap, anySplit, anyFound = pl, sp, true
+			}
+			if sp.Clean && (!cleanFound || sp.Duration < cleanSplit.Duration) {
+				cleanLap, cleanSplit, cleanFound = pl, sp, true
 			}
 			break
 		}
 	}
-	return bestLap, bestSplit, found
+	if cleanFound {
+		return cleanLap, cleanSplit, true
+	}
+	return anyLap, anySplit, anyFound // fallback: all laps ran this sector off-track (or none drove it)
 }

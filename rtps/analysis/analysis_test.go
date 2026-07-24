@@ -52,8 +52,8 @@ func TestConsistency_ExcludesFallbackAndOutliers(t *testing.T) {
 // TestPredictedBest: per-sector fastest across laps -> optimal time; each best notes its source lap.
 func TestPredictedBest(t *testing.T) {
 	perLap := map[int32][]processing.SectorResult{
-		1: {{Index: 0, Duration: 30 * s}, {Index: 1, Duration: 32 * s}}, // lap1: S1 best
-		2: {{Index: 0, Duration: 29 * s}, {Index: 1, Duration: 34 * s}}, // lap2: S0 best
+		1: {{Index: 0, Duration: 30 * s, Clean: true}, {Index: 1, Duration: 32 * s, Clean: true}}, // lap1: S1 best
+		2: {{Index: 0, Duration: 29 * s, Clean: true}, {Index: 1, Duration: 34 * s, Clean: true}}, // lap2: S0 best
 	}
 	total, best := predictedBest(perLap)
 	if total != 61*s { // 29 (S0, lap2) + 32 (S1, lap1)
@@ -65,6 +65,22 @@ func TestPredictedBest(t *testing.T) {
 	// A lap sums to 62s (30+32) and 63s (29+34); predicted best 61s beats both.
 	if total >= 62*s {
 		t.Errorf("predicted best %v should beat every actual lap", total)
+	}
+}
+
+// TestPredictedBest_SkipsOffTrack: an off-track (Clean=false) sector must not win the sector best, even
+// when it is the fastest. Lap 2's faster-but-dirty S0 is skipped, so lap 1's clean S0 owns it.
+func TestPredictedBest_SkipsOffTrack(t *testing.T) {
+	perLap := map[int32][]processing.SectorResult{
+		1: {{Index: 0, Duration: 30 * s, Clean: true}},
+		2: {{Index: 0, Duration: 25 * s, Clean: false}}, // faster but off-track -> ignored
+	}
+	total, best := predictedBest(perLap)
+	if len(best) != 1 || best[0].LapNumber != 1 || best[0].Duration != 30*s {
+		t.Errorf("best = %+v, want S0<-lap1 @30s (dirty 25s skipped)", best)
+	}
+	if total != 30*s {
+		t.Errorf("total = %v, want 30s", total)
 	}
 }
 

@@ -71,6 +71,54 @@ func TestSectorsForLap_RKBvsFallback(t *testing.T) {
 	}
 }
 
+// TestAllTyresOff: a sector sample is off-track only when ALL FOUR wheels are on a non-track surface
+// (dirt/grass/sand/snow). Tarmac and kerb are on-track (up to two wheels off is legal). Missing /
+// unknown surface data must NOT count as off (never over-invalidate).
+func TestAllTyresOff(t *testing.T) {
+	cases := []struct {
+		surface string
+		want    bool
+	}{
+		{"GGGG", true},              // all grass -> all off
+		{"DGSs", true},              // dirt/grass/sand/snow -> all off
+		{"TGGG", false},             // one tarmac -> on track
+		{"CGGG", false},             // one kerb -> on track (kerb is legal)
+		{"CCCC", false},             // all kerb -> legal, on track
+		{"TTTT", false},             // all tarmac
+		{"", false},                 // no data -> not off
+		{"\x00\x00\x00\x00", false}, // zero bytes (format-A / missing) -> not off
+		{"XXXX", false},             // unknown codes -> not off (don't over-invalidate)
+		{"GGG", false},              // wrong length -> not off
+	}
+	for _, c := range cases {
+		if got := allTyresOff(c.surface); got != c.want {
+			t.Errorf("allTyresOff(%q) = %v, want %v", c.surface, got, c.want)
+		}
+	}
+}
+
+// TestSplitSectors_CleanFlag: a sector containing an all-four-off sample is marked !Clean; a fully
+// on-track sector is Clean.
+func TestSplitSectors_CleanFlag(t *testing.T) {
+	// distances 0..100 (fractions 0,.25,.5,.75,1). Sector [0,0.5] has an all-grass sample at .25;
+	// sector [0.5,1] is all tarmac.
+	surf := func(dist float64, sec int, s string) Sample {
+		x := tSample(dist, sec, 100)
+		x.SurfaceType = s
+		return x
+	}
+	n := Normalize([]Sample{
+		surf(0, 0, "TTTT"), surf(25, 1, "GGGG"), surf(50, 2, "TTTT"), surf(75, 3, "TTTT"), surf(100, 4, "TTTT"),
+	})
+	res := SplitSectors(n, []reference.Sector{{Index: 0, Start: 0, End: 0.5}, {Index: 1, Start: 0.5, End: 1}})
+	if res[0].Clean {
+		t.Errorf("sector 0 Clean=true, want false (all-grass sample at .25)")
+	}
+	if !res[1].Clean {
+		t.Errorf("sector 1 Clean=false, want true (all tarmac)")
+	}
+}
+
 // TestSplitSectors_EmptyLap: an empty lap yields zero-value results without panicking.
 func TestSplitSectors_EmptyLap(t *testing.T) {
 	res := SplitSectors(NormalizedLap{}, MiniSectors(3))

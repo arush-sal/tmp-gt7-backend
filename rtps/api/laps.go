@@ -59,6 +59,9 @@ type traceSampleDTO struct {
 	TyreTempRR float32 `json:"tyre_temp_rr"`
 	Clutch     float32 `json:"clutch"`
 	Boost      float32 `json:"boost"`
+	// SurfaceType is GT7's per-wheel surface code (4 chars FL,FR,RL,RR; T=tarmac C=kerb D=dirt G=grass
+	// S=sand s=snow), empty for pre-format-C frames. Lets the client render kerb/grass ticks.
+	SurfaceType string `json:"surface_type"`
 	// DeltaToBestNs is a pointer so it serializes JSON null (not 0) when the sample carried no delta.
 	DeltaToBestNs *int64 `json:"delta_to_best_ns"`
 }
@@ -189,6 +192,7 @@ func (s *Server) handleLapTrace(w http.ResponseWriter, r *http.Request) {
 			TyreTempRR:    sm.TyreTempRR,
 			Clutch:        sm.Clutch,
 			Boost:         sm.Boost,
+			SurfaceType:   sm.SurfaceType,
 			DeltaToBestNs: sm.DeltaToBestNs,
 		}
 	}

@@ -16,6 +16,10 @@ type SectorResult struct {
 	End      float64
 	Duration time.Duration
 	MinSpeed float32 // km/h; minimum speed among samples in [Start, End]
+	// Clean is false when the car went off-track (all four tyres off) at any sample in the sector, so
+	// this sector must not count toward the fastest-sector selection. True when no off-track sample was
+	// seen (including when surface data is absent — missing data never invalidates).
+	Clean bool
 }
 
 // SplitSectors cuts a distance-normalized lap into per-sector metrics at the given sector boundaries.
@@ -25,7 +29,7 @@ type SectorResult struct {
 func SplitSectors(n NormalizedLap, sectors []reference.Sector) []SectorResult {
 	out := make([]SectorResult, 0, len(sectors))
 	for _, s := range sectors {
-		r := SectorResult{Index: s.Index, Start: s.Start, End: s.End, MinSpeed: n.minSpeed(s.Start, s.End)}
+		r := SectorResult{Index: s.Index, Start: s.Start, End: s.End, MinSpeed: n.minSpeed(s.Start, s.End), Clean: n.sectorClean(s.Start, s.End)}
 		start, ok1 := n.TimeAt(s.Start)
 		end, ok2 := n.TimeAt(s.End)
 		if ok1 && ok2 {
@@ -34,6 +38,45 @@ func SplitSectors(n NormalizedLap, sectors []reference.Sector) []SectorResult {
 		out = append(out, r)
 	}
 	return out
+}
+
+// offTrackSurfaces are the GT7 per-wheel surface codes that count as off-track (dirt, grass, sand,
+// snow). Tarmac (T) and kerb (C) are on-track — kerbs are within track limits, so riding them is legal.
+// Reverse-engineered code table, see collector/protocol/constants.go:offSurfaceType.
+const offTrackSurfaces = "DGSs"
+
+// allTyresOff reports whether all four wheels are off-track for one sample. surface is GT7's 4-char
+// per-wheel code (FL,FR,RL,RR). It is true ONLY when the string is exactly 4 chars and every wheel is
+// on an off-track surface — so empty/short (format-A, missing data) and any unknown code yield false,
+// i.e. missing/ambiguous data never invalidates a sector.
+func allTyresOff(surface string) bool {
+	if len(surface) != 4 {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		off := false
+		for j := 0; j < len(offTrackSurfaces); j++ {
+			if surface[i] == offTrackSurfaces[j] {
+				off = true
+				break
+			}
+		}
+		if !off {
+			return false // this wheel is on track (or unknown) -> not all-four-off
+		}
+	}
+	return true
+}
+
+// sectorClean reports whether the car stayed on track (never all four tyres off) across every sample in
+// the sector's [start, end] fraction range. A sector with no samples in range is clean by default.
+func (n NormalizedLap) sectorClean(start, end float64) bool {
+	for _, p := range n.Points {
+		if p.Fraction >= start && p.Fraction <= end && allTyresOff(p.SurfaceType) {
+			return false
+		}
+	}
+	return true
 }
 
 // minSpeed returns the slowest speed among samples whose fraction is within [start, end]. If no sample

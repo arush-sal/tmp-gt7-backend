@@ -8,14 +8,24 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/reference"
 )
 
-// fakeProvider is a fixed SectorProvider: returns its sectors + reason regardless of session.
+// fakeProvider is a fixed SectorProvider: returns its sectors + reason regardless of session. cl (if
+// set) is the centerline returned by CenterlineForSession; nil cl reports "no-centerline" so callers
+// take the per-lap fraction fallback.
 type fakeProvider struct {
 	sectors []reference.Sector
 	reason  string
+	cl      [][2]float64
 }
 
 func (f fakeProvider) SectorsForSession(_ context.Context, _ string) ([]reference.Sector, string, error) {
 	return f.sectors, f.reason, nil
+}
+
+func (f fakeProvider) CenterlineForSession(_ context.Context, _ string) ([][2]float64, string, error) {
+	if len(f.cl) < 2 {
+		return nil, "no-centerline", nil
+	}
+	return f.cl, "", nil
 }
 
 // lsTrace builds a lap's trace at the 3-sector mock boundaries (fractions 0/.4/.75/1), timed so each
@@ -39,6 +49,46 @@ func lsTrace(session string, lap int32, base time.Time, dur time.Duration) []Sam
 func mockSectors() []reference.Sector {
 	_, secs := reference.MockTrack() // 3 sectors 0-.4-.75-1
 	return secs
+}
+
+// TestSessionLapSectors_OffTrackNotBest: an off-track (all-four-off) sector must not set delta_to_best.
+// Lap 1 runs sector 0 faster (20s) but off-track; lap 2 runs it slower (30s) clean. The best for sector
+// 0 is lap 2's clean 30s, so lap 2's delta is 0 (it IS the best) and lap 1's dirty sector reports a
+// negative delta (faster than the clean best) rather than becoming the best itself.
+func TestSessionLapSectors_OffTrackNotBest(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	traces := NewMemTraceStore()
+	_ = traces.SaveBatch([]Sample{
+		sfSample("s", 1, base, 0, 0, "TTTT"),
+		sfSample("s", 1, base, 20, 10*time.Second, "GGGG"), // mid-sector-0 off track
+		sfSample("s", 1, base, 40, 20*time.Second, "TTTT"),
+		sfSample("s", 1, base, 75, 50*time.Second, "TTTT"),
+		sfSample("s", 1, base, 100, 80*time.Second, "TTTT"),
+	})
+	_ = traces.SaveBatch([]Sample{
+		sfSample("s", 2, base, 0, 0, "TTTT"),
+		sfSample("s", 2, base, 40, 30*time.Second, "TTTT"),
+		sfSample("s", 2, base, 75, 60*time.Second, "TTTT"),
+		sfSample("s", 2, base, 100, 95*time.Second, "TTTT"),
+	})
+	laps := []Lap{
+		{SessionID: "s", LapNumber: 1, Duration: 80 * time.Second, Timed: true, Complete: true},
+		{SessionID: "s", LapNumber: 2, Duration: 95 * time.Second, Timed: true, Complete: true},
+	}
+	out, err := SessionLapSectors(context.Background(), fakeProvider{sectors: mockSectors()}, traces, "s", laps)
+	if err != nil {
+		t.Fatalf("SessionLapSectors: %v", err)
+	}
+	// out[1] is lap 2 (the clean, slower sector-0 lap) -> it is the sector-0 best -> delta 0.
+	s2 := out[1].Splits[0]
+	if !s2.HasDelta || s2.DeltaToBest != 0 {
+		t.Errorf("lap 2 sector 0: HasDelta=%v DeltaToBest=%v, want true/0 (clean best)", s2.HasDelta, s2.DeltaToBest)
+	}
+	// out[0] is lap 1 (dirty, faster sector 0) -> delta vs the clean 30s best is 20s-30s = -10s.
+	s1 := out[0].Splits[0]
+	if s1.DeltaToBest != -10*time.Second {
+		t.Errorf("lap 1 sector 0 DeltaToBest = %v, want -10s (dirty fast vs clean best, not the best itself)", s1.DeltaToBest)
+	}
 }
 
 // TestSessionLapSectors_AllLapsInOrder: every input lap (including one with no samples) appears in

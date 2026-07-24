@@ -13,6 +13,11 @@ import (
 // the caller falls back to mini-sectors. reason ∈ {"track-not-detected","no-centerline","no-sector-labels"}.
 type SectorProvider interface {
 	SectorsForSession(ctx context.Context, sessionID string) (sectors []reference.Sector, reason string, err error)
+	// CenterlineForSession returns the session track's centerline polyline in world metres (the axis
+	// the sector boundaries live on), so per-lap sample fractions can be projected onto it. reason is
+	// non-empty ("track-not-detected"/"no-centerline") when no usable centerline exists, in which case
+	// cl is nil and callers keep their per-lap distance fractions.
+	CenterlineForSession(ctx context.Context, sessionID string) (cl [][2]float64, reason string, err error)
 }
 
 // LapSectorSplit is one sector's timing for a lap, with its delta to the session's best for that sector.
@@ -82,7 +87,10 @@ func SessionLapSectors(ctx context.Context, provider SectorProvider, traces Trac
 				Duration: s.Duration,
 				MinSpeed: s.MinSpeed,
 			}
-			if inPool {
+			// Only a clean (never all-four-off-track) sector may set the best; an off-track sector must
+			// not count toward the fastest-sector time. A lap's own dirty sector still reports its
+			// duration + delta vs the clean best (second pass below).
+			if inPool && s.Clean {
 				if b, seen := best[s.Index]; !seen || s.Duration < b {
 					best[s.Index] = s.Duration
 				}

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/arush-sal/garage/backend/rtps/geom"
 	"github.com/arush-sal/garage/backend/rtps/reference"
 	"github.com/arush-sal/garage/backend/rtps/rkb"
 	"go.uber.org/zap"
@@ -92,6 +93,30 @@ func (k *KB) SectorsForSession(ctx context.Context, sessionID string) (sectors [
 	return sectors, reason, nil
 }
 
+// CenterlineForSession returns the session track's centerline polyline in world metres, mirroring
+// SectorsForSession's resolution (slugFor -> store.Track -> record centerline). It lets the
+// predicted-lap path put every pooled lap on the same centerline-arc axis the sector boundaries live
+// on. reason is "track-not-detected" (no slug / no record) or "no-centerline" (fewer than two finite
+// centerline vertices); a usable centerline returns reason "".
+func (k *KB) CenterlineForSession(ctx context.Context, sessionID string) (cl [][2]float64, reason string, err error) {
+	slug, ok := k.slugFor(sessionID)
+	if !ok {
+		return nil, "track-not-detected", nil
+	}
+	rec, found, err := k.store.Track(ctx, slug)
+	if err != nil {
+		return nil, "", err
+	}
+	if !found {
+		return nil, "track-not-detected", nil
+	}
+	cl = centerline(rec)
+	if len(cl) < 2 {
+		return nil, "no-centerline", nil
+	}
+	return cl, "", nil
+}
+
 // warnOnce emits the geometry-missing warning at most once per slug.
 func (k *KB) warnOnce(slug, reason string) {
 	k.mu.Lock()
@@ -112,19 +137,13 @@ func (k *KB) warnOnce(slug, reason string) {
 // perpendicular (segment interpolation) instead of nearest-vertex, for sub-vertex arc precision.
 func SectorsFromRecord(rec *rkb.Record) (sectors []reference.Sector, reason string) {
 	// 1. Centerline polyline: keep only vertices with both coords present.
-	cl := make([][2]float64, 0, len(rec.Boundary.Cl))
-	for _, p := range rec.Boundary.Cl {
-		if len(p) < 2 || p[0] == nil || p[1] == nil {
-			continue
-		}
-		cl = append(cl, [2]float64{*p[0], *p[1]})
-	}
+	cl := centerline(rec)
 	if len(cl) < 2 {
 		return nil, "no-centerline"
 	}
 
 	// 2. Cumulative arc length per vertex.
-	arc := clArcLengths(cl)
+	arc := geom.ClArcLengths(cl)
 	totalArc := arc[len(arc)-1]
 	if totalArc <= 0 { // degenerate (all-coincident) centerline: no usable geometry
 		return nil, "no-centerline"
@@ -140,7 +159,7 @@ func SectorsFromRecord(rec *rkb.Record) (sectors []reference.Sector, reason stri
 		if len(lw) < 2 || !isFinite(lw[0]) || !isFinite(lw[1]) {
 			continue
 		}
-		if a, ok := projectToClArc(cl, arc, lw[0], lw[1]); ok {
+		if a, ok := geom.ProjectToClArc(cl, arc, lw[0], lw[1]); ok {
 			projected = append(projected, a)
 		}
 	}
@@ -164,43 +183,17 @@ func SectorsFromRecord(rec *rkb.Record) (sectors []reference.Sector, reason stri
 	return sectors, ""
 }
 
-// clArcLengths returns the cumulative arc length at each polyline vertex (arc[0] = 0). Empty input
-// yields nil.
-func clArcLengths(cl [][2]float64) []float64 {
-	if len(cl) == 0 {
-		return nil
-	}
-	arc := make([]float64, len(cl))
-	for i := 1; i < len(cl); i++ {
-		arc[i] = arc[i-1] + math.Hypot(cl[i][0]-cl[i-1][0], cl[i][1]-cl[i-1][1])
-	}
-	return arc
-}
-
-// projectToClArc returns the arc length of the foot-of-perpendicular projection of (px,pz) onto the
-// nearest centerline segment (segment interpolation, not nearest-vertex). ok is false for a polyline
-// with fewer than two vertices.
-func projectToClArc(cl [][2]float64, arc []float64, px, pz float64) (float64, bool) {
-	if len(cl) < 2 {
-		return 0, false
-	}
-	best := math.Inf(1)
-	var bestArc float64
-	for i := 0; i+1 < len(cl); i++ {
-		ax, az := cl[i][0], cl[i][1]
-		dx, dz := cl[i+1][0]-ax, cl[i+1][1]-az
-		segLen2 := dx*dx + dz*dz
-		var t float64 // degenerate zero-length segment -> t stays 0 (project to the vertex)
-		if segLen2 > 0 {
-			t = math.Max(0, math.Min(1, ((px-ax)*dx+(pz-az)*dz)/segLen2))
+// centerline extracts a track record's centerline as finite (x,z) world points, dropping vertices
+// with a missing coord. Shared by SectorsFromRecord and CenterlineForSession.
+func centerline(rec *rkb.Record) [][2]float64 {
+	cl := make([][2]float64, 0, len(rec.Boundary.Cl))
+	for _, p := range rec.Boundary.Cl {
+		if len(p) < 2 || p[0] == nil || p[1] == nil {
+			continue
 		}
-		fx, fz := ax+t*dx, az+t*dz
-		if d := math.Hypot(px-fx, pz-fz); d < best {
-			best = d
-			bestArc = arc[i] + t*math.Hypot(dx, dz)
-		}
+		cl = append(cl, [2]float64{*p[0], *p[1]})
 	}
-	return bestArc, true
+	return cl
 }
 
 // deref returns *p, or 0 when p is nil.

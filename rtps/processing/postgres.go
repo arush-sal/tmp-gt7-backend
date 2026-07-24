@@ -82,6 +82,7 @@ var traceColumns = []string{
 	"recv_timestamp", "session_id", "lap_number", "seq", "distance",
 	"pos_x", "pos_y", "pos_z", "speed", "throttle", "brake", "rpm", "gear", "yaw", "ang_vel_y",
 	"fuel", "tyre_temp_fl", "tyre_temp_fr", "tyre_temp_rl", "tyre_temp_rr", "clutch", "boost", "delta_to_best_ns",
+	"surface_type",
 }
 
 // SaveBatch COPY-loads a batch of samples — the efficient bulk path for high-rate trace ingest.
@@ -96,6 +97,7 @@ func (s *PostgresTraceStore) SaveBatch(samples []Sample) error {
 			m.PosX, m.PosY, m.PosZ, m.Speed, m.Throttle, m.Brake, m.RPM, m.Gear, m.Yaw, m.AngVelY,
 			m.Fuel, m.TyreTempFL, m.TyreTempFR, m.TyreTempRL, m.TyreTempRR, m.Clutch, m.Boost,
 			m.DeltaToBestNs, // *int64: pgx encodes nil as SQL NULL
+			m.SurfaceType,   // 4-char per-wheel surface code; "" for pre-format-C frames
 		}
 	}
 	if _, err := s.pool.CopyFrom(context.Background(),
@@ -124,7 +126,7 @@ func (s *PostgresTraceStore) ByLap(sessionID string, lapNumber int32) ([]Sample,
 		if err := rows.Scan(&m.RecvTime, &m.SessionID, &m.LapNumber, &seq, &m.Distance,
 			&m.PosX, &m.PosY, &m.PosZ, &m.Speed, &m.Throttle, &m.Brake, &m.RPM, &m.Gear, &m.Yaw, &m.AngVelY,
 			&m.Fuel, &m.TyreTempFL, &m.TyreTempFR, &m.TyreTempRL, &m.TyreTempRR, &m.Clutch, &m.Boost,
-			&m.DeltaToBestNs); err != nil { // *int64: SQL NULL scans back to nil
+			&m.DeltaToBestNs, &m.SurfaceType); err != nil { // *int64: SQL NULL scans back to nil
 			return nil, fmt.Errorf("processing: scan trace row: %w", err)
 		}
 		m.Seq = uint64(seq)

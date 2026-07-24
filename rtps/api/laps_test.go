@@ -26,6 +26,12 @@ func (f fakeSectors) SectorsForSession(context.Context, string) ([]reference.Sec
 	return f.sectors, f.reason, f.err
 }
 
+// CenterlineForSession reports no centerline: the API tests exercise the sector/timing paths, so the
+// predicted-lap path keeps its per-lap fraction fallback (unchanged behaviour).
+func (f fakeSectors) CenterlineForSession(context.Context, string) ([][2]float64, string, error) {
+	return nil, "no-centerline", nil
+}
+
 // lapsServer wires an API server with a session, lap, and trace store for the lap/trace routes.
 func lapsServer(sec processing.SectorProvider) (*Server, *session.MemStore, *processing.MemLapStore, *processing.MemTraceStore) {
 	sessions := session.NewMemStore()

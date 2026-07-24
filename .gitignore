@@ -40,9 +40,10 @@ go.work.sum
 
 # AI Agents
 AGENTS.md
-.claude/*
-.codex/*
+.claude
+.codex
 CLAUDE.md
+.superpowers
 
 # Build output
 /bin/

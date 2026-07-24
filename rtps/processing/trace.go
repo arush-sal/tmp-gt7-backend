@@ -36,6 +36,10 @@ type Sample struct {
 	// Clutch is clutch pedal / engagement (0-1). Boost is turbo boost pressure.
 	Clutch float32
 	Boost  float32
+	// SurfaceType is GT7's per-wheel surface-material code (4 chars, order FL,FR,RL,RR;
+	// T=tarmac C=kerb D=dirt G=grass S=sand s=snow). Empty for format-A packets / pre-migration rows.
+	// Used to invalidate a sector when all four wheels are off-track (see allTyresOff).
+	SurfaceType string
 	// DeltaToBestNs is the live delta-to-best (nanoseconds) captured for this frame, or nil when no
 	// per-sample delta was available (no reference lap yet / DeltaFn unset).
 	DeltaToBestNs *int64

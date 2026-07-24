@@ -48,41 +48,6 @@ func label(name string, x, z float64) rkb.Sector {
 	return rkb.Sector{Sector: name, LabelWorld: &lw}
 }
 
-func TestClArcLengths(t *testing.T) {
-	// (0,0)->(3,0)->(3,4): segment lengths 3 then 4 -> cumulative 0, 3, 7.
-	poly := [][2]float64{{0, 0}, {3, 0}, {3, 4}}
-	arc := clArcLengths(poly)
-	want := []float64{0, 3, 7}
-	if len(arc) != len(want) {
-		t.Fatalf("len = %d, want %d", len(arc), len(want))
-	}
-	for i := range want {
-		if math.Abs(arc[i]-want[i]) > 1e-9 {
-			t.Errorf("arc[%d] = %v, want %v", i, arc[i], want[i])
-		}
-	}
-	if total := arc[len(arc)-1]; math.Abs(total-7) > 1e-9 {
-		t.Errorf("totalArc = %v, want 7", total)
-	}
-}
-
-func TestProjectToClArc_SubVertex(t *testing.T) {
-	// cl (0,0)->(10,0). Point (3,2) has its foot-of-perpendicular at (3,0) -> arc 3.
-	// Nearest-VERTEX would snap to (0,0) -> arc 0 (dist 3.61 < 7.28). Segment interp must give 3.
-	cl := [][2]float64{{0, 0}, {10, 0}}
-	arc := clArcLengths(cl)
-	got, ok := projectToClArc(cl, arc, 3, 2)
-	if !ok {
-		t.Fatal("projectToClArc ok=false")
-	}
-	if math.Abs(got-3) > 1e-9 {
-		t.Fatalf("projected arc = %v, want 3 (interpolated, not vertex 0 or 10)", got)
-	}
-	if got <= arc[0] || got >= arc[1] {
-		t.Errorf("projected arc %v not strictly between %v and %v", got, arc[0], arc[1])
-	}
-}
-
 func rec(cl [][]*float64, sectors ...rkb.Sector) *rkb.Record {
 	return &rkb.Record{
 		Slug:     "t",

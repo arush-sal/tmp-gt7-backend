@@ -66,7 +66,9 @@ func predictedBest(perLap map[int32][]processing.SectorResult) (time.Duration, [
 	best := map[int]SectorBest{}
 	for _, lapNum := range lapNums {
 		for _, s := range perLap[lapNum] {
-			if s.Duration <= 0 {
+			// Skip zero/negative durations and off-track sectors (all four tyres off track somewhere in
+			// the sector) — an off-track sector must not count toward the theoretical/predicted best.
+			if s.Duration <= 0 || !s.Clean {
 				continue
 			}
 			if b, ok := best[s.Index]; !ok || s.Duration < b.Duration {
