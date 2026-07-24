@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-
-	"github.com/arush-sal/garage/backend/rtps/geom"
 )
 
 // RefSectorSeg records which pooled lap owns one sector of the predicted lap and how long that owner's
@@ -83,24 +81,14 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 	}
 	out := PredictedLap{Reliable: reason == "", Reason: reason}
 
-	// Resolve the session's centerline once. Sector boundaries are fractions on the centerline
-	// arc-length axis, but Normalize sets each sample's Fraction on the lap's own racing-line distance
-	// axis (differs per lap). When a usable centerline exists, re-fraction each pooled lap onto the
-	// shared centerline-arc axis so a sector's canonical Start/End cuts every owner at the SAME physical
-	// point (no position discontinuity at a splice seam). No usable centerline -> keep Normalize's
-	// per-lap fractions (unchanged fallback output). A centerline lookup error is non-fatal here (the
-	// same store was already read by SectorsForSession above) and falls back.
-	var cl [][2]float64
-	var arc []float64
-	var totalArc float64
-	if clRaw, _, cErr := provider.CenterlineForSession(ctx, sessionID); cErr == nil && len(clRaw) >= 2 {
-		if a := geom.ClArcLengths(clRaw); a[len(a)-1] > 0 {
-			cl, arc, totalArc = clRaw, a, a[len(a)-1]
-		}
-	}
-
 	// Pool: full racing laps (Timed && Complete && !Fallback) whose trace is sector-analyzable. A lap
-	// with no trace / a read error is skipped rather than failing the whole request.
+	// with no trace / a read error is skipped rather than failing the whole request. Each lap keeps its
+	// own per-lap distance fractions (Normalize) — the same axis analysis.predictedBest cuts sectors on,
+	// so the predicted line and the analyzer's sector timing agree. The splice below emits each owner's
+	// RAW positions for its sector span; a small position step at a sector seam (two laps crossing the
+	// boundary at slightly different points) is accepted and far cheaper than projecting every lap onto
+	// the RKB centerline (which mis-cut samples at a self-crossing like Suzuka's figure-8 and dropped
+	// them from the splice).
 	var pool []pooledLap
 	for _, l := range laps {
 		if !l.Timed || !l.Complete || l.Fallback {
@@ -114,9 +102,6 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 			continue
 		}
 		norm := Normalize(samples)
-		if totalArc > 0 {
-			refractionOnCenterline(norm, cl, arc, totalArc)
-		}
 		pool = append(pool, pooledLap{lapNumber: l.LapNumber, norm: norm, splits: SplitSectors(norm, sectors)})
 	}
 	// Ascending lap-number order so a per-sector duration tie resolves to the lowest lap number.
@@ -125,10 +110,15 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 		return out, nil // empty pool -> no samples, zero predicted best
 	}
 
-	// Splice sectors in index order. cumPredictedNs is the synthetic-lap time at the current sector's
-	// start; distAcc is the running spliced distance (Σ hypot of position deltas across all segments).
-	var cumPredictedNs int64
-	var distAcc float64
+	// Splice sectors in index order, stitching each owner's RAW samples. cumPredictedNs is the running
+	// synthetic-lap time; distAcc is the spliced distance (Σ position deltas). At each owner change the
+	// next owner starts at its sample nearest the previous owner's last position (sectorStartIndex — a
+	// single-point match, not whole-lap projection), so the line is spatially continuous across the seam
+	// even though two laps reach the boundary at slightly different per-lap distances. Emitted Fraction
+	// and TNs are clamped non-decreasing so the small seam overlap can't break downstream monotonic
+	// assumptions (PredictedElapsed's binary search).
+	var cumPredictedNs, prevTNs int64
+	var distAcc, prevFrac float64
 	havePrev := false
 	var prevX, prevZ float32
 	for _, sec := range sectors {
@@ -136,41 +126,53 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 		if !ok {
 			continue // no pooled owner (only reachable with an empty pool, handled above)
 		}
-		ownerStart, ok := owner.norm.TimeAt(sec.Start)
-		if !ok {
-			continue
-		}
-		for _, p := range owner.norm.Points {
-			if p.Fraction < sec.Start || p.Fraction > sec.End {
-				continue
-			}
-			if havePrev {
-				distAcc += math.Hypot(float64(p.PosX-prevX), float64(p.PosZ-prevZ))
-			}
-			havePrev, prevX, prevZ = true, p.PosX, p.PosZ
-
-			out.Samples = append(out.Samples, PredictedSample{
-				Fraction:      p.Fraction,
-				TNs:           cumPredictedNs + p.RecvTime.Sub(ownerStart).Nanoseconds(),
-				Distance:      distAcc,
-				PosX:          p.PosX,
-				PosZ:          p.PosZ,
-				Speed:         p.Speed,
-				Throttle:      p.Throttle,
-				Brake:         p.Brake,
-				RPM:           p.RPM,
-				Gear:          p.Gear,
-				Fuel:          p.Fuel,
-				TyreTempFL:    p.TyreTempFL,
-				TyreTempFR:    p.TyreTempFR,
-				TyreTempRL:    p.TyreTempRL,
-				TyreTempRR:    p.TyreTempRR,
-				Clutch:        p.Clutch,
-				Boost:         p.Boost,
-				DeltaToBestNs: p.DeltaToBestNs,
-			})
-		}
 		durNs := ownerSplit.Duration.Nanoseconds()
+		startIdx := sectorStartIndex(owner.norm.Points, sec.Start, sec.End, havePrev, prevX, prevZ)
+		if startIdx >= 0 {
+			segStart := owner.norm.Points[startIdx].RecvTime // re-base sector time to the first emitted sample
+			for i := startIdx; i < len(owner.norm.Points); i++ {
+				p := owner.norm.Points[i]
+				if p.Fraction > sec.End {
+					break
+				}
+				if havePrev {
+					distAcc += math.Hypot(float64(p.PosX-prevX), float64(p.PosZ-prevZ))
+				}
+				havePrev, prevX, prevZ = true, p.PosX, p.PosZ
+
+				f := p.Fraction
+				if f < prevFrac { // clamp non-decreasing across the seam overlap
+					f = prevFrac
+				}
+				prevFrac = f
+				tns := cumPredictedNs + p.RecvTime.Sub(segStart).Nanoseconds()
+				if tns < prevTNs {
+					tns = prevTNs
+				}
+				prevTNs = tns
+
+				out.Samples = append(out.Samples, PredictedSample{
+					Fraction:      f,
+					TNs:           tns,
+					Distance:      distAcc,
+					PosX:          p.PosX,
+					PosZ:          p.PosZ,
+					Speed:         p.Speed,
+					Throttle:      p.Throttle,
+					Brake:         p.Brake,
+					RPM:           p.RPM,
+					Gear:          p.Gear,
+					Fuel:          p.Fuel,
+					TyreTempFL:    p.TyreTempFL,
+					TyreTempFR:    p.TyreTempFR,
+					TyreTempRL:    p.TyreTempRL,
+					TyreTempRR:    p.TyreTempRR,
+					Clutch:        p.Clutch,
+					Boost:         p.Boost,
+					DeltaToBestNs: p.DeltaToBestNs,
+				})
+			}
+		}
 		cumPredictedNs += durNs
 		out.PredictedBestNs += durNs
 		out.Sectors = append(out.Sectors, RefSectorSeg{
@@ -183,47 +185,44 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 	return out, nil
 }
 
-// refractionJumpTol is the largest plausible forward jump in normalized centerline arc between two
-// consecutive (60Hz) trace samples. A real car covers a tiny fraction of the lap per frame (even 300
-// km/h over a 5 km lap is ~0.02%/frame; a multi-second frame gap is still a few percent), so any single
-// step beyond this is a projection artefact — the global-nearest ProjectToClArc snapping to a FAR
-// centerline segment where the track passes near itself (e.g. Suzuka's figure-8 crossover) or across
-// the start/finish seam — not real progress.
-const refractionJumpTol = 0.2
+// seamSearchMargin bounds how far BEFORE a sector's Start (in per-lap distance fraction) the seam
+// alignment looks for the owner's sample nearest the previous owner's last position. It must exceed the
+// physical seam offset (two laps reach a boundary at slightly different distances — up to a few hundred
+// metres) yet stay well within a sector so a self-crossing elsewhere on track can't be matched.
+const seamSearchMargin = 0.05
 
-// refractionOnCenterline rewrites each point's Fraction as its centerline-arc projection normalized by
-// totalArc, replacing Normalize's per-lap distance fraction. Fractions are clamped to [0,1] and forced
-// monotonically non-decreasing (max with the previous) so NormalizedLap.locate's binary search stays
-// valid. A lap starts at the start/finish line, so prev seeds at 0; a projection that jumps FORWARD by
-// more than refractionJumpTol is a self-crossing/seam mis-projection and is rejected (the point holds
-// the previous arc) — without this, one bad forward snap would pin every later sample high via the
-// monotonic clamp and collapse the whole lap onto a tiny arc range. Small backward wander (racing line
-// drift) is clamped up to prev as normal. Mutates n.Points in place. arc must be geom.ClArcLengths(cl);
-// caller guarantees len(cl) >= 2 and totalArc > 0.
-func refractionOnCenterline(n NormalizedLap, cl [][2]float64, arc []float64, totalArc float64) {
-	prev := 0.0
-	for i := range n.Points {
-		a, ok := geom.ProjectToClArc(cl, arc, float64(n.Points[i].PosX), float64(n.Points[i].PosZ))
-		if !ok {
-			n.Points[i].Fraction = prev // no projection -> hold position, keep fractions monotonic
-			continue
+// sectorStartIndex returns the index of the first owner sample to emit for a sector. For the first
+// sector (no previous position) it is the first sample in [start, end]. Otherwise it is the sample in
+// [start-seamSearchMargin, end] nearest the previous owner's last position (prevX, prevZ), so the
+// spliced line picks up spatially where the previous owner left off (no seam teleport). Returns -1 when
+// the owner has no sample in [start, end] (defensive — a chosen owner always does).
+func sectorStartIndex(pts []NormSample, start, end float64, havePrev bool, prevX, prevZ float32) int {
+	if !havePrev {
+		for i := range pts {
+			if pts[i].Fraction >= start && pts[i].Fraction <= end {
+				return i
+			}
 		}
-		f := a / totalArc
-		if f < 0 {
-			f = 0
-		} else if f > 1 {
-			f = 1
-		}
-		if f > prev+refractionJumpTol {
-			n.Points[i].Fraction = prev // implausible forward teleport (crossover/seam) -> hold prev
-			continue
-		}
-		if f < prev {
-			f = prev // small backward wander -> clamp monotonic
-		}
-		prev = f
-		n.Points[i].Fraction = f
+		return -1
 	}
+	best := math.Inf(1)
+	idx, inRange := -1, false
+	for i := range pts {
+		f := pts[i].Fraction
+		if f < start-seamSearchMargin || f > end {
+			continue
+		}
+		if f >= start {
+			inRange = true
+		}
+		if d := math.Hypot(float64(pts[i].PosX-prevX), float64(pts[i].PosZ-prevZ)); d < best {
+			best, idx = d, i
+		}
+	}
+	if !inRange {
+		return -1
+	}
+	return idx
 }
 
 // ownerForSector returns the pooled lap with the minimum sector-`index` duration and that lap's split

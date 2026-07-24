@@ -8,24 +8,14 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/reference"
 )
 
-// fakeProvider is a fixed SectorProvider: returns its sectors + reason regardless of session. cl (if
-// set) is the centerline returned by CenterlineForSession; nil cl reports "no-centerline" so callers
-// take the per-lap fraction fallback.
+// fakeProvider is a fixed SectorProvider: returns its sectors + reason regardless of session.
 type fakeProvider struct {
 	sectors []reference.Sector
 	reason  string
-	cl      [][2]float64
 }
 
 func (f fakeProvider) SectorsForSession(_ context.Context, _ string) ([]reference.Sector, string, error) {
 	return f.sectors, f.reason, nil
-}
-
-func (f fakeProvider) CenterlineForSession(_ context.Context, _ string) ([][2]float64, string, error) {
-	if len(f.cl) < 2 {
-		return nil, "no-centerline", nil
-	}
-	return f.cl, "", nil
 }
 
 // lsTrace builds a lap's trace at the 3-sector mock boundaries (fractions 0/.4/.75/1), timed so each

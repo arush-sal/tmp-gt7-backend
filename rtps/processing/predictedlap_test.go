@@ -2,7 +2,6 @@ package processing
 
 import (
 	"context"
-	"math"
 	"testing"
 	"time"
 )
@@ -35,6 +34,63 @@ func sfSample(session string, lap int32, base time.Time, dist float64, off time.
 	return Sample{
 		SessionID: session, LapNumber: lap, Distance: dist, RecvTime: base.Add(off),
 		PosX: float32(dist), PosZ: 0, Speed: 100, SurfaceType: surf,
+	}
+}
+
+// TestSectorStartIndex_NearestToPrev: the seam-alignment start picker. First sector (no prev) starts at
+// the first sample in [start,end]; a later sector starts at the sample nearest the previous owner's last
+// position within [start-seamSearchMargin, end], so two owners meet at ~the same physical point.
+func TestSectorStartIndex_NearestToPrev(t *testing.T) {
+	var pts []NormSample // x=0..100 step 5, Fraction = x/100, index = x/5
+	for x := 0; x <= 100; x += 5 {
+		pts = append(pts, NormSample{Sample: Sample{PosX: float32(x), PosZ: 0}, Fraction: float64(x) / 100})
+	}
+	// First sector [0.4,0.6], no prev -> first sample at/after 0.4 = x40 = idx 8.
+	if got := sectorStartIndex(pts, 0.4, 0.6, false, 0, 0); got != 8 {
+		t.Errorf("first-sector start = %d, want 8 (frac 0.4)", got)
+	}
+	// Seam: prev owner ended near x=52; sector [0.5,0.7] window [0.45,0.7] -> nearest is x50 = idx 10.
+	if got := sectorStartIndex(pts, 0.5, 0.7, true, 52, 0); got != 10 {
+		t.Errorf("seam start = %d, want 10 (x50 nearest prev x52)", got)
+	}
+	// Prev slightly BEFORE the boundary (x=46) -> the margin sample x45 (frac 0.45 < start) is nearest,
+	// so the owner starts just before its distance-fraction Start to stay spatially continuous. idx 9.
+	if got := sectorStartIndex(pts, 0.5, 0.7, true, 46, 0); got != 9 {
+		t.Errorf("seam start (margin) = %d, want 9 (x45 nearest prev x46)", got)
+	}
+}
+
+// TestPredictedReferenceLap_CoversFullLapNoGap: the splice cuts each owner's sector by its own per-lap
+// distance fraction and emits raw samples, so the predicted lap covers the whole lap with no dropped
+// interior stretch (the regression this fix targets: centerline projection used to drop crossover
+// samples, leaving a bare band segment). A dense single-lap pool owns every sector; assert the spliced
+// fractions span 0..1 with no interior gap larger than the sample spacing.
+func TestPredictedReferenceLap_CoversFullLapNoGap(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	traces := NewMemTraceStore()
+	// 40 evenly-spaced samples over distance 0..100 (fractions 0..1 at 1/39 spacing), 100s lap.
+	var samples []Sample
+	for i := 0; i < 40; i++ {
+		samples = append(samples, sfSample("s", 1, base, float64(i)*100.0/39.0, time.Duration(i)*100*time.Second/39, "TTTT"))
+	}
+	_ = traces.SaveBatch(samples)
+	laps := []Lap{{SessionID: "s", LapNumber: 1, Duration: 100 * time.Second, Timed: true, Complete: true}}
+
+	got, err := PredictedReferenceLap(context.Background(), fakeProvider{sectors: mockSectors()}, traces, "s", laps)
+	if err != nil {
+		t.Fatalf("PredictedReferenceLap: %v", err)
+	}
+	if len(got.Samples) == 0 {
+		t.Fatal("no predicted samples")
+	}
+	if got.Samples[0].Fraction != 0 || got.Samples[len(got.Samples)-1].Fraction < 0.999 {
+		t.Errorf("span = [%.3f, %.3f], want ~[0,1]", got.Samples[0].Fraction, got.Samples[len(got.Samples)-1].Fraction)
+	}
+	const maxGap = 0.05 // sample spacing is 1/39 ~= 0.026; a dropped stretch would exceed this
+	for i := 1; i < len(got.Samples); i++ {
+		if step := got.Samples[i].Fraction - got.Samples[i-1].Fraction; step > maxGap {
+			t.Errorf("interior fraction gap %.3f at sample %d exceeds %.3f (a stretch was dropped)", step, i, maxGap)
+		}
 	}
 }
 
@@ -106,46 +162,6 @@ func TestPredictedReferenceLap_AllOffTrackFallback(t *testing.T) {
 	if got.Sectors[0].OwnerLap != 1 {
 		t.Errorf("sector 0 OwnerLap = %d, want 1 (fastest dirty as fallback)", got.Sectors[0].OwnerLap)
 	}
-}
-
-// TestRefractionOnCenterline_RejectsCrossoverTeleport: a point that projects FAR forward (a
-// self-crossing / seam mis-projection, as at Suzuka's figure-8) must not pin the rest of the lap high.
-// Without rejection, the greedy monotonic clamp collapses every later sample onto the teleported arc.
-func TestRefractionOnCenterline_RejectsCrossoverTeleport(t *testing.T) {
-	cl := [][2]float64{{0, 0}, {50, 0}, {100, 0}} // straight centerline, arc 0..100
-	arc := geomArc(cl)
-	// Lap advances 0,10, then one sample mis-projects to x=90 (arc 0.9), then resumes 20,30.
-	mk := func(x float32) Sample { return Sample{PosX: x, PosZ: 0, Distance: float64(x)} }
-	n := Normalize([]Sample{mk(0), mk(10), mk(90), mk(20), mk(30)})
-	refractionOnCenterline(n, cl, arc, 100)
-
-	got := make([]float64, len(n.Points))
-	for i, p := range n.Points {
-		got[i] = p.Fraction
-	}
-	// Monotonic non-decreasing (locate's invariant) and NOT collapsed onto ~0.9.
-	for i := 1; i < len(got); i++ {
-		if got[i] < got[i-1] {
-			t.Errorf("fractions not monotonic: %v", got)
-		}
-	}
-	if got[2] > 0.5 {
-		t.Errorf("outlier point fraction = %v, want held near prev (~0.1), not the 0.9 teleport", got[2])
-	}
-	if last := got[len(got)-1]; last > 0.5 {
-		t.Errorf("lap collapsed: last fraction = %v (want ~0.3, real progress preserved)", last)
-	}
-}
-
-// geomArc is a tiny local alias so the test doesn't import geom directly (it's already a dep of the
-// package under test).
-func geomArc(cl [][2]float64) []float64 {
-	arc := make([]float64, len(cl))
-	for i := 1; i < len(cl); i++ {
-		dx, dz := cl[i][0]-cl[i-1][0], cl[i][1]-cl[i-1][1]
-		arc[i] = arc[i-1] + math.Hypot(dx, dz)
-	}
-	return arc
 }
 
 // TestPredictedReferenceLap_ExcludesUndrivenSector: a lap whose trace does not cover a sector produces
@@ -250,88 +266,6 @@ func TestPredictedReferenceLap_SplicesFastestSectors(t *testing.T) {
 	}
 	if last.TNs != got.PredictedBestNs {
 		t.Errorf("last t_ns = %d, want %d (== predicted best)", last.TNs, got.PredictedBestNs)
-	}
-}
-
-// clLTrace builds a lap that drives the L-shaped centerline (0,0)->(100,0)->(100,100) exactly, sampled
-// every 5 units of arc (0..200), so PosX/PosZ lie on the centerline. distortDist warps the recorded
-// cumulative Distance non-linearly (quad growth), so Normalize's per-lap fraction (Distance/total)
-// does NOT equal arc/200 — reproducing the two-axis mismatch. bandTimes are the wall-clock durations of
-// arc bands [0,80],[80,150],[150,200] (the three mock sectors after re-fractioning), letting each lap
-// own a chosen sector.
-func clLTrace(session string, lap int32, base time.Time, distort float64, bandTimes [3]time.Duration) []Sample {
-	posAt := func(s float64) (float32, float32) {
-		if s <= 100 {
-			return float32(s), 0
-		}
-		return 100, float32(s - 100)
-	}
-	timeAt := func(s float64) time.Duration {
-		switch {
-		case s <= 80:
-			return time.Duration(float64(bandTimes[0]) * (s / 80))
-		case s <= 150:
-			return bandTimes[0] + time.Duration(float64(bandTimes[1])*((s-80)/70))
-		default:
-			return bandTimes[0] + bandTimes[1] + time.Duration(float64(bandTimes[2])*((s-150)/50))
-		}
-	}
-	var out []Sample
-	for s := 0.0; s <= 200.0001; s += 5 {
-		px, pz := posAt(s)
-		out = append(out, Sample{
-			SessionID: session,
-			LapNumber: lap,
-			Distance:  s * (1 + distort*s/200), // non-linear -> per-lap fraction != arc fraction
-			RecvTime:  base.Add(timeAt(s)),
-			PosX:      px,
-			PosZ:      pz,
-			Speed:     50,
-			Gear:      3,
-		})
-	}
-	return out
-}
-
-// TestPredictedReferenceLap_CenterlineContinuity: two laps on the SAME L-shaped centerline but with
-// different total per-lap distances (different Distance distortion). With the centerline re-fractioning
-// fix, a shared sector fraction maps to the same physical point on both laps, so the spliced predicted
-// lap has no large PosX/PosZ jump at the sector seams (the pre-fix ~15 m diagonal is gone), and sectors
-// still splice in fastest-owner order.
-func TestPredictedReferenceLap_CenterlineContinuity(t *testing.T) {
-	base := time.Unix(1_700_000_000, 0)
-	traces := NewMemTraceStore()
-	// Lap 1 owns sectors 0 & 2 (fast there); lap 2 owns sector 1. Different distortion => different totals.
-	_ = traces.SaveBatch(clLTrace("s", 1, base, 0.0, [3]time.Duration{30 * time.Second, 40 * time.Second, 30 * time.Second}))
-	_ = traces.SaveBatch(clLTrace("s", 2, base, 0.3, [3]time.Duration{35 * time.Second, 30 * time.Second, 35 * time.Second}))
-
-	laps := []Lap{
-		{SessionID: "s", LapNumber: 1, Duration: 100 * time.Second, Timed: true, Complete: true},
-		{SessionID: "s", LapNumber: 2, Duration: 100 * time.Second, Timed: true, Complete: true},
-	}
-	// Mock sectors are 0/.4/.75/1 -> arc bands [0,80],[80,150],[150,200] on the 200 m centerline.
-	cl := [][2]float64{{0, 0}, {100, 0}, {100, 100}}
-	p := fakeProvider{sectors: mockSectors(), reason: "", cl: cl}
-
-	got, err := PredictedReferenceLap(context.Background(), p, traces, "s", laps)
-	if err != nil {
-		t.Fatalf("PredictedReferenceLap: %v", err)
-	}
-	wantOwner := []int32{1, 2, 1}
-	for i, w := range wantOwner {
-		if got.Sectors[i].OwnerLap != w {
-			t.Errorf("sector %d OwnerLap = %d, want %d", i, got.Sectors[i].OwnerLap, w)
-		}
-	}
-	// No large position step at any seam. Samples are 5 m apart on the centerline; the only owner change
-	// is at a shared boundary, which now lands on the same physical point (step ~0 or one sample gap).
-	// Pre-fix, lap 2's fraction-0.4 point sat ~15 m further along its distorted axis -> a >10 m jump.
-	const maxStep = 10.0
-	for i := 1; i < len(got.Samples); i++ {
-		a, b := got.Samples[i-1], got.Samples[i]
-		if step := math.Hypot(float64(b.PosX-a.PosX), float64(b.PosZ-a.PosZ)); step > maxStep {
-			t.Errorf("position step %.2f m at sample %d exceeds %.0f m (splice discontinuity)", step, i, maxStep)
-		}
 	}
 }
 

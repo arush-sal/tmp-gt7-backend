@@ -93,30 +93,6 @@ func (k *KB) SectorsForSession(ctx context.Context, sessionID string) (sectors [
 	return sectors, reason, nil
 }
 
-// CenterlineForSession returns the session track's centerline polyline in world metres, mirroring
-// SectorsForSession's resolution (slugFor -> store.Track -> record centerline). It lets the
-// predicted-lap path put every pooled lap on the same centerline-arc axis the sector boundaries live
-// on. reason is "track-not-detected" (no slug / no record) or "no-centerline" (fewer than two finite
-// centerline vertices); a usable centerline returns reason "".
-func (k *KB) CenterlineForSession(ctx context.Context, sessionID string) (cl [][2]float64, reason string, err error) {
-	slug, ok := k.slugFor(sessionID)
-	if !ok {
-		return nil, "track-not-detected", nil
-	}
-	rec, found, err := k.store.Track(ctx, slug)
-	if err != nil {
-		return nil, "", err
-	}
-	if !found {
-		return nil, "track-not-detected", nil
-	}
-	cl = centerline(rec)
-	if len(cl) < 2 {
-		return nil, "no-centerline", nil
-	}
-	return cl, "", nil
-}
-
 // warnOnce emits the geometry-missing warning at most once per slug.
 func (k *KB) warnOnce(slug, reason string) {
 	k.mu.Lock()
