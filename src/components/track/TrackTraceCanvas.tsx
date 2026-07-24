@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Stage, Layer, Line, Text, Shape, Circle } from "react-konva";
+import { Stage, Layer, Line, Text, Shape, Circle, RegularPolygon } from "react-konva";
 import type Konva from "konva";
 import type { HistoryStore, TracePoint } from "../../lib/historyStore";
 import {
   fitView, worldToScreen, screenToWorld, bboxOf, type View,
 } from "../../lib/trackTransform";
 import { nearestSampleIndex } from "../../lib/trackScrub";
+import { peakDeltaColor } from "../../lib/traceColor";
 import type { DrawGeometry } from "../../lib/rkbGeometry";
 import { geometryBbox } from "../../lib/rkbGeometry";
 import { drawTrace } from "./drawTrace";
@@ -40,18 +41,49 @@ function flatten(pts: ReadonlyArray<[number, number]>, view: View): number[] {
   return out;
 }
 
+// A speed peak/valley at a track world position. `index` is the ExtremumDTO.index (shared id with
+// the peaks table for cross-highlight). Symbol colour is by KIND; deltaNs feeds the pinned label.
+export type PeakMarker = { index: number; x: number; z: number; kind: "peak" | "valley"; deltaNs: number | null };
+
+const PEAK_FILL = "#2ed16a";   // peak symbol green
+const VALLEY_FILL = "#e10600"; // valley symbol red
+
+// Signed delta seconds for the pinned canvas label, e.g. "+0.097s".
+const fmtDeltaS = (ns: number | null): string =>
+  ns == null ? "—" : `${ns >= 0 ? "+" : ""}${(ns / 1e9).toFixed(3)}s`;
+
 export default function TrackTraceCanvas(props: {
   store: HistoryStore; geometry: DrawGeometry | null; theme: "light" | "dark";
   footer?: ReactNode;
   selectedLap?: "all" | "current" | number;
   analysisLap?: ReadonlyArray<TracePoint> | null;
+  referenceLap?: ReadonlyArray<TracePoint> | null;
+  // Shared graph zoom window (lap-time seconds); when set, the canvas frames just that track segment.
+  zoomXRange?: [number, number] | null;
+  // In analysis mode the zoom/reset controls drive the shared window (bidirectional with the graph).
+  // anchorT (lap-time seconds) keeps that point fixed while zooming (cursor-anchored wheel zoom);
+  // omitted -> zoom around the window centre (buttons).
+  onZoomWindow?: (factor: number, anchorT?: number) => void; // >1 = zoom out (widen), <1 = zoom in (narrow)
+  onResetView?: () => void;
+  peakMarkers?: ReadonlyArray<PeakMarker>;
+  hoveredPeak?: number | null;
+  pinnedPeak?: number | null;
+  onHoverPeak?: (index: number | null) => void;
+  onPinPeak?: (index: number) => void;
   scrubIndex?: number | null;
   onScrub?: (i: number) => void;
 }) {
   const {
     store, geometry, theme, footer, selectedLap = "all",
-    analysisLap = null, scrubIndex = null, onScrub,
+    analysisLap = null, referenceLap = null, zoomXRange = null,
+    onZoomWindow, onResetView, peakMarkers = [],
+    hoveredPeak = null, pinnedPeak = null, onHoverPeak, onPinPeak,
+    scrubIndex = null, onScrub,
   } = props;
+  // Analysis mode: the zoom/reset controls manipulate the shared lap-time window (which also drives
+  // the graphs), instead of the canvas's own spatial zoom used in live mode.
+  const windowed = analysisLap != null;
+  const [showReference, setShowReference] = useState(true);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<Konva.Stage | null>(null);
@@ -63,6 +95,9 @@ export default function TrackTraceCanvas(props: {
   const [zoom, setZoom] = useState(1);
   const [follow, setFollow] = useState(true);
   const [manualView, setManualView] = useState<View | null>(null);
+  // Windowed free-pan: once the user drags while zoomed, the spatial manualView takes over from the
+  // graph-window segment fit (no snap-back). Any window change / reset clears it and re-syncs.
+  const [panned, setPanned] = useState(false);
   const lastRevision = useRef(-1);
 
   // --- Stage sizing: ResizeObserver on the container ---
@@ -92,8 +127,18 @@ export default function TrackTraceCanvas(props: {
   // is a deferred refinement.)
   const fitBb = geomBbox ?? traceBbox;
 
+  // Graph-linked segment zoom: when a telemetry-graph time window is active, frame just the track
+  // samples inside that window (overrides the full-track fit + any manual pan/zoom).
+  const segBbox = (zoomXRange && analysisLap)
+    ? bboxOf(analysisLap.filter(p => p.t != null && p.t >= zoomXRange[0] && p.t <= zoomXRange[1]))
+    : null;
+
   let view: View;
-  if (follow && fitBb) {
+  if (segBbox && !panned) {
+    view = fitView(segBbox, size.w, size.h, PAD, 1, MIN_EXTENT_M); // window governs (until a drag)
+  } else if (panned && manualView) {
+    view = manualView; // windowed free pan — no snap-back; cleared on the next window change/reset
+  } else if (follow && fitBb) {
     view = fitView(fitBb, size.w, size.h, PAD, zoom, MIN_EXTENT_M);
   } else if (manualView) {
     view = manualView;
@@ -102,6 +147,10 @@ export default function TrackTraceCanvas(props: {
   } else {
     view = { scale: 1, offsetX: 0, offsetZ: 0 };
   }
+
+  // A window change (graph-select, canvas zoom, scrub-page) or a new lap re-couples the canvas:
+  // drop the free-pan override so it snaps back to the shared segment.
+  useEffect(() => { setPanned(false); setManualView(null); }, [zoomXRange]);
 
   // --- Static geometry layer: drawn UNCACHED. Caching baked the view transform into an
   // offscreen bitmap sized to the content's screen bbox; when zoomed in, that bbox spans
@@ -128,10 +177,10 @@ export default function TrackTraceCanvas(props: {
     return () => cancelAnimationFrame(raf);
   }, [store]);
 
-  // redraw trace layer immediately on view/theme/selectedLap change (independent of rAF polling)
+  // redraw trace layer immediately on view/theme/selectedLap/reference change (independent of rAF)
   useEffect(() => {
     traceLayerRef.current?.batchDraw();
-  }, [view.scale, view.offsetX, view.offsetZ, theme, selectedLap]);
+  }, [view.scale, view.offsetX, view.offsetZ, theme, selectedLap, referenceLap, showReference]);
 
   // Shared center-anchored zoom math: given the current view/zoom and a factor, compute
   // the clamped new zoom plus the manualView that keeps `pointer` (screen coords, relative
@@ -156,6 +205,18 @@ export default function TrackTraceCanvas(props: {
     const stage = stageRef.current;
     if (!stage) return;
     const pointer = stage.getPointerPosition();
+    if (windowed) {
+      // Anchor the window zoom on the track point under the cursor (its lap-time), so zoom-in
+      // converges toward the cursor instead of the window centre. scroll up = zoom in.
+      let anchorT: number | undefined;
+      if (pointer && analysisLap) {
+        const { x, z } = screenToWorld(view, pointer.x, pointer.y);
+        const idx = nearestSampleIndex(analysisLap, x, z);
+        if (idx >= 0) anchorT = analysisLap[idx].t;
+      }
+      onZoomWindow?.(e.evt.deltaY > 0 ? 1.25 : 1 / 1.25, anchorT);
+      return;
+    }
     const dir = e.evt.deltaY > 0 ? -1 : 1;
     const factor = dir > 0 ? 1.1 : 1 / 1.1;
 
@@ -177,8 +238,8 @@ export default function TrackTraceCanvas(props: {
     setFollow(false);
   }
 
-  function handleZoomIn() { handleZoomButton(1.1); }
-  function handleZoomOut() { handleZoomButton(1 / 1.1); }
+  function handleZoomIn() { if (windowed) { onZoomWindow?.(1 / 1.25); return; } handleZoomButton(1.1); }
+  function handleZoomOut() { if (windowed) { onZoomWindow?.(1.25); return; } handleZoomButton(1 / 1.1); }
 
   function handleDragMove(e: Konva.KonvaEventObject<DragEvent>) {
     const stage = e.target;
@@ -194,12 +255,15 @@ export default function TrackTraceCanvas(props: {
     stage.position({ x: 0, y: 0 });
     setManualView(newView);
     setFollow(false);
+    if (windowed) setPanned(true); // decouple from the segment fit -> free pan, no snap-back
   }
 
   function handleFollowToggle() {
     setFollow(true);
     setManualView(null);
     setZoom(1);
+    setPanned(false);
+    if (windowed) onResetView?.(); // absolute reset: full lap window -> full track + full graphs
   }
 
   function handleStageClick() {
@@ -236,6 +300,17 @@ export default function TrackTraceCanvas(props: {
           <button type="button" className="chip" onClick={handleZoomOut} aria-label="zoom out">-</button>
           <button type="button" className="chip" onClick={handleZoomIn} aria-label="zoom in">+</button>
           <button type="button" className="chip" onClick={handleFollowToggle} aria-label="reset view">reset</button>
+          {referenceLap && referenceLap.length > 1 && (
+            <button
+              type="button"
+              className="chip"
+              onClick={() => setShowReference(v => !v)}
+              aria-pressed={showReference}
+              title="toggle the predicted (ideal) reference line"
+            >
+              {showReference ? "reference on" : "reference off"}
+            </button>
+          )}
           <button type="button" className="chip" onClick={handleExportPng}>export png</button>
         </div>
       </div>
@@ -300,6 +375,7 @@ export default function TrackTraceCanvas(props: {
                 drawTrace(ctx._context, {
                   trace: store.trace(), view, theme, select: selectedLap,
                   analysisLap: analysisLap ?? undefined,
+                  referenceLap: showReference ? referenceLap : null,
                 });
               }}
             />
@@ -312,12 +388,61 @@ export default function TrackTraceCanvas(props: {
               );
             })()}
           </Layer>
+          {/* Interactive peak/valley markers on their own listening layer (the trace layer is inert).
+              Symbol green (peak) / red (valley); the hovered or pinned one is enlarged; the pinned one
+              also shows its delta value. Hover/click cross-highlight with the peaks table. */}
+          <Layer>
+            {peakMarkers.map((m) => {
+              if (!Number.isFinite(m.x) || !Number.isFinite(m.z)) return null;
+              const { sx, sy } = worldToScreen(view, m.x, m.z);
+              const up = m.kind === "peak";
+              const active = m.index === hoveredPeak || m.index === pinnedPeak;
+              const pinned = m.index === pinnedPeak;
+              return (
+                <RegularPolygon
+                  key={m.index}
+                  x={sx}
+                  y={sy + (up ? -9 : 9)}
+                  sides={3}
+                  radius={active ? 8 : 5}
+                  rotation={up ? 0 : 180}
+                  fill={up ? PEAK_FILL : VALLEY_FILL}
+                  stroke={active ? "#ffffff" : "#1a1a1a"}
+                  strokeWidth={active ? 2 : 1}
+                  shadowColor="#000"
+                  shadowBlur={pinned ? 6 : 0}
+                  onMouseEnter={() => onHoverPeak?.(m.index)}
+                  onMouseLeave={() => onHoverPeak?.(null)}
+                  onClick={(e) => { e.cancelBubble = true; onPinPeak?.(m.index); }}
+                />
+              );
+            })}
+            {pinnedPeak !== null && (() => {
+              const m = peakMarkers.find(pm => pm.index === pinnedPeak);
+              if (!m || !Number.isFinite(m.x) || !Number.isFinite(m.z)) return null;
+              const { sx, sy } = worldToScreen(view, m.x, m.z);
+              return (
+                <Text
+                  x={sx + 8}
+                  y={sy - (m.kind === "peak" ? 22 : 4)}
+                  text={fmtDeltaS(m.deltaNs)}
+                  fontSize={13}
+                  fontStyle="bold"
+                  fill={peakDeltaColor(m.deltaNs)}
+                  listening={false}
+                />
+              );
+            })()}
+          </Layer>
         </Stage>
         <div className="trace-legend" aria-label="drive line colours">
           <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--accel" />Throttle</span>
           <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--coast" />Coast</span>
           <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--brake" />Brake</span>
           <span className="trace-legend__item"><i className="trace-legend__sw trace-legend__sw--trail" />Trail</span>
+          {referenceLap && referenceLap.length > 1 && showReference && (
+            <span className="trace-legend__item"><i className="trace-legend__sw" style={{ background: "#F433FF" }} />Reference</span>
+          )}
         </div>
       </div>
       {footer && <div className="track-status" role="status">{footer}</div>}

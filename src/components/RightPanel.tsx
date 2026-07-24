@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { LiveView } from "../lib/liveView";
 import type { Corner, CornerAnalysis } from "../contract/corner";
 import type { SectorTime } from "../lib/sectorTimer";
@@ -13,11 +14,12 @@ interface Props {
   lapsLeft?: number | null;
   sectorTimes?: SectorTime[] | null;
   lapHistory?: { lap: number; time: string; best: boolean }[];
+  peaksSection?: ReactNode; // Speed Peaks & Valleys panel (rendered only when a lap is selected)
 }
 
 export default function RightPanel({
   view, corners, selectedCornerId, onCornerSelect, selectedCornerDetail,
-  usedPerLap = null, lapsLeft = null, sectorTimes = null, lapHistory = [],
+  usedPerLap = null, lapsLeft = null, sectorTimes = null, lapHistory = [], peaksSection = null,
 }: Props) {
   const opportunities = [...corners]
     .filter(c => c.delta > 0.05)
@@ -38,10 +40,12 @@ export default function RightPanel({
         {sectorTimes ? (
           sectorTimes.map(st => (
             <div className="data-row" key={st.sector}>
-              <span className="text-muted">{st.sector}</span>
-              <span className="mono">
+              <span className={st.fastest ? "text-purple" : "text-muted"} title={st.fastest ? "Session-fastest sector" : undefined}>
+                {st.fastest ? "★ " : ""}{st.sector}
+              </span>
+              <span className={`mono ${st.fastest ? "text-purple" : ""}`.trim()}>
                 {msToSectorTime(st.timeMs)}
-                {st.deltaMs !== null && (
+                {st.deltaMs !== null && !st.fastest && (
                   <span className={st.deltaMs > 0 ? "text-red" : st.deltaMs < 0 ? "text-blue" : "text-muted"}>
                     {" "}({msToSectorDelta(st.deltaMs)})
                   </span>
@@ -72,6 +76,8 @@ export default function RightPanel({
           )}
         </div>
       </div>
+
+      {peaksSection}
 
       {/* ── Top opportunities ── */}
       <div className="section section--hi">

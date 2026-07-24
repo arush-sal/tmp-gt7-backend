@@ -1,4 +1,11 @@
-import { driveState, traceColor, colorBucket, brakeSpans } from "./traceColor";
+import { driveState, traceColor, colorBucket, brakeSpans, peakDeltaColor } from "./traceColor";
+
+test("peakDeltaColor: + behind (red), - ahead (green), 0/null neutral", () => {
+  expect(peakDeltaColor(null)).toBe("#9095a0");   // no reference -> neutral
+  expect(peakDeltaColor(0)).toBe("#9095a0");       // exactly on -> neutral
+  expect(peakDeltaColor(0.5e9)).toBe("#e10600");   // behind/slower -> red
+  expect(peakDeltaColor(-1e9)).toBe("#2ed16a");    // ahead/faster -> green
+});
 
 test("driveState buckets", () => {
   expect(driveState(80, 0)).toBe("accel");

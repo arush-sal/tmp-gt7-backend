@@ -41,7 +41,7 @@ function sawtoothPoints(pts: ReadonlyArray<{ sx: number; sy: number }>, step: nu
 
 // Regular sawtooth ribbon drawn on top of the racing line, confined to brake spans.
 function drawBrakeSawtooth(ctx: CanvasRenderingContext2D, keptPts: ReadonlyArray<TracePoint>,
-                          spans: ReadonlyArray<[number, number]>, view: View, alpha: number) {
+  spans: ReadonlyArray<[number, number]>, view: View, alpha: number) {
   if (spans.length === 0) return;
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -63,8 +63,46 @@ function drawBrakeSawtooth(ctx: CanvasRenderingContext2D, keptPts: ReadonlyArray
   ctx.restore();
 }
 
+// The predicted (reference) lap's drive-line: a single flat VIOLET solid stroke — deliberately NOT
+// the per-segment throttle/brake colouring (and no brake sawtooth), so it reads as one clearly
+// distinct line beside the driver's green/red/amber/white line. Matches REFERENCE_COLOR (graphs).
+// The predicted lap is spliced from fastest-sector segments of different laps, so its position jumps
+// at splice boundaries (measured ~69 m in 0.1 s ≈ 678 m/s) — break the line there with a TIGHT
+// teleport ceiling (100 m/s -> 400 m/s w/ penUpBreaks' 4x margin; the driver line's 200 was too loose
+// and let the ~82 m threshold pass the 69 m jump) so no straight diagonal is drawn across the track.
+const REFERENCE_LINE_COLOR = "#F433FF";
+function drawReferenceLine(ctx: CanvasRenderingContext2D, pts: ReadonlyArray<TracePoint>, view: View) {
+  if (pts.length < 2) return;
+  // Detect splice teleports on the FULL sample array, where dt is the true per-frame gap (~0.016-0.1s)
+  // -> the ~69 m jump reads as ~700 m/s and is caught. Decimating FIRST inflated the kept-point dt
+  // (dropped straight points) so the speed threshold rose and the jump slipped through -> diagonal.
+  const fullDts = pts.map((p, k) =>
+    k === 0 ? 0 : (p.t !== undefined && pts[k - 1].t !== undefined ? p.t - pts[k - 1].t! : NaN));
+  const breaks = penUpBreaks(pts, fullDts, 100); // original indices where a teleport starts
+  const keep = decimate(pts, view, 1);
+  ctx.save();
+  ctx.strokeStyle = REFERENCE_LINE_COLOR;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 0.9;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  let started = false;
+  let prev = -1;
+  for (const idx of keep) {
+    const p = pts[idx];
+    if (!Number.isFinite(p.posX) || !Number.isFinite(p.posZ)) { started = false; prev = idx; continue; }
+    // A teleport anywhere in the original samples this kept-segment spans -> start a new sub-path.
+    if (prev >= 0) { for (let b = prev + 1; b <= idx; b++) if (breaks.has(b)) { started = false; break; } }
+    const { sx, sy } = worldToScreen(view, p.posX, p.posZ);
+    if (!started) { ctx.moveTo(sx, sy); started = true; } else ctx.lineTo(sx, sy);
+    prev = idx;
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawLap(ctx: CanvasRenderingContext2D, pts: ReadonlyArray<TracePoint>, view: View,
-                theme: "light" | "dark", alpha: number) {
+  theme: "light" | "dark", alpha: number) {
   if (pts.length < 2) return;
   const keep = decimate(pts, view, 1);
   const keptPts = keep.map(i => pts[i]);
@@ -99,8 +137,11 @@ export function drawTrace(ctx: CanvasRenderingContext2D, opts: {
   view: View; theme: "light" | "dark";
   select?: "all" | "current" | number;
   analysisLap?: readonly TracePoint[];
+  referenceLap?: readonly TracePoint[] | null; // predicted lap; drawn beneath the driver line
 }) {
   const select = opts.select ?? "all";
+  // Reference line first, so the driver's line sits on top of it.
+  if (opts.referenceLap && opts.referenceLap.length > 1) drawReferenceLine(ctx, opts.referenceLap, opts.view);
   // "all" and "current" both plot the in-progress lap at full strength. (Completed laps are no
   // longer retained by the store, so prior laps are no longer faint-overlaid — an accepted minor
   // regression.) A numeric selection isolates the passed analysis lap for analysis.

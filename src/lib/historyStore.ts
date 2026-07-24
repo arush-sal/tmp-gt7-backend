@@ -19,7 +19,7 @@ export type TracePoint = {
 function project(f: Frame, d: Derived, e: Enrichment): LapSample {
   return {
     t: d.current_lap_time_ns / 1e9,
-    posX: f.position_x ?? NaN, posZ: f.position_z ?? NaN, surface: f.surface_type ?? "",
+    posX: f.position_x ?? NaN, posZ: f.position_z ?? NaN, surface: f.surface_type ?? "", distance: 0,
     throttle: f.throttle, brake: f.brake, clutch: f.clutch, rpm: f.rpm,
     gear: f.current_gear, speed: f.car_speed, boost: f.boost,
     delta: e.delta_to_best_ns === null ? NaN : e.delta_to_best_ns / 1e9,

@@ -87,22 +87,6 @@ export function toLiveView(s: LiveSnapshot): LiveView {
   };
 }
 
-const PLACEHOLDER_TYRE: TyreTemp = { value: PLACEHOLDER, tone: "none" };
-
-// Blank the race-context fields (standings, lap counter, lap timing, delta, tyre temps) while
-// keeping resource/car-state fields like fuel. Used on a fresh client whose only frames so far are
-// non-live (idle, or a held finished-race frame): it should show "—" for a race it never witnessed
-// rather than a ghost of the last race, but fuel is a current gauge worth keeping.
-export function blankRaceContext(v: LiveView): LiveView {
-  return {
-    ...v,
-    position: PLACEHOLDER, lap: PLACEHOLDER,
-    currentLapTime: PLACEHOLDER, lastLap: PLACEHOLDER, bestLap: PLACEHOLDER,
-    delta: PLACEHOLDER, deltaTone: "none", predicted: PLACEHOLDER,
-    tyreTemps: { fl: PLACEHOLDER_TYRE, fr: PLACEHOLDER_TYRE, rl: PLACEHOLDER_TYRE, rr: PLACEHOLDER_TYRE },
-  };
-}
-
 // The subset of LiveView fields that a scrubbed stored frame (FrameValues, from
 // historyStore.frameAt) can populate — position/lap-counter/best/last stay from live `view`.
 export type FrameDisplay = Pick<LiveView, "currentLapTime" | "fuelPct" | "fuelTone" | "tyreTemps" | "delta" | "deltaTone">;

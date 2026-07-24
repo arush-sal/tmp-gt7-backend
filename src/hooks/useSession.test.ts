@@ -166,25 +166,23 @@ describe("useSession", () => {
     expect(result.current.newRaceSeq).toBe(1);
   });
 
-  it("fresh client + first frame non-live (held finished race): blanks race context, keeps fuel", () => {
+  it("fresh client + first frame non-live: shows the frame's values (no blanking), starts sticky", () => {
     const { source, captured } = makeFakeSource();
     const { result } = renderHook(() => useSession("u", source));
     act(() => captured.handlers!.onSnapshot(overflowSnap())); // 21/20 -> deriveLive false
     expect(result.current.live).toBe(false);
     const v = result.current.view!;
-    expect(v.lap).toBe("—");
-    expect(v.position).toBe("—");
-    expect(v.bestLap).toBe("—");
-    expect(v.delta).toBe("—");
-    expect(v.tyreTemps.fl.value).toBe("—");
-    expect(v.fuelPct).toBe("24%"); // fuel kept
+    expect(v.lap).toBe("20/20"); // frame values shown, not blanked
+    expect(v.position).toBe("P3/16");
+    expect(v.tyreTemps.fl.value).toBe("88°C");
+    expect(v.fuelPct).toBe("24%");
   });
 
-  it("blank fresh state does not poison sticky: a following live frame shows real data", () => {
+  it("a non-live first frame seeds sticky: a following live frame shows real data", () => {
     const { source, captured } = makeFakeSource();
     const { result } = renderHook(() => useSession("u", source));
     act(() => captured.handlers!.onSnapshot(overflowSnap()));
-    expect(result.current.view!.lap).toBe("—");
+    expect(result.current.view!.lap).toBe("20/20");
     act(() => captured.handlers!.onSnapshot(snap("live")));
     expect(result.current.view!.lap).toBe("8/20");
     expect(result.current.live).toBe(true);

@@ -22,6 +22,9 @@ export type SectorTime = {
   /** This sector's time minus its previously-recorded time (lap-over-lap). null on the
    *  first recording (no baseline) and while the sector has never completed. */
   deltaMs: number | null;
+  /** True when this sector is the session-fastest (the selected lap owns it, delta_to_best == 0).
+   *  Only set on the selected-lap path (lapDtoToSectorTimes); undefined for the live timer. */
+  fastest?: boolean;
 };
 
 export type SectorTimerInput = {

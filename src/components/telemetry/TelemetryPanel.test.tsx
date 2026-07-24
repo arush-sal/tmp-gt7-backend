@@ -8,8 +8,9 @@ import { createHistoryStore } from "../../lib/historyStore";
 describe("TelemetryPanel", () => {
   it("renders a card per default key with its title", () => {
     render(<TelemetryPanel store={createHistoryStore()} />);
-    for (const t of ["Throttle", "Brake", "Speed", "Gear", "Tyre Temp", "Fuel"]) {
-      expect(screen.getByText(new RegExp(t, "i"))).toBeInTheDocument();
+    // Exact, case-sensitive: the "RPM" title must not collide with the lowercase "rpm" unit tag.
+    for (const t of ["Throttle", "Brake", "Speed", "RPM", "Gear", "Tyre Temp"]) {
+      expect(screen.getByText(t)).toBeInTheDocument();
     }
   });
 
@@ -46,13 +47,14 @@ describe("TelemetryPanel", () => {
     const KEY = "gt7:test-panel-add";
     localStorage.clear();
     const store = createHistoryStore();
+    // Fuel is no longer a default card, so it's addable via the picker.
     const { unmount } = render(<TelemetryPanel store={store} storageKey={KEY} />);
     fireEvent.click(screen.getByRole("button", { name: /add graph/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^RPM$/i }));
-    expect(screen.getByText(/^RPM$/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Fuel$/i }));
+    expect(screen.getByText(/^Fuel$/)).toBeInTheDocument();
     unmount();
     render(<TelemetryPanel store={store} storageKey={KEY} />);
-    expect(screen.getByText(/^RPM$/)).toBeInTheDocument(); // survived reload
+    expect(screen.getByText(/^Fuel$/)).toBeInTheDocument(); // survived reload
   });
 
   // NOTE (substitution): the brief's keyboard-sensor jsdom integration test proved

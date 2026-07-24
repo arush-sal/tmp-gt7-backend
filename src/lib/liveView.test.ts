@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toLiveView, isStale, frameToDisplay, blankRaceContext } from "./liveView";
-import { PLACEHOLDER } from "./format";
+import { toLiveView, isStale, frameToDisplay } from "./liveView";
 import type { LiveSnapshot } from "../contract/live";
 import type { FrameValues } from "./historyStore";
 
@@ -153,29 +152,6 @@ describe("isStale", () => {
   it("stale beyond threshold", () => expect(isStale(base, t0 + 5000)).toBe(true));
   it("treats an unparseable served_at as stale", () =>
     expect(isStale({ ...base, served_at: "not-a-date" }, 0)).toBe(true));
-});
-
-describe("blankRaceContext", () => {
-  const v = toLiveView(base);
-  const b = blankRaceContext(v);
-  it("blanks race-context fields to PLACEHOLDER", () => {
-    expect(b.position).toBe(PLACEHOLDER);
-    expect(b.lap).toBe(PLACEHOLDER);
-    expect(b.delta).toBe(PLACEHOLDER);
-    expect(b.deltaTone).toBe("none");
-    expect(b.bestLap).toBe(PLACEHOLDER);
-    expect(b.currentLapTime).toBe(PLACEHOLDER);
-    expect(b.lastLap).toBe(PLACEHOLDER);
-    (["fl", "fr", "rl", "rr"] as const).forEach(p => {
-      expect(b.tyreTemps[p].value).toBe(PLACEHOLDER);
-      expect(b.tyreTemps[p].tone).toBe("none");
-    });
-  });
-  it("keeps fuel (fuelPct + fuelTone) from the source view", () => {
-    expect(b.fuelPct).toBe(v.fuelPct);
-    expect(b.fuelTone).toBe(v.fuelTone);
-    expect(b.fuelPct).not.toBe(PLACEHOLDER);
-  });
 });
 
 describe("toLiveView predicted", () => {

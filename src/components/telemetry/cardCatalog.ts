@@ -18,7 +18,6 @@ export const CARD_CATALOG: CardDef[] = [
   { key: "speed",    title: "Speed",    unit: "km/h", channels: ["speed"],    kind: "single", availability: "available" },
   { key: "gear",     title: "Gear",     unit: "",     channels: ["gear"],     kind: "single", availability: "available" },
   { key: "rpm",      title: "RPM",      unit: "rpm",  channels: ["rpm"],      kind: "single", availability: "available" },
-  { key: "clutch",   title: "Clutch",   unit: "",     channels: ["clutch"],   kind: "single", availability: "available" },
   { key: "boost",    title: "Boost",    unit: "",     channels: ["boost"],    kind: "single", availability: "available" },
   { key: "fuel",     title: "Fuel",     unit: "%",    channels: ["fuel"],     kind: "single", availability: "available" },
   { key: "tyre",     title: "Tyre Temp", unit: "°C",
@@ -27,7 +26,7 @@ export const CARD_CATALOG: CardDef[] = [
   { key: "steering", title: "Steering", unit: "°", channels: [], kind: "single", availability: "needs-backend" },
 ];
 
-export const DEFAULT_CARD_KEYS = ["throttle", "brake", "speed", "gear", "tyre", "fuel"];
+export const DEFAULT_CARD_KEYS = ["throttle", "brake", "speed", "rpm", "gear", "tyre"];
 
 const BY_KEY = new Map(CARD_CATALOG.map(c => [c.key, c]));
 export function getCard(key: string): CardDef | undefined { return BY_KEY.get(key); }

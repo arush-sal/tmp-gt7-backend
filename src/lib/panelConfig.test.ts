@@ -44,7 +44,7 @@ describe("panelConfig", () => {
 
   it("defaultCardConfig orders the default set with empty per-card state", () => {
     const d = defaultCardConfig();
-    expect(d.order).toEqual(["throttle","brake","speed","gear","tyre","fuel"]);
+    expect(d.order).toEqual(["throttle","brake","speed","rpm","gear","tyre"]);
     expect(d.cards.speed).toEqual({ collapsed: false, hidden: [] });
   });
 });

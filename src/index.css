@@ -226,6 +226,29 @@ body {
 .text-blue   { color: var(--blue); }
 .text-purple { color: var(--purple); }
 
+/* ── Tooltip (portal bubble, 0.5s dwell — see components/Tooltip.tsx) ───────── */
+/* The anchor signals a hint; the bubble is rendered into <body> (position:fixed) so it escapes the
+   header-bar / card overflow:hidden that clipped a pure-CSS ::after. */
+.tip-anchor { cursor: help; text-decoration: underline dotted; text-underline-offset: 2px; }
+.tip-bubble {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 8px)); /* centred above the anchor */
+  z-index: 1000;
+  max-width: 260px;
+  white-space: normal;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #1a1d24;
+  color: #e8eaed;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-transform: none;
+  letter-spacing: normal;
+  box-shadow: 0 4px 14px rgba(0,0,0,.35);
+  pointer-events: none;
+}
+
 /* ── Pills ───────────────────────────────────────────────────────────────── */
 
 .pill-red, .pill-green, .pill-blue, .pill-purple {
@@ -673,27 +696,6 @@ body {
   min-height: 110px; /* floor so the ResizeObserver always sees non-zero -> uPlot constructs; flex:1 grows it on resize */
   width: 100%;
 }
-
-/* Hover readout box (see TelemetryGraph onCursor). Lives inside uPlot's u.over, positioned by
-   cursor.left/top; pointer-events:none so it never steals the hover it's reporting. */
-.telemetry-graph__tip {
-  position: absolute;
-  pointer-events: none;
-  z-index: 5;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 7px;
-  font-family: var(--mono, ui-monospace, monospace);
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-1);
-  box-shadow: var(--shadow);
-  white-space: nowrap;
-}
-.telemetry-graph__tip-x { display: block; color: var(--text-2); font-size: 10px; margin-bottom: 2px; }
-.telemetry-graph__tip-row { display: flex; align-items: center; gap: 5px; }
-.telemetry-graph__tip-row i { width: 9px; height: 2px; border-radius: 1px; display: inline-block; flex-shrink: 0; }
 
 /* ── Custom Graphs: add-picker + per-card remove (Task 6) ────────────────── */
 

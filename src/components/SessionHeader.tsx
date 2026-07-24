@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { LiveView } from "../lib/liveView";
 import type { CornerAnalysis } from "../contract/corner";
 import { PLACEHOLDER } from "../lib/format";
+import Tooltip from "./Tooltip";
 
 interface Props {
   view: LiveView | null;
@@ -52,11 +53,11 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
         ) : (
           <>
             <div className="header-cell">
-              <span className="label">Lap delta</span>
+              <Tooltip text="Live gap to your best lap at this point on track (- ahead, + behind)."><span className="label">Lap delta</span></Tooltip>
               <span className={`mono header-val ${deltaClass}`}>{view ? view.delta : ph}</span>
             </div>
             <div className="header-cell">
-              <span className="label">Predicted</span>
+              <Tooltip text="Your ideal lap — the sum of your fastest sector times this session."><span className="label">Predicted</span></Tooltip>
               <span className="mono header-val text-purple">{view ? view.predicted : ph}</span>
             </div>
           </>

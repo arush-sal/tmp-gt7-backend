@@ -33,6 +33,13 @@ export function colorBucket(throttle: number, brake: number): number {
   return t * 16 + b;                                     // 0..255
 }
 
+// Speed peak/valley time-delta colouring. Sign: `+` (delta > 0) = this lap is behind/slower at that
+// point (time lost) -> red; `-` = ahead/faster (time gained) -> green. null/0 -> neutral grey.
+export function peakDeltaColor(deltaNs: number | null): string {
+  if (deltaNs == null || deltaNs === 0) return "#9095a0"; // neutral
+  return deltaNs > 0 ? "#e10600" : "#2ed16a"; // + behind (red) / - ahead (green)
+}
+
 export function brakeSpans(brake: ReadonlyArray<number>, onAt = 12, offAt = 6): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
   let start = -1;

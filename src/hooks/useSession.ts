@@ -4,7 +4,7 @@ import type { LiveSnapshot } from "../contract/live";
 import { subscribeLive, DEFAULT_STREAM_URL, type LiveSource } from "../lib/liveSource";
 import { deriveLive, stepRace, initialRaceKey, type RaceKeyState } from "../lib/raceState";
 import { mergeSticky, type StickyView } from "../lib/stickyView";
-import { toLiveView, blankRaceContext } from "../lib/liveView";
+import { toLiveView } from "../lib/liveView";
 import { loadVersioned, saveVersioned } from "../lib/persistState";
 
 const RACE_STORAGE_KEY = "gt7:race";
@@ -65,16 +65,9 @@ export function useSession(
         const { state: rk, newRace } = stepRace(raceRef.current, s);
         raceRef.current = rk;
         if (newRace) { stickyRef.current = null; seqRef.current += 1; } // new race -> fresh sticky
-        if (!live && stickyRef.current === null) {
-          // Fresh client whose only frames so far are non-live (idle, or a held finished race):
-          // show nothing race-specific (keep fuel), and leave stickyRef null so the first
-          // genuinely-live frame starts sticky accumulation clean. This is the "this browser never
-          // witnessed the race" case — distinct from a race ending mid-session (sticky already set).
-          const view: StickyView = { ...blankRaceContext(toLiveView(s)), live };
-          setSt({ snapshot: s, view, live, raceKey: rk.raceKey, newRaceSeq: seqRef.current });
-          setError(null);
-          return;
-        }
+        // A fresh client (null sticky) whose first frame is non-live shows that frame's values
+        // (backend restores completed laps/predicted on refresh) and starts sticky accumulation;
+        // mergeSticky passes through when prev is null. No blanking — state is sticky everywhere.
         const view = mergeSticky(stickyRef.current, toLiveView(s), live);
         stickyRef.current = view;
         setSt({ snapshot: s, view, live, raceKey: rk.raceKey, newRaceSeq: seqRef.current });

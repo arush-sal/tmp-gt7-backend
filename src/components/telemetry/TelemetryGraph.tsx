@@ -3,10 +3,8 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { Channel, HistoryStore } from "../../lib/historyStore";
 import type { LapView } from "../../lib/lapView";
-import { CHANNEL_COLOR } from "./graphColors";
+import { CHANNEL_COLOR, MEDIAN_COLOR, REFERENCE_COLOR } from "./graphColors";
 import { clampIndex } from "../../lib/trackScrub";
-// REFERENCE_COLOR (cyan, see graphColors.ts) is the intended stroke for the reference series
-// once it ships from the backend RKB. Not imported here — no reference data column exists yet.
 
 // Shared cursor-sync group: every telemetry chart joins it (same key) and syncs on the x scale
 // only, so hovering one card lines up the crosshair + value readout at the same lap-time x on all
@@ -40,7 +38,20 @@ interface Props {
   hidden?: string[];     // series keys turned off
   analysisLap?: LapView | null;       // non-null -> analysis mode: show this completed lap, static
   analysisScrubIndex?: number | null; // sample index within the analysis lap to park the cursor on
+  // Overlay columns, pre-resampled onto the analysis lap's samples (see lapOverlays). null = absent.
+  // Series count is fixed at mount, so the card must be re-keyed when either presence flips.
+  medianCol?: number[] | null;
+  referenceCol?: number[] | null;
+  // Grafana-style shared zoom (analysis mode only). xRange is the [min,max] lap-time window applied
+  // to every graph; null = full lap. A drag-select here calls onXRange with the (5s-min-clamped) window.
+  xRange?: [number, number] | null;
+  onXRange?: (r: [number, number] | null) => void;
+  // Hover readout: instead of a box over the plot, values are lifted to the legend below. Keyed by
+  // series label (channel name / "median" / "reference"); null when the cursor leaves.
+  onHover?: (h: { x: string; values: Record<string, string> } | null) => void;
 }
+
+export type HoverReadout = { x: string; values: Record<string, string> };
 
 /**
  * A single uPlot line chart driven by an imperative HistoryStore, on its own
@@ -54,7 +65,8 @@ interface Props {
  *  - cleanup always runs: cancelAnimationFrame -> ro.disconnect -> u.destroy.
  */
 export default function TelemetryGraph({
-  store, channels, label, unit, id, hidden, analysisLap, analysisScrubIndex,
+  store, channels, label, unit, id, hidden, analysisLap, analysisScrubIndex, medianCol, referenceCol,
+  xRange = null, onXRange, onHover,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const uRef = useRef<uPlot | null>(null);
@@ -74,22 +86,48 @@ export default function TelemetryGraph({
   // value without needing to be rebuilt.
   const analysisLapRef = useRef(analysisLap ?? null);
   analysisLapRef.current = analysisLap ?? null;
+  const medianColRef = useRef(medianCol ?? null);
+  medianColRef.current = medianCol ?? null;
+  const referenceColRef = useRef(referenceCol ?? null);
+  referenceColRef.current = referenceCol ?? null;
+  const onXRangeRef = useRef(onXRange);
+  onXRangeRef.current = onXRange;
+  const onHoverRef = useRef(onHover);
+  onHoverRef.current = onHover;
   const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
 
+  // Series keys in DRAW order (uPlot paints later series on top). Reference is the base, then median,
+  // then the channel(s)/current line on top. Presence is fixed at mount (the card is re-keyed if it
+  // flips), so seriesSpec(), dataCols() and the hidden-toggle effect all read this one ordering.
+  const orderedSeriesKeys = (): string[] => [
+    ...(referenceColRef.current ? ["reference"] : []),
+    ...(medianColRef.current ? ["median"] : []),
+    ...channelsRef.current,
+  ];
+
+  const strokeFor = (key: string): string =>
+    key === "reference" ? REFERENCE_COLOR : key === "median" ? MEDIAN_COLOR : CHANNEL_COLOR[key as Channel];
+
   // Returns [{key, stroke, dash}] in the order their data columns appear.
-  const seriesSpec = () => {
-    const chs = channelsRef.current;
-    return chs.map(c => ({ key: c as string, stroke: CHANNEL_COLOR[c], dash: undefined as number[] | undefined }));
-  };
+  const seriesSpec = () =>
+    orderedSeriesKeys().map(key => ({ key, stroke: strokeFor(key), dash: undefined as number[] | undefined }));
 
   const dataCols = () => {
     const chs = channelsRef.current;
     const lap = analysisLapRef.current;
-    if (lap) {
-      // Analysis mode: a static snapshot of the selected completed lap, not the live buffer.
-      return lap.columns(chs);
+    if (!lap) return storeRef.current.columns(chs); // live: [xs, ...actuals], no overlays
+    // Analysis mode: static lap columns + pre-resampled overlays, emitted in orderedSeriesKeys order
+    // (reference, median, then channels) so the draw order is reference-base -> median -> current-top.
+    const base = lap.columns(chs); // [xs, ...perChannel(chs order)]
+    const chCol = new Map<string, number[]>();
+    chs.forEach((c, i) => chCol.set(c, base[i + 1]));
+    const cols: number[][] = [base[0]];
+    for (const key of orderedSeriesKeys()) {
+      if (key === "reference") cols.push(referenceColRef.current!);
+      else if (key === "median") cols.push(medianColRef.current!);
+      else cols.push(chCol.get(key)!);
     }
-    return storeRef.current.columns(chs); // [xs, ...actuals]
+    return cols;
   };
 
   useLayoutEffect(() => {
@@ -99,74 +137,68 @@ export default function TelemetryGraph({
     let mounted = true;
     let rafId = 0;
     let ro: ResizeObserver | null = null;
-    let tip: HTMLDivElement | null = null; // hover readout, created in init(), attached to u.over
 
-    // Fills/positions the hover tooltip from the cursor's data index. Values are read from the
-    // live data columns, so the readout is exact for whatever the rAF loop last plotted.
+    // Hover readout: lift the per-series values (at the cursor's data index) up to the legend below
+    // the plot instead of drawing a box over the line. Keyed by series label. Fires on the hovered
+    // card AND (via the x-sync group) on the others, so every legend shows values at the shared x.
     const onCursor = (u: uPlot) => {
-      if (!tip) return;
-      const { idx, left, top } = u.cursor;
-      if (idx == null || left == null || left < 0) { tip.style.display = "none"; return; }
+      const cb = onHoverRef.current;
+      if (!cb) return;
+      const { idx, left } = u.cursor;
+      if (idx == null || left == null || left < 0) { cb(null); return; }
       const xv = u.data[0][idx];
-      if (xv == null) { tip.style.display = "none"; return; }
-      // Build with safe DOM methods (no innerHTML): all text goes through textContent, so even
-      // though every value here is our own trusted palette/label/number, there is no HTML sink.
-      const frag = document.createDocumentFragment();
-      const xEl = document.createElement("span");
-      xEl.className = "telemetry-graph__tip-x";
-      xEl.textContent = `${(xv as number).toFixed(1)}s`;
-      frag.appendChild(xEl);
-      let any = false;
+      if (xv == null) { cb(null); return; }
+      const values: Record<string, string> = {};
       for (let i = 1; i < u.series.length; i++) {
         const s = u.series[i];
         if (!s.show) continue;
         const v = u.data[i]?.[idx];
         if (v == null || !Number.isFinite(v)) continue;
-        any = true;
-        const row = document.createElement("span");
-        row.className = "telemetry-graph__tip-row";
-        const sw = document.createElement("i");
-        if (typeof s.stroke === "string") sw.style.background = s.stroke;
-        row.appendChild(sw);
-        // The actual series' internal key is "actual" but the legend labels it "current" — match it.
-        const dispLabel = s.label === "actual" ? "current" : (s.label ?? "");
-        row.appendChild(document.createTextNode(`${dispLabel} ${fmtTipValue(v as number, unitRef.current)}`));
-        frag.appendChild(row);
+        if (typeof s.label === "string") values[s.label] = fmtTipValue(v as number, unitRef.current);
       }
-      if (!any) { tip.style.display = "none"; return; }
-      tip.replaceChildren(frag);
-      tip.style.display = "block";
-      // Measure the rendered box and clamp on BOTH axes so it never clips against the card's
-      // overflow:hidden — place to the cursor's right/below by default, flip left/above near an
-      // edge, then hard-clamp into u.over. (offsetWidth read forces a reflow, negligible here.)
-      const pad = 10;
-      const ow = u.over.clientWidth, oh = u.over.clientHeight;
-      const tw = tip.offsetWidth, th = tip.offsetHeight;
-      // On sync RECEIVER cards (not under the mouse) y isn't synced, so `top` is uPlot's
-      // proportional mirror of the source card's mouse-height ratio, not this card's data point —
-      // fine for placing the box (x is what's meaningful); the row VALUES are the card's own.
-      const ty0 = top ?? 0;
-      let tx = left + pad; if (tx + tw > ow) tx = left - tw - pad; if (tx < 0) tx = 0;
-      let ty = ty0 + pad; if (ty + th > oh) ty = ty0 - th - pad; if (ty < 0) ty = 0;
-      tip.style.transform = "none";
-      tip.style.left = `${tx}px`;
-      tip.style.top = `${ty}px`;
+      cb({ x: `${(xv as number).toFixed(1)}s`, values });
     };
+
+    // Drag-select -> zoom window (analysis mode only). drag.setScale:false means uPlot draws the
+    // selection rectangle but does NOT zoom itself; we read the selection, clamp to a 5s minimum
+    // span within the lap, and hand the window up so ALL graphs zoom together (Grafana-style).
+    const onSelect = (u: uPlot) => {
+      const cb = onXRangeRef.current;
+      if (!analysisLapRef.current || !cb) return;
+      const { left, width } = u.select;
+      if (width < 3) return; // a click, not a drag
+      let min = u.posToVal(left, "x");
+      let max = u.posToVal(left + width, "x");
+      if (max < min) { const t = min; min = max; max = t; }
+      const xs = u.data[0];
+      const dmin = xs?.length ? (xs[0] as number) : min;
+      const dmax = xs?.length ? (xs[xs.length - 1] as number) : max;
+      if (max - min < 5) { const c = (min + max) / 2; min = c - 2.5; max = c + 2.5; } // enforce 5s min span
+      min = Math.max(dmin, min); max = Math.min(dmax, max);
+      if (max - min < 5) { // clamped against an edge -> slide a 5s window inside the lap
+        if (min <= dmin) { min = dmin; max = Math.min(dmax, dmin + 5); }
+        else { max = dmax; min = Math.max(dmin, dmax - 5); }
+      }
+      u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false); // clear the highlight rectangle
+      cb([min, max]);
+    };
+
+    const onDblClick = () => { if (analysisLapRef.current) onXRangeRef.current?.(null); };
 
     const buildOptions = (width: number, height: number): uPlot.Options => ({
       width,
       height,
       scales: { x: { time: false } },
       legend: { show: false },
-      // Crosshair on hover; drag-zoom disabled (the rAF loop auto-rescales a live chart, so a
-      // drag-zoom would just snap back and feel broken). `sync` links every card's cursor on the
-      // x scale so all readouts track the same lap-time position (see CURSOR_SYNC).
+      // Crosshair on hover; x drag-SELECT enabled (setScale:false — we apply the zoom ourselves so it
+      // can be shared across graphs and clamped to 5s). `sync` links every card's cursor on the x
+      // scale so all readouts track the same lap-time position (see CURSOR_SYNC).
       cursor: {
         show: true,
-        drag: { x: false, y: false },
+        drag: { x: true, y: false, setScale: false },
         sync: { key: CURSOR_SYNC.key, scales: ["x", null], setSeries: false },
       },
-      hooks: { setCursor: [onCursor] },
+      hooks: { setCursor: [onCursor], setSelect: [onSelect] },
       series: [
         {},
         ...seriesSpec().map(s => ({
@@ -193,18 +225,15 @@ export default function TelemetryGraph({
       );
       uRef.current = u;
 
-      // Hover readout: a positioned box inside uPlot's overlay (u.over), so cursor.left/top map
-      // directly to its coordinates. Torn down automatically when u.destroy() removes u.over.
-      tip = document.createElement("div");
-      tip.className = "telemetry-graph__tip";
-      tip.style.display = "none";
-      u.over.appendChild(tip);
+      // Double-click resets the shared zoom to the full lap (broadcast to all graphs).
+      u.over.addEventListener("dblclick", onDblClick);
 
       const tick = () => {
         if (!mounted) return;
-        // resetScales left at default (true) so the x/y axes auto-follow the growing buffer;
-        // passing false froze the scale at the empty seed range -> the line rendered off-view.
-        u.setData(toAligned(dataCols()));
+        // Live mode: resetScales true so the x/y axes auto-follow the growing buffer. Analysis mode:
+        // data is static and the user may have zoomed, so DON'T reset the scale each frame — the
+        // xRange effect owns the x-scale (full lap or the shared zoom window).
+        u.setData(toAligned(dataCols()), !analysisLapRef.current);
         rafId = requestAnimationFrame(tick);
       };
       rafId = requestAnimationFrame(tick);
@@ -245,6 +274,18 @@ export default function TelemetryGraph({
     }
   }, [channels]);
 
+  // Apply the shared zoom window to this graph's x-scale (analysis mode only). null -> fit the full
+  // lap. Runs on lap change too (deps) so a new selection refits. The tick() leaves scales alone in
+  // analysis mode, so this effect owns the x-scale there.
+  useLayoutEffect(() => {
+    const u = uRef.current;
+    if (!u || !analysisLap) return;
+    const xs = u.data[0];
+    if (!xs || !xs.length) return;
+    if (xRange) u.setScale("x", { min: xRange[0], max: xRange[1] });
+    else u.setScale("x", { min: xs[0] as number, max: xs[xs.length - 1] as number });
+  }, [xRange, analysisLap]);
+
   // Analysis mode: park the crosshair at the scrub sample (instead of following the mouse).
   // Reads the lap columns directly (not u.data) so the cursor is correct on the same render the
   // lap/scrub index changes, without waiting for the next rAF tick to catch up.
@@ -261,11 +302,13 @@ export default function TelemetryGraph({
     u.setCursor({ left, top });
   }, [channels, analysisLap, analysisScrubIndex, dpr]);
 
-  // Reflect `hidden` onto the built chart without rebuilding it.
+  // Reflect `hidden` onto the built chart without rebuilding it. Covers the channel series plus the
+  // median/reference overlays, in the same order dataCols() emits them.
   useLayoutEffect(() => {
     const u = uRef.current;
     if (!u) return;
-    channelsRef.current.forEach((key, i) => u.setSeries(i + 1, { show: !(hidden ?? []).includes(key) }));
+    orderedSeriesKeys().forEach((key, i) => u.setSeries(i + 1, { show: !(hidden ?? []).includes(key) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hidden]);
 
   return (

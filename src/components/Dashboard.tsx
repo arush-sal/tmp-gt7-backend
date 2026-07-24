@@ -5,6 +5,9 @@ import { useHistory } from "../hooks/useHistory";
 import { useLaps } from "../hooks/useLaps";
 import { useLapTrace } from "../hooks/useLapTrace";
 import { useCoaching } from "../hooks/useCoaching";
+import { useMedian } from "../hooks/useMedian";
+import { useReference } from "../hooks/useReference";
+import { usePeaks } from "../hooks/usePeaks";
 import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
@@ -12,7 +15,7 @@ import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
 import { frameToDisplay } from "../lib/liveView";
 import { nsToClock } from "../lib/format";
-import { lapDtoToSectorTimes } from "../lib/lapView";
+import { lapDtoToSectorTimes, predictedToSamples } from "../lib/lapView";
 import { resetLapCache } from "../lib/lapCache";
 import { toDrawGeometry } from "../lib/rkbGeometry";
 import { insideFraction, isMismatch } from "../lib/trackMismatch";
@@ -27,6 +30,7 @@ import TelemetryPanel from "./telemetry/TelemetryPanel";
 import FloatingPanel from "./telemetry/FloatingPanel";
 import CornerDetailPanel from "./CornerDetailPanel";
 import RightPanel from "./RightPanel";
+import PeaksTable from "./PeaksTable";
 
 export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange }: {
   source?: LiveSource; theme?: "light" | "dark"; onLiveChange?: (live: boolean) => void;
@@ -48,12 +52,24 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   useEffect(() => { if (newRaceSeq > 0) { history.reset(); resetLapCache(); } }, [history, newRaceSeq]);
   useEffect(() => { onLiveChange?.(live); }, [onLiveChange, live]);
 
-  // Fuel card: used/lap from the most recently completed lap; laps left projects the
-  // current tank against that burn rate. Both null when data is insufficient (e.g. no
-  // completed lap yet, or the store detected a refuel anomaly).
-  const usedPerLap = history.lastLapFuelUsedPct();
-  const currentFuelPct = snapshot?.derived?.fuel_pct ?? null;
-  const lapsLeft = estimateLapsLeft(currentFuelPct, usedPerLap);
+  // Fuel card: used/lap from the most recently completed lap; laps left projects the current tank
+  // against that burn rate. Sticky: latch the last known burn rate + tank level in state (updated
+  // in an effect, not a render mutation — safe under concurrent React) so the card holds its values
+  // rather than blanking to "—" when the stream goes idle; cleared on a genuine new race.
+  const usedPerLapRaw = history.lastLapFuelUsedPct();
+  const currentFuelPctRaw = snapshot?.derived?.fuel_pct ?? null;
+  const [fuelSticky, setFuelSticky] = useState<{ used: number | null; fuel: number | null }>({ used: null, fuel: null });
+  useEffect(() => {
+    setFuelSticky(prev => {
+      const used = usedPerLapRaw !== null ? usedPerLapRaw : prev.used;
+      const fuel = currentFuelPctRaw !== null ? currentFuelPctRaw : prev.fuel;
+      return used === prev.used && fuel === prev.fuel ? prev : { used, fuel };
+    });
+  }, [usedPerLapRaw, currentFuelPctRaw]);
+  // New race clears the latch (declared after the latch effect so a reset wins that commit).
+  useEffect(() => { setFuelSticky({ used: null, fuel: null }); }, [newRaceSeq]);
+  const usedPerLap = fuelSticky.used;
+  const lapsLeft = estimateLapsLeft(fuelSticky.fuel, usedPerLap);
 
   // Corner/coaching data is not emitted by the backend yet (coaching is a
   // `status:"pending"` passthrough). Until it ships, there are no corners to select
@@ -150,7 +166,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   const lapHistory = useMemo(() => {
     const rows = laps.laps
       .filter(l => l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.duration_ns > 0)
-      .sort((a, b) => a.lap_number - b.lap_number)
+      .sort((a, b) => b.lap_number - a.lap_number)
       .map(l => ({ lap: l.lap_number, time: nsToClock(l.duration_ns), durationNs: l.duration_ns }));
     const bestNs = rows.reduce((m, r) => (m === 0 || r.durationNs < m ? r.durationNs : m), 0);
     return rows.map(r => ({ lap: r.lap, time: r.time, best: r.durationNs === bestNs }));
@@ -180,6 +196,14 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // Predicted-best lap: live from enrichment.analysis (in `view`, sticky); once the race is over,
   // fetch it authoritatively from /coaching (survives a refresh, when the sticky value is gone).
   const coaching = useCoaching(sessionId, !live);
+  // Session-level median + predicted-reference lines, refreshed as laps complete. Feed the graph
+  // overlays (Task 4) and the canvas reference drive-line (Task 5); reference also carries the
+  // predicted-best used for the per-lap delta (Task 6).
+  const median = useMedian(sessionId, latestLap);
+  const reference = useReference(sessionId, latestLap);
+  // Reference (ideal) drive-line for the track canvas: the predicted lap's spliced samples.
+  const referenceLap = useMemo(
+    () => (reference?.samples?.length ? predictedToSamples(reference.samples) : null), [reference]);
   const baseView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
   const displayView = baseView && !live && coaching.predicted
     ? { ...baseView, predicted: coaching.predicted }
@@ -192,17 +216,99 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   const shownSectors = typeof selectedLap === "number"
     ? (selectedLapDto ? lapDtoToSectorTimes(selectedLapDto) : null)
     : sectorTimes;
+
+  // Speed peaks & valleys for the selected lap, vs the chosen reference.
+  const [peaksRef, setPeaksRef] = useState<"predicted" | number>("predicted");
+  useEffect(() => { if (newRaceSeq > 0) setPeaksRef("predicted"); }, [newRaceSeq]);
+  const peaks = usePeaks(sessionId, typeof selectedLap === "number" ? selectedLap : null, peaksRef);
+  // Cross-highlight state shared by the peaks table and the canvas markers (bidirectional): hover
+  // previews, click pins. Keyed by ExtremumDTO.index. Cleared when the lap/reference/session changes.
+  const [hoveredPeak, setHoveredPeak] = useState<number | null>(null);
+  const [pinnedPeak, setPinnedPeak] = useState<number | null>(null);
+  useEffect(() => { setHoveredPeak(null); setPinnedPeak(null); }, [selectedLap, sessionId, peaksRef]);
+  // Shared graph zoom window (lap-time seconds); drives both the telemetry graphs and the track
+  // canvas segment view. Reset to full on a lap/session change.
+  const [graphXRange, setGraphXRange] = useState<[number, number] | null>(null);
+  useEffect(() => { setGraphXRange(null); }, [selectedLap, sessionId]);
+  // Peaks table open/collapsed — lifted so the on-track symbols follow it (collapsed => hidden).
+  const [peaksOpen, setPeaksOpen] = useState(false);
+  const togglePinnedPeak = (i: number) => setPinnedPeak(prev => (prev === i ? null : i));
+  // Shared-window zoom driven from the canvas (bidirectional with the graph drag-zoom). factor > 1
+  // widens (zoom out), < 1 narrows (zoom in); centred, clamped to [5s, full lap]; full -> null.
+  const lapTimeBounds = (): [number, number] | null => {
+    if (!lapView || lapView.length < 2) return null;
+    const a = lapView.points[0].t ?? 0, b = lapView.points[lapView.length - 1].t ?? 0;
+    return b > a ? [a, b] : null;
+  };
+  const zoomWindowBy = (factor: number, anchorT?: number) => {
+    const bounds = lapTimeBounds();
+    if (!bounds) return;
+    const [tFirst, tLast] = bounds;
+    const full = tLast - tFirst;
+    const [a0, b0] = graphXRange ?? [tFirst, tLast];
+    const w0 = b0 - a0;
+    const w = Math.max(5, Math.min(full, w0 * factor));
+    if (w >= full) { setGraphXRange(null); return; }
+    // Anchor: keep anchorT at the same fractional position within the window (so the point under
+    // the cursor stays put while zooming); else zoom around the centre.
+    let a: number;
+    if (anchorT != null && w0 > 0) {
+      const f = Math.min(1, Math.max(0, (anchorT - a0) / w0));
+      a = anchorT - f * w;
+    } else {
+      a = (a0 + b0) / 2 - w / 2;
+    }
+    let b = a + w;
+    if (a < tFirst) { a = tFirst; b = tFirst + w; }
+    if (b > tLast) { b = tLast; a = tLast - w; }
+    setGraphXRange([a, b]);
+  };
+  const resetWindow = () => setGraphXRange(null);
+  // Canvas markers: place each peak/valley at the selected lap's nearest sample by track fraction.
+  // Symbol colour is by KIND (green peak / red valley); the time-delta drives only the table + pinned label.
+  const peakMarkers = useMemo(() => {
+    if (!lapView || !peaks.data?.points?.length) return [];
+    const fr = lapView.fractions();
+    const pts = lapView.points;
+    return peaks.data.points.map(pt => {
+      let best = 0, bestD = Infinity;
+      for (let i = 0; i < fr.length; i++) { const d = Math.abs(fr[i] - pt.fraction); if (d < bestD) { bestD = d; best = i; } }
+      const p = pts[best];
+      return { index: pt.index, x: p.posX, z: p.posZ, kind: pt.kind, deltaNs: pt.delta_ns };
+    }).filter(m => Number.isFinite(m.x) && Number.isFinite(m.z));
+  }, [lapView, peaks.data]);
+
   useEffect(() => {
     if (!analysisLap) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { // dismiss canvas selections: pinned peak/valley + scrub point
+        setPinnedPeak(null); setHoveredPeak(null); setScrubIndex(null);
+        return;
+      }
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
       e.preventDefault();
       const dir = e.key === "ArrowRight" ? 1 : -1;
-      setScrubIndex(prev => clampIndex((prev ?? 0) + dir, analysisLap.length));
+      const cur = scrubIndex ?? analysisLap.length - 1;
+      const next = clampIndex(cur + dir, analysisLap.length);
+      setScrubIndex(next);
+      // Scrub-follow: if zoomed and the new point leaves the window, page the window (same width)
+      // to re-centre on it so both the canvas and the graphs follow the cursor.
+      if (graphXRange && lapView) {
+        const t = lapView.points[next]?.t;
+        if (t != null && (t < graphXRange[0] || t > graphXRange[1])) {
+          const w = graphXRange[1] - graphXRange[0];
+          const bounds = lapTimeBounds();
+          const tFirst = bounds ? bounds[0] : t, tLast = bounds ? bounds[1] : t;
+          let a = t - w / 2, b = t + w / 2;
+          if (a < tFirst) { a = tFirst; b = tFirst + w; }
+          if (b > tLast) { b = tLast; a = tLast - w; }
+          setGraphXRange([a, b]);
+        }
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [analysisLap]);
+  }, [analysisLap, lapView, graphXRange, scrubIndex]);
 
   // Mismatch check is a dev nudge, not per-frame work — throttle to 1/s.
   const [mismatch, setMismatch] = useState(false);
@@ -294,6 +400,10 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
                 store={history}
                 analysisLap={lapView}
                 analysisScrubIndex={scrubIndex}
+                median={median}
+                reference={reference}
+                xRange={graphXRange}
+                onXRange={setGraphXRange}
               />
             </aside>
           ) : (
@@ -314,6 +424,15 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               theme={theme}
               selectedLap={selectedLap}
               analysisLap={analysisLap}
+              referenceLap={referenceLap}
+              zoomXRange={graphXRange}
+              onZoomWindow={zoomWindowBy}
+              onResetView={resetWindow}
+              peakMarkers={peaksOpen ? peakMarkers : []}
+              hoveredPeak={hoveredPeak}
+              pinnedPeak={pinnedPeak}
+              onHoverPeak={setHoveredPeak}
+              onPinPeak={togglePinnedPeak}
               scrubIndex={scrubIndex}
               onScrub={setScrubIndex}
               footer={
@@ -352,6 +471,24 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
             lapsLeft={lapsLeft}
             sectorTimes={shownSectors}
             lapHistory={lapHistory}
+            peaksSection={
+              typeof selectedLap === "number" ? (
+                <PeaksTable
+                  data={peaks.data}
+                  loading={peaks.loading}
+                  error={peaks.error}
+                  reference={peaksRef}
+                  onReferenceChange={setPeaksRef}
+                  lapOptions={lapHistory.map(l => l.lap)}
+                  open={peaksOpen}
+                  onToggleOpen={() => setPeaksOpen(v => !v)}
+                  hoveredPeak={hoveredPeak}
+                  pinnedPeak={pinnedPeak}
+                  onHoverPeak={setHoveredPeak}
+                  onPinPeak={togglePinnedPeak}
+                />
+              ) : null
+            }
           />
         </div>
       </div>

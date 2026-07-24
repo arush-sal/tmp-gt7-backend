@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { fetchLaps, fetchLapTrace, fetchReference } from "./sessionApi";
+import { fetchLaps, fetchLapTrace, fetchReference, fetchMedian, fetchPeaks } from "./sessionApi";
 
 function stubFetch(payload: unknown, ok = true) {
   const spy = vi.fn((_url: string, _init?: RequestInit) =>
@@ -20,15 +20,30 @@ describe("sessionApi", () => {
     await fetchLapTrace("s1", 3, 1500);
     expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/laps/3/trace?decimate=1500");
   });
-  it("fetchReference builds channels + points query", async () => {
-    const spy = stubFetch({ fractions: [], series: {}, lap_count: 0 });
-    await fetchReference("s1", ["throttle", "brake"], 500);
-    expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/reference?channels=throttle%2Cbrake&points=500");
+  it("fetchReference hits /reference with default decimate", async () => {
+    const spy = stubFetch({ reliable: true, reason: null, predicted_best_ns: 0, sectors: [], samples: [] });
+    await fetchReference("s1");
+    expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/reference?decimate=1500");
   });
-  it("fetchReference omits query when no channels/points", async () => {
+  it("fetchMedian builds channels + points query", async () => {
     const spy = stubFetch({ fractions: [], series: {}, lap_count: 0 });
-    await fetchReference("s1", undefined, undefined);
-    expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/reference");
+    await fetchMedian("s1", ["throttle", "brake"], 500);
+    expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/median?channels=throttle%2Cbrake&points=500");
+  });
+  it("fetchMedian omits query when no channels/points", async () => {
+    const spy = stubFetch({ fractions: [], series: {}, lap_count: 0 });
+    await fetchMedian("s1", undefined, undefined);
+    expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/median");
+  });
+  it("fetchPeaks omits reference for predicted (A)", async () => {
+    const spy = stubFetch({ points: [] });
+    await fetchPeaks("s1", 5);
+    expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/laps/5/peaks");
+  });
+  it("fetchPeaks sets reference for a lap (B)", async () => {
+    const spy = stubFetch({ points: [] });
+    await fetchPeaks("s1", 5, 3);
+    expect(spy.mock.calls[0][0]).toBe("/v1/sessions/s1/laps/5/peaks?reference=3");
   });
   it("throws on non-ok response", async () => {
     stubFetch(null, false);

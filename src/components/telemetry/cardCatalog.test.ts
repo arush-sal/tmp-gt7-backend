@@ -18,8 +18,8 @@ describe("cardCatalog", () => {
     expect(steering?.channels).toEqual([]);
   });
 
-  it("default set is throttle, brake, speed, gear, tyre, fuel in order", () => {
-    expect(DEFAULT_CARD_KEYS).toEqual(["throttle","brake","speed","gear","tyre","fuel"]);
+  it("default set is throttle, brake, speed, rpm, gear, tyre in order", () => {
+    expect(DEFAULT_CARD_KEYS).toEqual(["throttle","brake","speed","rpm","gear","tyre"]);
   });
 
   it("default keys all resolve to available catalog entries", () => {
