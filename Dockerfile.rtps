@@ -1,9 +1,17 @@
 # syntax=docker/dockerfile:1
 #
-# rtps — the backend (gRPC ingest + HTTP read API). Multi-stage: a full Go toolchain builds a fully
+# rtps — the backend (gRPC ingest + HTTP read API + the embedded web UI). Multi-stage: a Node stage
+# builds the React SPA (web/dist), then a full Go toolchain embeds it (//go:embed in web) and builds a fully
 # static binary, then we ship it on distroless/static so the runtime image has no shell, no package
 # manager, and a non-root user. The DB migrations are compiled into the binary (//go:embed in
 # internal/db), so no migration files are copied into the final image.
+
+FROM node:24-bookworm-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY web/ ./
+RUN npm run build
 
 FROM golang:1.26 AS build
 WORKDIR /src
@@ -13,6 +21,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
+COPY --from=web /web/dist ./web/dist
 # CGO off => a static binary that runs on distroless/static. -trimpath + -s -w for a lean, reproducible
 # build. BuildKit caches the module + compile caches across builds.
 RUN --mount=type=cache,target=/go/pkg/mod \

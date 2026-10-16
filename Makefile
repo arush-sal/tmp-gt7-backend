@@ -10,7 +10,10 @@ STORAGE  ?= memory
 DB_DSN   ?=
 API_ADDR ?= localhost:8080
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live deploy-stack stop-stack
+# `make web-up` / `make web-preview`: backend the Vite dev proxy forwards /v1 to (host:port or URL)
+RTPS     ?= localhost:8080
+
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live deploy-stack stop-stack web-install web-up web-build web-preview web-test
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
@@ -37,7 +40,7 @@ fmt:
 
 ## fmt-check: fail if any Go file is not gofmt-clean
 fmt-check:
-	@unformatted=$$(gofmt -l .); \
+	@unformatted=$$(gofmt -l $$(git ls-files '*.go')); \
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed on:"; echo "$$unformatted"; exit 1; \
 	fi
@@ -71,7 +74,7 @@ hooks:
 
 ## live: run backend + collector + TUI together against a PS5. Usage: make live IP=192.168.1.99
 ##       (opts: STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port). Ctrl-C stops all.
-live:
+live: web-build
 	@test -n "$(IP)" || { echo "usage: make live IP=<ps5-ip> [STORAGE=postgres DB_DSN=... API_ADDR=host:port]"; exit 2; }
 	@mkdir -p bin
 	$(GO) build -o bin/rtps ./cmd/rtps
@@ -88,7 +91,7 @@ live:
 ## to bin/. Local (native Linux) — no ssh/cross-compile. Re-run to restart; `make stop-stack` to stop.
 ## Bind the API wide (API_ADDR=0.0.0.0:8080) if another host (e.g. the web dashboard) must reach it.
 ##   make deploy-stack IP=192.168.1.99 [STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port]
-deploy-stack:
+deploy-stack: web-build
 	@test -n "$(IP)" || { echo "usage: make deploy-stack IP=<ps5-ip> [STORAGE=postgres DB_DSN=... API_ADDR=host:port]"; exit 2; }
 	@mkdir -p bin
 	$(GO) build -o bin/rtps ./cmd/rtps
@@ -104,6 +107,28 @@ deploy-stack:
 stop-stack:
 	@bash -c 'pkill -x rtps && echo "stopped rtps" || echo "rtps not running"; \
 		pkill -x collector && echo "stopped collector" || echo "collector not running"'
+
+## web-install: install the web UI dependencies (npm ci)
+web-install:
+	npm --prefix web ci
+
+## web-up: run the web UI dev server, proxying /v1 to RTPS. Usage: make web-up [RTPS=host:port]
+web-up:
+	@echo "-> web dev - proxying /v1 to $(RTPS)"
+	GT7_API_ADDR="$(RTPS)" npm --prefix web run dev
+
+## web-build: build the web UI into web/dist (embedded into rtps by go build)
+web-build:
+	npm --prefix web run build
+	touch web/dist/.gitkeep
+
+## web-preview: serve the production web build locally (proxies /v1 to RTPS)
+web-preview:
+	GT7_API_ADDR="$(RTPS)" npm --prefix web run preview
+
+## web-test: run the web UI tests
+web-test:
+	npm --prefix web test
 
 ## clean: remove build and coverage artifacts
 clean:

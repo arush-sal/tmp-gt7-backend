@@ -17,7 +17,7 @@ The backend (`rtps`) exposes a read-only HTTP API. It listens on `--api.addr` (d
 | `GET` | `/v1/live/stream` | Server-Sent Events: one event per fresh frame, plus track events. |
 | `GET` | `/v1/tracks` | Reference Knowledge Base (RKB) track index. |
 | `GET` | `/v1/tracks/{slug}` | Full RKB record for one track. |
-| `GET` | `/` | Alias of `/v1/live` (exact match only). |
+| `GET` | `/` | The embedded web UI (static SPA; 404 if the frontend was not built). |
 
 ### `GET /v1/sessions`
 

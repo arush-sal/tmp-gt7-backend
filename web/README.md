@@ -19,8 +19,8 @@ by consuming the RTPS backend's live API.
 ## Quickstart
 
 ```bash
-make install          # install dependencies (or: npm install)
-make up                # dev server on http://localhost:5173, proxying /v1 -> localhost:8080
+make web-install      # install dependencies (run from the backend root)
+make web-up           # dev server on http://localhost:5173, proxying /v1 -> localhost:8080
 ```
 
 Open http://localhost:5173. On first run you'll go through a short onboarding; after that
@@ -28,11 +28,11 @@ it lands on the dashboard.
 
 ### Point at a specific backend
 
-`make up` proxies the live API to `localhost:8080` by default. To target a different RTPS
+`make web-up` proxies the live API to `localhost:8080` by default. To target a different RTPS
 address (e.g. a machine running the backend on your LAN):
 
 ```bash
-make up RTPS=192.168.1.50:8080     # host:port, or a full http(s):// origin
+make web-up RTPS=192.168.1.50:8080     # host:port, or a full http(s):// origin
 ```
 
 `RTPS` is a make variable (not a positional argument) because a bare `host:port` collides
@@ -42,13 +42,15 @@ with Make's `:` rule separator. It flows into the Vite dev proxy via `GT7_API_AD
 
 ## Commands
 
+Run these from the backend root (the parent of `web/`).
+
 | Command | What |
 |---|---|
-| `make up [RTPS=host:port]` | Start the dev server (Vite) with the live proxy |
-| `make build` | Production build (`tsc && vite build`) |
-| `make preview` | Serve the production build locally |
-| `make install` | Install dependencies |
-| `make help` | List targets |
+| `make web-up [RTPS=host:port]` | Start the dev server (Vite) with the live proxy |
+| `make web-build` | Production build (`tsc && vite build`) into `web/dist`, embedded by rtps |
+| `make web-preview` | Serve the production build locally |
+| `make web-install` | Install dependencies (`npm ci`) |
+| `make web-test` | Run the tests |
 
 Underlying npm scripts: `npm run dev`, `npm run build`, `npm run preview`, `npm test`
 (Vitest, one shot), `npm run test:watch`.

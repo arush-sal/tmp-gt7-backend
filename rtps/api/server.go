@@ -15,6 +15,7 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/rkb"
 	"github.com/arush-sal/garage/backend/rtps/session"
+	"github.com/arush-sal/garage/backend/web"
 	"go.uber.org/zap"
 )
 
@@ -84,11 +85,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/reference", s.handleSessionReference)
 	mux.HandleFunc("GET /v1/live", s.handleLive)
 	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
-	mux.HandleFunc("GET /{$}", s.handleLive)                  // "/" alias, exact match only
 	mux.HandleFunc("GET /v1/tracks", s.handleListTracks)
 	// Literal "coverage" beats the "{slug}" wildcard by Go 1.22 mux precedence (most-specific wins).
 	mux.HandleFunc("GET /v1/tracks/coverage", s.handleTracksCoverage)
 	mux.HandleFunc("GET /v1/tracks/{slug}", s.handleTrack)
+	// The embedded SPA owns everything else; the /v1/* routes above are more specific and win.
+	mux.Handle("GET /", web.Handler())
 	return mux
 }
 

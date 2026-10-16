@@ -15,7 +15,7 @@
 set -e
 
 echo "[pre-commit] gofmt"
-unformatted=$(gofmt -l .)
+unformatted=$(gofmt -l $(git ls-files '*.go'))
 if [ -n "$unformatted" ]; then
 	echo "[pre-commit] FAIL: gofmt needed on:"
 	echo "$unformatted"

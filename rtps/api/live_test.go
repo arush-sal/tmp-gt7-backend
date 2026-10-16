@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestLiveSnapshot_AliasAndFields(t *testing.T) {
+func TestLiveSnapshot_Fields(t *testing.T) {
 	hub := live.New()
 	enrich := live.NewEnrichmentState()
 	// coach.Coach is a struct (not an interface), so the brief's literal `nil` for this arg does
@@ -29,7 +29,7 @@ func TestLiveSnapshot_AliasAndFields(t *testing.T) {
 	}
 
 	hub.Publish(&telemetryv1.TelemetryFrame{CarSpeed: 100, RecvTimestamp: timestamppb.Now()})
-	for _, path := range []string{"/v1/live", "/"} {
+	for _, path := range []string{"/v1/live"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {

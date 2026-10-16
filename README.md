@@ -5,7 +5,7 @@ telemetry-based analysis, coaching, and performance guidance across racing games
 
 This repository holds the **backend**: the parts that run behind the scenes, turning raw game
 telemetry into structured data for analysis and coaching. Gran Turismo 7 is the first supported
-game; the web dashboard lives in a separate repository.
+game; the web dashboard lives in `web/`.
 
 The backend is made of two cooperating processes plus a terminal client:
 
@@ -75,6 +75,12 @@ The console IP is required for live capture. Everything else has sensible defaul
 
 > The backend's track API requires the RKB database at `$HOME/.garage/rkb.db`, built by the
 > [rkb tool](docs/tools/rkb.md).
+
+## Web UI
+
+The React dashboard in `web/` is embedded into `rtps` and served at http://localhost:8080/ (the API
+stays under `/v1/`). Build it with `make web-build` before `go build`; for development run
+`make web-up` (Vite dev server on :5173, proxying `/v1` to the backend).
 
 ## Tools
 

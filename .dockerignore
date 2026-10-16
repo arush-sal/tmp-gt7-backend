@@ -5,6 +5,8 @@
 .worktrees
 bin
 dist
+# Installed inside the image by the web stage (npm ci); never ship the host's copy.
+web/node_modules
 *.log
 *.md
 # Test fixtures (golden CSVs, pcap-derived data) — not referenced by any //go:embed, so not needed to
