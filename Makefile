@@ -1,4 +1,4 @@
-# GT7 Collector — build & test tasks.
+# GARAGE backend — build & test tasks (collector, rtps, tui, and the embedded web UI in web/).
 # Run `make hooks` once after cloning to enable the pre-commit gate.
 
 GO      ?= go
@@ -89,7 +89,7 @@ live: web-build
 
 ## deploy-stack: build and start the rtps + collector stack in the background against a PS5, logging
 ## to bin/. Local (native Linux) — no ssh/cross-compile. Re-run to restart; `make stop-stack` to stop.
-## Bind the API wide (API_ADDR=0.0.0.0:8080) if another host (e.g. the web dashboard) must reach it.
+## Bind the API wide (API_ADDR=0.0.0.0:8080) to open the dashboard (served by rtps) from another device.
 ##   make deploy-stack IP=192.168.1.99 [STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port]
 deploy-stack: web-build
 	@test -n "$(IP)" || { echo "usage: make deploy-stack IP=<ps5-ip> [STORAGE=postgres DB_DSN=... API_ADDR=host:port]"; exit 2; }
@@ -101,7 +101,7 @@ deploy-stack: web-build
 		sleep 2; \
 		nohup ./bin/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >bin/collector.log 2>&1 & disown; \
 		echo ">> started rtps ($(API_ADDR)) + collector (PS5 $(IP)) in background (logs: bin/rtps.log bin/collector.log)"'
-	@echo ">> curl http://$(API_ADDR)/v1/live    |    stop: make stop-stack"
+	@echo ">> dashboard http://$(API_ADDR)/    |    curl http://$(API_ADDR)/v1/live    |    stop: make stop-stack"
 
 ## stop-stack: stop a running deploy-stack (rtps + collector).
 stop-stack:
@@ -112,22 +112,27 @@ stop-stack:
 web-install:
 	npm --prefix web ci
 
+# Fresh checkout (or lockfile change): install deps before any web target needs them.
+web/node_modules: web/package-lock.json
+	npm --prefix web ci
+	@touch $@
+
 ## web-up: run the web UI dev server, proxying /v1 to RTPS. Usage: make web-up [RTPS=host:port]
-web-up:
+web-up: web/node_modules
 	@echo "-> web dev - proxying /v1 to $(RTPS)"
 	GT7_API_ADDR="$(RTPS)" npm --prefix web run dev
 
 ## web-build: build the web UI into web/dist (embedded into rtps by go build)
-web-build:
+web-build: web/node_modules
 	npm --prefix web run build
 	touch web/dist/.gitkeep
 
 ## web-preview: serve the production web build locally (proxies /v1 to RTPS)
-web-preview:
+web-preview: web/node_modules
 	GT7_API_ADDR="$(RTPS)" npm --prefix web run preview
 
 ## web-test: run the web UI tests
-web-test:
+web-test: web/node_modules
 	npm --prefix web test
 
 ## clean: remove build and coverage artifacts
