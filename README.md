@@ -7,13 +7,13 @@ This repository holds the **backend**: the parts that run behind the scenes, tur
 telemetry into structured data for analysis and coaching. Gran Turismo 7 is the first supported
 game; the web dashboard lives in `web/`.
 
-The backend is made of two cooperating processes plus a terminal client:
+The backend is made of two cooperating processes plus the web dashboard:
 
 - **Telemetry Collector** (`cmd/collector`) — receives GT7's UDP telemetry, decodes it, and streams
   it to the backend over gRPC.
 - **Backend / RTPS** (`cmd/rtps`) — session detection, lap segmentation, analysis, live egress, and
   a read HTTP API. Consumes the collector's stream.
-- **Terminal dashboard** (`cmd/tui`) — a text-mode pit-wall client of the backend's API.
+- **Web dashboard** (`web/`) — React UI embedded into `rtps` and served at `/`.
 
 The collector and backend communicate over a versioned, game-neutral telemetry contract, so any
 game-specific collector that speaks the contract can feed the same backend.
@@ -59,9 +59,6 @@ make build
 
 # run the collector (point it at your console and the backend)
 ./bin/collector --ps5.ip 192.168.1.50 --rtps.addr localhost:50051
-
-# watch the live pit wall
-./bin/tui --api http://localhost:8080
 ```
 
 Or bring up the whole stack (TimescaleDB, backend with the embedded dashboard, collector) in one
@@ -100,7 +97,6 @@ See [docs/tools](docs/tools/index.md).
 - [Configuration reference](docs/configuration.md)
 - [Architecture](docs/architecture.md)
 - [HTTP API reference](docs/api.md)
-- [Terminal dashboard](docs/tui.md)
 - [Tools](docs/tools/index.md)
 
 ## Development

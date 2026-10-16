@@ -9,7 +9,7 @@
                                            |                                 |   |
                                            v (optional, debug)               |   v HTTP API + SSE
                                     raw packet recording                     |  +-----------+
-                                                                             |  | tui /     |
+                                                                             |  |   web     |
                                                                              |  | dashboard |
                                                                              v  +-----------+
                                                                         session store

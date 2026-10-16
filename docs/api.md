@@ -80,4 +80,4 @@ fixed convention, not a configuration key. The file is generated offline by the 
 
 The live payload exposes the fields a dashboard needs: speed, gear and suggested gear, RPM, throttle
 / brake / clutch / boost, fuel, tyre temperatures, current lap and position, best and last lap
-times, and the in-race / paused flags. The terminal dashboard ([tui](tui.md)) renders exactly these.
+times, and the in-race / paused flags.

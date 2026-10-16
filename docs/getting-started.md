@@ -13,7 +13,6 @@
 ```bash
 go build -o collector ./cmd/collector   # GT7 telemetry collector
 go build -o rtps      ./cmd/rtps         # backend (ingest + HTTP API)
-go build -o tui       ./cmd/tui          # terminal dashboard
 ```
 
 Or build everything into `./bin/`:
@@ -44,14 +43,6 @@ sensible — see the [configuration reference](configuration.md).
 - `--rtps.addr` defaults to `localhost:50051` (the backend's ingest address). If it is unreachable,
   the collector keeps trying and reconnects automatically.
 
-### Terminal dashboard
-
-```bash
-./tui --api http://localhost:8080
-```
-
-See [the tui page](tui.md) for its views and snapshot mode.
-
 ## Everything at once
 
 `make deploy-stack` is the one command for a race session. It starts TimescaleDB (compose service
@@ -64,8 +55,7 @@ make deploy-stack IP=192.168.1.99
 make stop-stack   # stop them (and timescaledb; its data volume is kept)
 ```
 
-The dashboard is served by the backend at `http://localhost:8080/`. For the terminal pit wall, run
-`./bin/tui --api http://localhost:8080` alongside it.
+The dashboard is served by the backend at `http://localhost:8080/`.
 
 Bind the API wide (`API_ADDR=0.0.0.0:8080`) to open the dashboard from another device.
 

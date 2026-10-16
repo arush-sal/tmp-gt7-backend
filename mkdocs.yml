@@ -26,7 +26,6 @@ nav:
   - Configuration: configuration.md
   - Architecture: architecture.md
   - HTTP API: api.md
-  - Terminal dashboard: tui.md
   - Tools:
       - Overview: tools/index.md
       - pcap2csv: tools/pcap2csv.md

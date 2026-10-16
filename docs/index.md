@@ -5,7 +5,7 @@ telemetry-based analysis, coaching, and performance guidance across racing games
 
 This site documents the **backend**: the software that turns raw game telemetry into structured
 data for analysis and coaching. Gran Turismo 7 is the first supported game. The web dashboard that
-visualizes results is a separate application and is not part of this backend.
+visualizes results is built into the backend and served at `/`.
 
 ## The system
 
@@ -17,7 +17,7 @@ not, so other games could feed the same pipeline through their own collectors.
 |---|---|---|
 | **Telemetry Collector** (`collector`) | Receives GT7 UDP telemetry, decodes it, streams it onward over gRPC. | Implemented |
 | **Real-Time Processing System** (`rtps`) | Session detection, lap segmentation, analysis, live egress, and a read HTTP API. | Implemented (analysis/coaching evolving) |
-| **Terminal dashboard** (`tui`) | Text-mode pit-wall client of the backend API. | Implemented |
+| **Web dashboard** (`web/`) | React UI embedded into `rtps` and served at `/`. | Implemented |
 
 > **Status note.** The end-to-end path — collect -> ingest -> detect sessions -> segment laps ->
 > analyze -> serve — works today. The **analysis** layer is deterministic and functional; the
@@ -28,15 +28,13 @@ not, so other games could feed the same pipeline through their own collectors.
 
 - `cmd/collector` — the GT7 telemetry collector.
 - `cmd/rtps` — the backend (gRPC ingest + HTTP API).
-- `cmd/tui` — the terminal dashboard.
 
 ## Pages
 
-- [Getting started](getting-started.md) — install, build, and run the collector, backend, and TUI.
+- [Getting started](getting-started.md) — install, build, and run the collector and backend.
 - [Configuration](configuration.md) — every option, with defaults and precedence.
 - [Architecture](architecture.md) — how telemetry flows end to end.
 - [HTTP API reference](api.md) — the backend's read endpoints and live stream.
-- [Terminal dashboard](tui.md) — the `tui` pit-wall client.
 - [Tools](tools/index.md) — the `pcap2csv`, `vd2csv`, and `rkb` data tools.
 
 ## License

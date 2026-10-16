@@ -1,4 +1,4 @@
-# GARAGE backend — build & test tasks (collector, rtps, tui, and the embedded web UI in web/).
+# GARAGE backend — build & test tasks (collector, rtps, and the embedded web UI in web/).
 # Run `make hooks` once after cloning to enable the pre-commit gate.
 
 GO      ?= go
@@ -85,7 +85,6 @@ deploy-stack: web-build
 	@mkdir -p bin
 	$(GO) build -o bin/rtps ./cmd/rtps
 	$(GO) build -o bin/collector ./cmd/collector
-	$(GO) build -o bin/tui ./cmd/tui
 	@bash -c 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 2; \
 		nohup ./bin/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=$(API_ADDR) --ingest.addr=localhost:50051 --log.level=info >bin/rtps.log 2>&1 & disown; \
 		sleep 2; \
@@ -94,7 +93,7 @@ deploy-stack: web-build
 		curl -sf -o /dev/null http://$(API_ADDR)/v1/live && echo "rtps       ok    http://$(API_ADDR)/v1/live" || echo "rtps       DOWN  (bin/rtps.log)"; \
 		curl -sf -o /dev/null http://$(API_ADDR)/ && echo "dashboard  ok    http://$(API_ADDR)/" || echo "dashboard  DOWN  (bin/rtps.log)"; \
 		pgrep -x collector >/dev/null && echo "collector  ok    PS5 $(IP)" || echo "collector  DOWN  (bin/collector.log)"; \
-		echo "pit wall: ./bin/tui --api http://$(API_ADDR)    |    stop: make stop-stack"
+		echo "stop: make stop-stack"
 
 ## stop-stack: stop a running deploy-stack (rtps + collector, and timescaledb when STORAGE=postgres;
 ## the DB volume is kept).
