@@ -58,6 +58,7 @@ export default function TrackTraceCanvas(props: {
   selectedLap?: "all" | "current" | number;
   analysisLap?: ReadonlyArray<TracePoint> | null;
   referenceLap?: ReadonlyArray<TracePoint> | null;
+  overlayLaps?: ReadonlyArray<ReadonlyArray<TracePoint>>; // "All laps": every completed lap, faint
   // Shared graph zoom window (lap-time seconds); when set, the canvas frames just that track segment.
   zoomXRange?: [number, number] | null;
   // In analysis mode the zoom/reset controls drive the shared window (bidirectional with the graph).
@@ -75,7 +76,7 @@ export default function TrackTraceCanvas(props: {
 }) {
   const {
     store, geometry, theme, footer, selectedLap = "all",
-    analysisLap = null, referenceLap = null, zoomXRange = null,
+    analysisLap = null, referenceLap = null, overlayLaps = [], zoomXRange = null,
     onZoomWindow, onResetView, peakMarkers = [],
     hoveredPeak = null, pinnedPeak = null, onHoverPeak, onPinPeak,
     scrubIndex = null, onScrub,
@@ -180,7 +181,7 @@ export default function TrackTraceCanvas(props: {
   // redraw trace layer immediately on view/theme/selectedLap/reference change (independent of rAF)
   useEffect(() => {
     traceLayerRef.current?.batchDraw();
-  }, [view.scale, view.offsetX, view.offsetZ, theme, selectedLap, referenceLap, showReference]);
+  }, [view.scale, view.offsetX, view.offsetZ, theme, selectedLap, referenceLap, showReference, overlayLaps]);
 
   // Shared center-anchored zoom math: given the current view/zoom and a factor, compute
   // the clamped new zoom plus the manualView that keeps `pointer` (screen coords, relative
@@ -376,6 +377,7 @@ export default function TrackTraceCanvas(props: {
                   trace: store.trace(), view, theme, select: selectedLap,
                   analysisLap: analysisLap ?? undefined,
                   referenceLap: showReference ? referenceLap : null,
+                  overlayLaps,
                 });
               }}
             />

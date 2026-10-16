@@ -138,14 +138,19 @@ export function drawTrace(ctx: CanvasRenderingContext2D, opts: {
   select?: "all" | "current" | number;
   analysisLap?: readonly TracePoint[];
   referenceLap?: readonly TracePoint[] | null; // predicted lap; drawn beneath the driver line
+  overlayLaps?: ReadonlyArray<readonly TracePoint[]>; // "all" mode: every completed lap, faint
 }) {
   const select = opts.select ?? "all";
   // Reference line first, so the driver's line sits on top of it.
   if (opts.referenceLap && opts.referenceLap.length > 1) drawReferenceLine(ctx, opts.referenceLap, opts.view);
-  // "all" and "current" both plot the in-progress lap at full strength. (Completed laps are no
-  // longer retained by the store, so prior laps are no longer faint-overlaid — an accepted minor
-  // regression.) A numeric selection isolates the passed analysis lap for analysis.
-  if (select === "all" || select === "current") {
+  if (select === "all") {
+    // Overlay every completed lap faintly; fall back to the live buffer when none are loaded yet.
+    if (opts.overlayLaps?.length) {
+      for (const lap of opts.overlayLaps) drawLap(ctx, lap, opts.view, opts.theme, 0.4);
+    } else {
+      drawLap(ctx, opts.trace.current, opts.view, opts.theme, 1);
+    }
+  } else if (select === "current") {
     drawLap(ctx, opts.trace.current, opts.view, opts.theme, 1);
   } else {
     drawLap(ctx, opts.analysisLap ?? [], opts.view, opts.theme, 1);

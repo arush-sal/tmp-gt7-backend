@@ -5,6 +5,7 @@ import { useHistory } from "../hooks/useHistory";
 import { useLaps } from "../hooks/useLaps";
 import { useLapTrace } from "../hooks/useLapTrace";
 import { useCoaching } from "../hooks/useCoaching";
+import { useAllLapTraces } from "../hooks/useAllLapTraces";
 import { useMedian } from "../hooks/useMedian";
 import { useReference } from "../hooks/useReference";
 import { usePeaks } from "../hooks/usePeaks";
@@ -171,6 +172,9 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     const bestNs = rows.reduce((m, r) => (m === 0 || r.durationNs < m ? r.durationNs : m), 0);
     return rows.map(r => ({ lap: r.lap, time: r.time, best: r.durationNs === bestNs }));
   }, [laps.laps, totalLaps]);
+  // "All laps" overlay: fetch every completed lap's trace (cache-first) only while "all" is selected.
+  const allLapViews = useAllLapTraces(sessionId, selectedLap === "all" ? lapHistory.map(l => l.lap) : []);
+  const overlayLaps = useMemo(() => allLapViews.map(v => v.points), [allLapViews]);
   // New race: drop back to auto-follow AND clear a stale numeric selectedLap (completedLapCount
   // resets to 0 too, but not necessarily in the same tick -- the <select> must never hold a
   // value with no matching option).
@@ -425,6 +429,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               selectedLap={selectedLap}
               analysisLap={analysisLap}
               referenceLap={referenceLap}
+              overlayLaps={overlayLaps}
               zoomXRange={graphXRange}
               onZoomWindow={zoomWindowBy}
               onResetView={resetWindow}
