@@ -1,0 +1,1208 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   GT7 Race Coach — B aesthetic
+   Typography:  Space Grotesk (UI)  ·  Spline Sans Mono (data)
+   Palette:     red #e10600  ·  green #2ed16a  ·  amber #f5d020
+                blue #1e6fd9  ·  purple #b14fff
+   ───────────────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* surfaces */
+  --bg:        #ecedf3;
+  --surface:   #ffffff;
+  --surface-2: #f8f8fb;
+  --surface-3: #f3f3f7;
+
+  /* borders */
+  --border:  #e4e4ec;
+  --border-2: #ededf2;
+
+  /* text */
+  --text:       #15171c;
+  --text-2:     #3a3d44;
+  --text-muted: #9095a0;
+
+  /* racing palette */
+  --red:         #e10600;
+  --green:       #2ed16a;
+  --green-dark:  #16924a;
+  --amber:       #f5d020;
+  --amber-dark:  #b07d00;
+  --blue:        #1e6fd9;
+  --purple:      #b14fff;
+
+  /* track map (theme-dependent surfaces; palette dots stay literal) */
+  --track:      #c4c4ce;
+  --track-in:   #eeeff4;
+  --map-bg:     #ecedf3;
+  --sector-lbl: #d0d0da;
+  --start-line: #3a3d44;
+
+  /* coaching card (warm parchment in light) */
+  --coach-bg: #fffdf4;
+  --coach-bd: #e8e3c4;
+
+  /* fonts */
+  --ui:   "Space Grotesk", sans-serif;
+  --data: "Spline Sans Mono", monospace;
+
+  /* card shadow */
+  --shadow: 0 1px 2px rgba(20,22,28,.04), 0 4px 18px rgba(20,22,28,.07);
+}
+
+/* ── Dark theme — overrides the vars above; ported from the reference build ─ */
+[data-theme="dark"] {
+  --bg:        #0f1115;
+  --surface:   #16181c;
+  --surface-2: #1c1f24;
+  --surface-3: #22262c;
+
+  --border:   #2a2f36;
+  --border-2: #23272d;
+
+  --text:       #e8ebee;
+  --text-2:     #c8cdd3;
+  --text-muted: #8c929a;
+
+  /* deltas read brighter on dark so the -dark roles lift to the base hue */
+  --green-dark: #2ed16a;
+  --amber-dark: #f5d020;
+
+  --track:      #c8cdd3;
+  --track-in:   #15171a;
+  --map-bg:     #15171a;
+  --sector-lbl: #474d54;
+  --start-line: #c8cdd3;
+
+  --coach-bg: #26241b;
+  --coach-bd: #4a431f;
+
+  --shadow: 0 2px 16px rgba(0,0,0,.55);
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  font-family: var(--ui);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+/* #root is the app's flex column: AppBar (fixed) + .app (fills). Without this
+   the flex chain breaks and .app collapses to content height. */
+#root {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── App bar (theme + view toggles — app chrome, not part of the wireframe) ─ */
+.appbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.appbar__brand { font-weight: 600; letter-spacing: -.01em; font-size: 13px; }
+.appbar__brand b { color: var(--red); }
+.appbar__controls { display: flex; gap: 8px; align-items: center; }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+.status-dot--on  { background: var(--green); }
+.status-dot--off { background: var(--text-muted); }
+.toggle {
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+.toggle:hover { background: var(--surface-3); }
+.toggle--on { background: var(--text); color: var(--surface); border-color: var(--text); }
+.toggle:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+
+.app {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.dashboard-body {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  padding: 10px 10px 18px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.conn-banner {
+  padding: 6px 12px;
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--amber-dark);
+  background: rgba(245,208,32,.1);
+  border-bottom: 1px solid var(--border);
+}
+
+.right-panel-wrap {
+  width: 318px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ── Shared cards / sections ─────────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+
+.section {
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: 11px;
+  padding: 9px 12px;
+}
+
+.section--hi     { border-width: 2px; }
+.section--coaching {
+  background: var(--coach-bg);
+  border: 2px solid var(--coach-bd);
+  padding: 10px 11px;
+}
+/* mild coaching condense — slightly smaller title, keep body text full size */
+.section--coaching .coaching-title { font-size: 15px; }
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+
+.label {
+  font-family: var(--ui);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--text-muted);
+  display: block;
+}
+
+.label--red   { color: var(--red); }
+.label--green { color: var(--green-dark); }
+
+.heading {
+  font-family: var(--ui);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -.01em;
+}
+
+.mono       { font-family: var(--data); }
+.body-text  { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+
+.text-muted  { color: var(--text-muted); }
+.text-2      { color: var(--text-2); }
+.text-red    { color: var(--red); }
+.text-green  { color: var(--green-dark); }
+.text-amber  { color: var(--amber-dark); }
+.text-blue   { color: var(--blue); }
+.text-purple { color: var(--purple); }
+
+/* ── Tooltip (portal bubble, 0.5s dwell — see components/Tooltip.tsx) ───────── */
+/* The anchor signals a hint; the bubble is rendered into <body> (position:fixed) so it escapes the
+   header-bar / card overflow:hidden that clipped a pure-CSS ::after. */
+.tip-anchor { cursor: help; text-decoration: underline dotted; text-underline-offset: 2px; }
+.tip-bubble {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 8px)); /* centred above the anchor */
+  z-index: 1000;
+  max-width: 260px;
+  white-space: normal;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #1a1d24;
+  color: #e8eaed;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-transform: none;
+  letter-spacing: normal;
+  box-shadow: 0 4px 14px rgba(0,0,0,.35);
+  pointer-events: none;
+}
+
+/* ── Pills ───────────────────────────────────────────────────────────────── */
+
+.pill-red, .pill-green, .pill-blue, .pill-purple {
+  font-family: var(--data);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.pill-red    { background: rgba(225,6,0,.10);   color: var(--red); }
+.pill-green  { background: rgba(46,209,106,.13); color: var(--green-dark); }
+.pill-blue   { background: rgba(30,111,217,.13); color: var(--blue); }
+.pill-purple { background: rgba(177,79,255,.15); color: var(--purple); }
+
+/* ── Chips ───────────────────────────────────────────────────────────────── */
+
+.chip {
+  font-family: var(--data);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--surface);
+  white-space: nowrap;
+}
+.chip--dashed { border-style: dashed; }
+.chip--green  { border-color: rgba(46,209,106,.5);  color: var(--green-dark); background: rgba(46,209,106,.08); }
+.chip--red    { border-color: rgba(225,6,0,.35);    color: var(--red);        background: rgba(225,6,0,.07); }
+.chip--amber  { border-color: rgba(245,208,32,.6);  color: var(--amber-dark); background: rgba(245,208,32,.1); }
+.chip--dim    { opacity: .4; }
+.chip--off { opacity: .35; text-decoration: line-through; }
+.chip[disabled], .chip[aria-disabled="true"] { cursor: not-allowed; opacity: .3; }
+
+.chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.graph-legend .chip { background: none; border: 0; padding: 0 6px; font: inherit; cursor: pointer; }
+.graph-legend .chip--static { cursor: default; }
+
+/* ── Data rows ───────────────────────────────────────────────────────────── */
+
+.data-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--data);
+  font-size: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-2);
+}
+
+/* ── Session header ──────────────────────────────────────────────────────── */
+
+.session-header { padding: 10px 10px 0; flex-shrink: 0; }
+
+.header-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 8px 4px;
+  overflow: hidden;
+}
+
+.header-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 12px;
+  border-right: 1px solid var(--border-2);
+  flex-shrink: 0;
+}
+.header-cell:last-child { border-right: none; }
+.header-cell--wide { flex: 1; align-items: center; text-align: center; }
+.header-cell--corner {
+  background: rgba(225,6,0,.04);
+  border-radius: 8px;
+  border-color: rgba(225,6,0,.3);
+}
+
+.header-val {
+  font-family: var(--data);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.muted { color: var(--text-muted); }
+
+/* Center area: telemetry dock (left, fixed) + track-trace panel (fills the rest). Row layout
+   so collapsing the dock hands its width to the canvas. position:relative anchors the
+   reopen button (when the dock is hidden) and the dormant corner floating-panel. */
+.center-column {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+/* Left-docked telemetry panel: fixed width, full height, its own card chrome. */
+.telemetry-dock {
+  position: relative;
+  flex: 0 0 380px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+/* Docked, so the panel header is no longer a drag handle. */
+.telemetry-dock .telemetry-panel__header { cursor: default; }
+
+.telemetry-dock__toggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  line-height: 1;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+/* Shown only when the dock is collapsed: a small handle to bring it back. Sits below the
+   track-trace header row so it never covers the "Track Trace" heading. */
+.telemetry-reopen {
+  position: absolute;
+  top: 52px;
+  left: 14px;
+  z-index: 6;
+  line-height: 1;
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 8px;
+}
+
+/* ── Track trace panel (live P2) ─────────────────────────────────────────── */
+
+.track-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.track-picker {
+  font-family: var(--ui);
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--surface);
+  align-self: flex-start;
+}
+
+/* Header-embedded selects (track picker, lap picker) -- compact, matches header-val. */
+.header-cell .track-picker,
+.header-select {
+  font-family: var(--data);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-2);
+  color: var(--text);
+  background: var(--surface);
+  max-width: 100%;
+}
+.header-cell--wide .track-picker { align-self: center; }
+
+/* Lap cell: row 1 is "LAP" label + current/total value on one line (space-between);
+   row 2 is the lap-selector directly below, kept compact so the header-bar's height
+   stays whatever the OTHER (label+value-only) cells dictate. */
+.lap-cell-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+.lap-cell-row .header-val { line-height: 1; }
+.header-cell > .header-select {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.1;
+  padding: 0 3px;
+  border-radius: 4px;
+  margin-top: 1px;
+}
+
+.track-trace-canvas {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  min-height: 0;
+}
+
+.track-trace-canvas__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.track-trace-canvas__stage-wrap {
+  flex: 1;
+  background: var(--map-bg);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Drive-line colour legend, pinned bottom-right of the canvas. */
+.trace-legend {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  border: 1px solid var(--border);
+  font-family: var(--ui);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-2);
+  pointer-events: none;
+}
+.trace-legend__item { display: inline-flex; align-items: center; gap: 5px; }
+.trace-legend__sw { width: 15px; height: 3px; border-radius: 2px; }
+.trace-legend__sw--accel { background: rgb(46,209,106); }
+.trace-legend__sw--coast { background: #fff; box-shadow: 0 0 0 1px var(--border-2); }
+.trace-legend__sw--brake { background: rgb(240,22,14); }
+.trace-legend__sw--trail { background: rgb(250,180,20); }
+
+.track-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.track-status-text {
+  font-family: var(--ui);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.confidence-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Telemetry accordion ─────────────────────────────────────────────────── */
+
+.telemetry {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 13px;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.telemetry__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.telemetry__list { display: flex; flex-direction: column; gap: 5px; }
+
+.accordion-item {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.accordion-tab {
+  width: 100%;
+  background: var(--surface-2);
+  border: none;
+  padding: 9px 12px;
+  text-align: left;
+  font-family: var(--ui);
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+}
+.accordion-tab:hover { background: var(--surface-3); }
+
+.graph-legend  { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; flex-shrink: 0; padding: 0 10px 8px; }
+
+/* ── Floating panel shell (react-rnd) ───────────────────────────────────────
+   Rnd sets inline position/size on this element directly; we only style its
+   look (surface, border, shadow) and make it a column-flex container so the
+   height it's given actually flows down into the graphs (see flex chain below). */
+.floating-panel {
+  position: relative; /* anchors the collapse button overlay */
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+/* A child that carries its own .card chrome (e.g. CornerDetailPanel) must not double the
+   floating-panel's border/shadow/bg — the float already provides the surface. Descendant
+   selector because react-rnd may wrap the children in its own content div. */
+.floating-panel .card { border: none; box-shadow: none; background: transparent; }
+
+/* Collapse toggle -- overlaid top-right, on top of the child's own header row. Sits
+   outside dragHandleClassName so it never starts a drag; onMouseDown also stops
+   propagation as a belt-and-braces guard. */
+.floating-panel__collapse {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 5;
+  line-height: 1;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.floating-panel__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.floating-panel__body--collapsed { display: none; }
+
+/* ── Telemetry panel (uPlot graphs) — single-metric accordion cards, floating ── */
+
+.telemetry-panel {
+  position: relative; /* anchors the .graph-picker overlay */
+  flex: 1;
+  height: 100%; /* fill react-rnd's sized box even if that box isn't itself a flex parent */
+  display: flex;
+  flex-direction: column;
+  padding: 13px;
+  min-height: 0;
+}
+
+.telemetry-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+  cursor: move; /* react-rnd drag handle */
+}
+
+/* Flex chain (1/4): the list is the scroll container and grows to fill the
+   panel — without flex:1 + min-height:0 here, a resized floating-panel would
+   just add blank space instead of handing height down to the cards. */
+.telemetry-panel__list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.telemetry-graph {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;            /* collapsed: keep header height, never shrink (fixes squished/inaccessible cards) */
+}
+
+/* Flex chain (2/4): only an EXPANDED card claims the list's spare height —
+   a collapsed card (header only) stays its natural content height. */
+.telemetry-graph--expanded {
+  flex: 1 0 auto;
+}
+
+.telemetry-graph__tab {
+  width: 100%;
+  background: var(--surface-2);
+  border: none;
+  padding: 9px 12px;
+  text-align: left;
+  font-family: var(--ui);
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.telemetry-graph__tab:hover { background: var(--surface-3); }
+
+.telemetry-graph__unit-tag {
+  font-family: var(--data);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Flex chain (3/4): the graph body fills the rest of the expanded card. */
+.telemetry-graph__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  padding: 8px 10px 10px;
+}
+
+/* Flex chain (4/4): the uPlot host — was a fixed 82px, now grows with the
+   panel so a resize actually yields a taller chart, not just a taller card. */
+.telemetry-graph__canvas {
+  flex: 1;
+  min-height: 110px; /* floor so the ResizeObserver always sees non-zero -> uPlot constructs; flex:1 grows it on resize */
+  width: 100%;
+}
+
+/* ── Custom Graphs: add-picker + per-card remove (Task 6) ────────────────── */
+
+.telemetry-graph__tabrow {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.telemetry-graph__tabrow .telemetry-graph__tab { flex: 1; }
+
+.telemetry-graph__drag {
+  background: none;
+  border: 0;
+  cursor: grab;
+  color: var(--muted, #9095a0);
+  padding: 0 6px;
+  touch-action: none;
+}
+.telemetry-graph__drag:active { cursor: grabbing; }
+
+.telemetry-graph__remove,
+.graph-picker__close {
+  background: var(--surface-2);
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 12px;
+  align-self: stretch;
+}
+.telemetry-graph__remove:hover,
+.graph-picker__close:hover { background: var(--surface-3); color: var(--text-2); }
+
+.telemetry-panel__footer {
+  flex-shrink: 0;
+  padding-top: 5px;
+}
+
+.telemetry-panel__add {
+  width: 100%;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  font-family: var(--ui);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.telemetry-panel__add:hover { background: var(--surface-2); color: var(--text-2); }
+
+.graph-picker {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-1, var(--bg));
+  overflow: auto;
+  z-index: 2;
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+}
+
+.graph-picker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.graph-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+}
+.graph-picker__list li button {
+  width: 100%;
+  text-align: left;
+  background: var(--surface-2);
+  border: none;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-family: var(--ui);
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.graph-picker__list li button:hover:not([disabled]) { background: var(--surface-3); }
+.graph-picker__list li button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+/* ── Corner detail panel ─────────────────────────────────────────────────── */
+
+.corner-detail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 13px;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.corner-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.clear-btn {
+  font-family: var(--ui);
+  font-size: 11px;
+  color: var(--red);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.clear-btn:hover { background: rgba(225,6,0,.07); }
+
+.total-delta-box {
+  border: 1.5px solid var(--red);
+  background: rgba(225,6,0,.04);
+  border-radius: 9px;
+  padding: 9px 11px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 8px 0;
+}
+
+.coaching-block {
+  background: var(--coach-bg);
+  border: 1px solid var(--coach-bd);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 7px;
+}
+
+/* ── Right panel ─────────────────────────────────────────────────────────── */
+
+/* Right rail framed as a single card (matches the left telemetry panel):
+   sections live inside; the frame fills the column height and scrolls within. */
+.right-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;                       /* minimum inter-card gap */
+  justify-content: space-between; /* distribute slack evenly — no bottom clump */
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 8px;                   /* matches the gap → uniform frame edge spacing */
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.section__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.coaching-title {
+  font-family: var(--ui);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--text);
+}
+
+.confidence-badge {
+  font-family: var(--data);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+}
+.confidence-badge--high   { background: rgba(46,209,106,.13);  color: var(--green-dark); }
+.confidence-badge--medium { background: rgba(245,208,32,.15);  color: var(--amber-dark); }
+.confidence-badge--low    { background: var(--surface-2);       color: var(--text-muted); }
+
+/* ── Opportunity rows ────────────────────────────────────────────────────── */
+
+.opp-row {
+  width: 100%;
+  background: none;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  margin-bottom: 4px;
+  font-family: var(--ui);
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-align: left;
+  transition: background .1s;
+}
+.opp-row:last-child { margin-bottom: 0; }
+.opp-row:hover { background: var(--surface-3); }
+.opp-row--active {
+  border-color: rgba(225,6,0,.4);
+  background: rgba(225,6,0,.04);
+}
+
+/* ── Tyre widgets ────────────────────────────────────────────────────────── */
+
+.tyre-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.tyre-bar {
+  width: 18px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+}
+
+/* The fill occupies the whole bar; its colour encodes the current temperature band. */
+.tyre-fill {
+  width: 100%;
+  height: 100%;
+  transition: background-color .3s ease;
+}
+
+.fuel-red    { color: var(--red); }
+.fuel-yellow { color: var(--amber-dark); }
+.fuel-green  { color: var(--green-dark); }
+.fuel-none   { color: var(--text-muted); }
+.lap-best-hl { background: color-mix(in srgb, var(--blue) 14%, transparent); border-radius: 6px; padding: 1px 6px; }
+
+/* Lap History: scrollable list bounded to ~4 rows so the card never grows with lap count. */
+.lap-history-list { max-height: 104px; overflow-y: auto; }
+.lap-history-list .data-row:last-child { border-bottom: none; }
+
+/* Tyre temperature bands: under=red, optimal=green, over=lime (yellow-green blend). */
+.tyre-under   { color: var(--red); }
+.tyre-optimal { color: var(--green-dark); }
+.tyre-over    { color: color-mix(in srgb, var(--green-dark) 55%, var(--amber-dark) 45%); }
+.tyre-none    { color: var(--text-muted); }
+
+.tyre-fill--under   { background: var(--red); }
+.tyre-fill--optimal { background: var(--green); }
+.tyre-fill--over    { background: color-mix(in srgb, var(--green) 55%, var(--amber) 45%); }
+.tyre-fill--none    { background: transparent; }
+
+/* ── Onboarding ──────────────────────────────────────────────────────────── */
+
+.ob-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ob-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 26px 28px 22px;
+}
+
+.ob-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.ob-brand {
+  font-family: var(--data);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--red);
+}
+
+.ob-dots { display: flex; gap: 8px; }
+.ob-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: transparent;
+}
+.ob-dot--on { background: var(--red); border-color: var(--red); }
+
+.ob-step {
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-muted);
+  display: block;
+  margin-bottom: 6px;
+}
+.ob-title {
+  font-family: var(--ui);
+  font-size: 29px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  line-height: 1.1;
+  color: var(--text);
+}
+.ob-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+.ob-field-label {
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--text-muted);
+  display: block;
+  margin: 22px 0 7px;
+}
+.ob-input {
+  width: 100%;
+  font-family: var(--data);
+  font-size: 16px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 13px 15px;
+  caret-color: var(--red);
+}
+.ob-input::placeholder { color: var(--text-muted); }
+.ob-input:focus { outline: none; border-color: var(--red); }
+
+.ob-preview {
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: 11px;
+  padding: 12px 14px;
+  margin-top: 18px;
+}
+.ob-preview__label {
+  font-family: var(--data);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-muted);
+  display: block;
+  margin-bottom: 5px;
+}
+.ob-preview__quote { font-size: 14px; color: var(--text-2); }
+
+/* option list (skill level) */
+.ob-options { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
+.ob-opt {
+  text-align: left;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 15px 16px;
+  cursor: pointer;
+}
+.ob-opt:hover { background: var(--surface-2); }
+.ob-opt--sel { border-color: var(--red); background: rgba(225,6,0,.05); }
+.ob-opt__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+.ob-opt__name { font-family: var(--ui); font-size: 18px; font-weight: 700; color: var(--text); }
+.ob-opt__desc { font-size: 13px; color: var(--text-muted); line-height: 1.45; }
+.ob-opt__tag {
+  font-family: var(--data);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--surface);
+}
+.ob-opt__tag--sel { background: var(--red); color: #fff; border-color: var(--red); }
+
+/* lap-delta slider */
+.ob-delta-val {
+  font-family: var(--data);
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--red);
+  text-align: center;
+  margin: 22px 0 12px;
+}
+.ob-slider-row { display: flex; align-items: center; gap: 12px; }
+.ob-slider-end { font-family: var(--data); font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
+.ob-range {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 6px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  outline: none;
+}
+.ob-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 2px solid var(--green-dark);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+.ob-range::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 2px solid var(--green-dark);
+  cursor: pointer;
+}
+
+.seg { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
+.seg-btn {
+  font-family: var(--data);
+  font-size: 12px;
+  padding: 7px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.seg-btn--on { background: var(--red); color: #fff; border-color: var(--red); }
+
+.ob-info {
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: 11px;
+  padding: 12px 14px;
+  margin-top: 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.ob-info b { color: var(--text-2); }
+
+.ob-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 22px;
+}
+.ob-foot__note { font-size: 13px; color: var(--text-muted); }
+.ob-foot__spacer { flex: 1; }
+.ob-link {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-decoration: underline;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn {
+  font-family: var(--ui);
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 11px 18px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.btn:hover { background: var(--surface-2); }
+.btn--primary { background: var(--red); color: #fff; border-color: var(--red); }
+.btn--primary:hover { filter: brightness(1.06); background: var(--red); }
