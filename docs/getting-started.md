@@ -54,26 +54,20 @@ See [the tui page](tui.md) for its views and snapshot mode.
 
 ## Everything at once
 
-`make live` builds and runs the backend, collector, and TUI together against a console:
-
-```bash
-make live IP=192.168.1.99
-# options: STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port
-```
-
-The TUI runs in the foreground; Ctrl-C stops all three.
-
-To run just the backend + collector as background daemons (no TUI) — logging to `bin/rtps.log` and
-`bin/collector.log` — use `make deploy-stack`:
+`make deploy-stack` is the one command for a race session. It starts TimescaleDB (compose service
+`timescaledb`, waiting until healthy), builds the web dashboard and the binaries, and runs the
+backend and collector in the background, logging to `bin/rtps.log` and `bin/collector.log`:
 
 ```bash
 make deploy-stack IP=192.168.1.99
-# options: STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port
-make stop-stack   # stop them
+# options: STORAGE=memory (no database)  DB_DSN='postgres://...'  API_ADDR=host:port
+make stop-stack   # stop them (and timescaledb; its data volume is kept)
 ```
 
-Bind the API wide (`API_ADDR=0.0.0.0:8080`) if another host, such as the web dashboard, needs to
-reach it.
+The dashboard is served by the backend at `http://localhost:8080/`. For the terminal pit wall, run
+`./bin/tui --api http://localhost:8080` alongside it.
+
+Bind the API wide (`API_ADDR=0.0.0.0:8080`) to open the dashboard from another device.
 
 ## Verify it's working
 

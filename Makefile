@@ -4,16 +4,18 @@
 GO      ?= go
 PKG     ?= ./...
 
-# `make live` / `make deploy-stack` knobs
+# `make deploy-stack` knobs. The default DSN matches the compose `timescaledb` service.
 IP       ?=
-STORAGE  ?= memory
-DB_DSN   ?=
+STORAGE  ?= postgres
+DB_DSN   ?= postgres://gt7:gt7@localhost:5432/gt7?sslmode=disable
 API_ADDR ?= localhost:8080
+# The host has the standalone docker-compose binary, not the `docker compose` plugin.
+COMPOSE  ?= docker-compose
 
 # `make web-up` / `make web-preview`: backend the Vite dev proxy forwards /v1 to (host:port or URL)
 RTPS     ?= localhost:8080
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean live deploy-stack stop-stack web-install web-up web-build web-preview web-test
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean deploy-stack stop-stack web-install web-up web-build web-preview web-test
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
@@ -72,41 +74,34 @@ hooks:
 	git config core.hooksPath .githooks
 	@echo "git hooks path set to .githooks"
 
-## live: run backend + collector + TUI together against a PS5. Usage: make live IP=192.168.1.99
-##       (opts: STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port). Ctrl-C stops all.
-live: web-build
-	@test -n "$(IP)" || { echo "usage: make live IP=<ps5-ip> [STORAGE=postgres DB_DSN=... API_ADDR=host:port]"; exit 2; }
+## deploy-stack: the one command for a race session. Starts timescaledb (compose, waits for healthy),
+## builds the web UI + binaries, and runs rtps (API + embedded dashboard) and the collector in the
+## background against a PS5, logging to bin/. Re-run to restart; `make stop-stack` to stop.
+## Bind the API wide (API_ADDR=0.0.0.0:8080) to open the dashboard from another device.
+##   make deploy-stack IP=192.168.1.99 [STORAGE=memory | DB_DSN='postgres://...'] [API_ADDR=host:port]
+deploy-stack: web-build
+	@test -n "$(IP)" || { echo "usage: make deploy-stack IP=<ps5-ip> [STORAGE=memory | DB_DSN=...] [API_ADDR=host:port]"; exit 2; }
+	@if [ "$(STORAGE)" = postgres ]; then $(COMPOSE) up -d --wait timescaledb; fi
 	@mkdir -p bin
 	$(GO) build -o bin/rtps ./cmd/rtps
 	$(GO) build -o bin/collector ./cmd/collector
 	$(GO) build -o bin/tui ./cmd/tui
-	@echo ">> backend ($(API_ADDR)) + collector (PS5 $(IP)); TUI in foreground — Ctrl-C stops all"
-	@bash -c "trap 'kill $$RTPS $$COL 2>/dev/null' EXIT INT TERM; \
-		./bin/rtps --storage=$(STORAGE) --db.dsn='$(DB_DSN)' --api.addr=$(API_ADDR) --log.level=warn & RTPS=$$!; \
-		sleep 2; \
-		./bin/collector --ps5.ip=$(IP) --log.level=warn & COL=$$!; \
-		./bin/tui --api http://$(API_ADDR)"
-
-## deploy-stack: build and start the rtps + collector stack in the background against a PS5, logging
-## to bin/. Local (native Linux) — no ssh/cross-compile. Re-run to restart; `make stop-stack` to stop.
-## Bind the API wide (API_ADDR=0.0.0.0:8080) to open the dashboard (served by rtps) from another device.
-##   make deploy-stack IP=192.168.1.99 [STORAGE=postgres DB_DSN='postgres://...' API_ADDR=host:port]
-deploy-stack: web-build
-	@test -n "$(IP)" || { echo "usage: make deploy-stack IP=<ps5-ip> [STORAGE=postgres DB_DSN=... API_ADDR=host:port]"; exit 2; }
-	@mkdir -p bin
-	$(GO) build -o bin/rtps ./cmd/rtps
-	$(GO) build -o bin/collector ./cmd/collector
 	@bash -c 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 2; \
 		nohup ./bin/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=$(API_ADDR) --ingest.addr=localhost:50051 --log.level=info >bin/rtps.log 2>&1 & disown; \
 		sleep 2; \
-		nohup ./bin/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >bin/collector.log 2>&1 & disown; \
-		echo ">> started rtps ($(API_ADDR)) + collector (PS5 $(IP)) in background (logs: bin/rtps.log bin/collector.log)"'
-	@echo ">> dashboard http://$(API_ADDR)/    |    curl http://$(API_ADDR)/v1/live    |    stop: make stop-stack"
+		nohup ./bin/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >bin/collector.log 2>&1 & disown'
+	@sleep 2; \
+		curl -sf -o /dev/null http://$(API_ADDR)/v1/live && echo "rtps       ok    http://$(API_ADDR)/v1/live" || echo "rtps       DOWN  (bin/rtps.log)"; \
+		curl -sf -o /dev/null http://$(API_ADDR)/ && echo "dashboard  ok    http://$(API_ADDR)/" || echo "dashboard  DOWN  (bin/rtps.log)"; \
+		pgrep -x collector >/dev/null && echo "collector  ok    PS5 $(IP)" || echo "collector  DOWN  (bin/collector.log)"; \
+		echo "pit wall: ./bin/tui --api http://$(API_ADDR)    |    stop: make stop-stack"
 
-## stop-stack: stop a running deploy-stack (rtps + collector).
+## stop-stack: stop a running deploy-stack (rtps + collector, and timescaledb when STORAGE=postgres;
+## the DB volume is kept).
 stop-stack:
 	@bash -c 'pkill -x rtps && echo "stopped rtps" || echo "rtps not running"; \
 		pkill -x collector && echo "stopped collector" || echo "collector not running"'
+	@if [ "$(STORAGE)" = postgres ]; then $(COMPOSE) stop timescaledb; fi
 
 ## web-install: install the web UI dependencies (npm ci)
 web-install:

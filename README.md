@@ -64,10 +64,11 @@ make build
 ./bin/tui --api http://localhost:8080
 ```
 
-Or run all three together against a console:
+Or bring up the whole stack (TimescaleDB, backend with the embedded dashboard, collector) in one
+command:
 
 ```bash
-make live IP=192.168.1.99
+make deploy-stack IP=192.168.1.99   # dashboard at http://localhost:8080/; stop with make stop-stack
 ```
 
 The console IP is required for live capture. Everything else has sensible defaults. See
