@@ -79,6 +79,12 @@ func (k *KB) SectorsForSession(ctx context.Context, sessionID string) (sectors [
 	if !ok {
 		return nil, "track-not-detected", nil
 	}
+	return k.SectorsForTrack(ctx, slug)
+}
+
+// SectorsForTrack is SectorsForSession for a known track slug (a lap's own track, or a track's stored
+// reference lap): "track-not-detected" when the RKB has no such track.
+func (k *KB) SectorsForTrack(ctx context.Context, slug string) (sectors []reference.Sector, reason string, err error) {
 	rec, found, err := k.store.Track(ctx, slug)
 	if err != nil {
 		return nil, "", err

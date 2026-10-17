@@ -43,6 +43,17 @@ type Server struct {
 	// snapshot's enrichment.recording). nil = no switch: the POST answers 409, recording reads true.
 	Recording RecordingSwitch
 
+	// TrackRefs backs the /v1/tracks/{slug}/reference-lap and /laps routes (stored laps per track and
+	// the pinned reference). nil = nothing stored: GET 404 / [], PUT 404.
+	TrackRefs processing.TrackRefStore
+	// OnReferenceChange, if set, is called after a pin or unpin of slug's reference lap so the live
+	// stored-reference delta reloads (live.RefLoader.Reload).
+	OnReferenceChange func(slug string)
+
+	// AllowedHosts are the Host names, beyond the loopback ones, accepted on mutating routes (see
+	// MutationHosts and guardMutations). Read when Handler is built.
+	AllowedHosts []string
+
 	trackRecMu    sync.Mutex                 // guards trackRecCache and trackRecMissed
 	trackRecCache map[string]json.RawMessage // slug -> marshalled rkb.Record; records are immutable at runtime, so this never invalidates
 	// trackRecMissed holds slugs already warned about having no RKB record, so a resolved-but-missing slug
@@ -70,7 +81,8 @@ func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *liv
 }
 
 // liveEnrichment returns the current enrichment snapshot with the Record switch state and (when a
-// DeltaTracker is wired) the live per-frame delta overlaid. s.enrich.Get() returns a value copy, so setting DeltaToBestNs here mutates only
+// DeltaTracker is wired) the live per-frame deltas (to the session best and to the track's stored
+// reference lap) overlaid. s.enrich.Get() returns a value copy, so setting DeltaToBestNs here mutates only
 // that local copy, never the shared EnrichmentState (see Enrichment's immutability invariant).
 func (s *Server) liveEnrichment() live.Enrichment {
 	en := s.enrich.Get()
@@ -81,6 +93,9 @@ func (s *Server) liveEnrichment() live.Enrichment {
 	if s.delta != nil {
 		if ns, ok := s.delta.Delta(); ok {
 			en.DeltaToBestNs = &ns
+		}
+		if ns, ok := s.delta.StoredRefDelta(); ok {
+			en.DeltaToStoredRefNs = &ns
 		}
 	}
 	return en
@@ -103,9 +118,13 @@ func (s *Server) Handler() http.Handler {
 	// Literal "coverage" beats the "{slug}" wildcard by Go 1.22 mux precedence (most-specific wins).
 	mux.HandleFunc("GET /v1/tracks/coverage", s.handleTracksCoverage)
 	mux.HandleFunc("GET /v1/tracks/{slug}", s.handleTrack)
+	mux.HandleFunc("GET /v1/tracks/{slug}/reference-lap", s.handleGetTrackReference)
+	mux.HandleFunc("PUT /v1/tracks/{slug}/reference-lap", s.handlePinTrackReference)
+	mux.HandleFunc("DELETE /v1/tracks/{slug}/reference-lap", s.handleUnpinTrackReference)
+	mux.HandleFunc("GET /v1/tracks/{slug}/laps", s.handleTrackLaps)
 	// The embedded SPA owns everything else; the /v1/* routes above are more specific and win.
 	mux.Handle("GET /", web.Handler())
-	return mux
+	return guardMutations(mux, s.AllowedHosts)
 }
 
 // sessionSummary is the API view of a session — identity + lifecycle, without internal fields like

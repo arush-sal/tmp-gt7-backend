@@ -24,6 +24,11 @@ type Enrichment struct {
 	Track           *string                   `json:"track"`
 	TrackConfidence *string                   `json:"track_confidence"` // "provisional" (may still switch) or "confident" (locked); nil until a first guess
 	DeltaToBestNs   *int64                    `json:"delta_to_best_ns"`
+	// DeltaToStoredRefNs is the live gap to the current track's STORED reference lap (pinned, else the
+	// fastest stored lap on it): null while the track is unknown or only provisional, when the track has
+	// no stored reference, or before a lap has started at the line. Overlaid by the API from the
+	// DeltaTracker, like DeltaToBestNs.
+	DeltaToStoredRefNs *int64 `json:"delta_to_stored_ref_ns"`
 	// DuplicateOf is the id of the stored ORIGINAL session while the live session is a dropped
 	// duplicate of it (an in-game replay of laps already stored); SessionID then equals it too, so the
 	// frontend links to the original. Omitted (absent from JSON) when the live session is not a duplicate.

@@ -78,6 +78,7 @@ func TestPostgresStore_RoundTrip(t *testing.T) {
 		EndTime:        time.Unix(1100, 0).UTC(),
 		CarID:          2108,
 		CarName:        "Dodge SRT Tomahawk X Vision Gran Turismo",
+		CarCategory:    "GR3",
 		Source:         telemetryv1.Source_SOURCE_LIVE,
 		FrameCount:     1200,
 		GapCount:       3,

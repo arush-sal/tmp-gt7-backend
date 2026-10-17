@@ -37,6 +37,10 @@ type lapDTO struct {
 	Timed       bool          `json:"timed"`
 	DeltaToPBNs *int64        `json:"delta_to_pb_ns"`
 	Sectors     lapSectorsDTO `json:"sectors"`
+	// TrackSlug / TrackConfidence are the track this lap was driven on ("provisional" | "confident"),
+	// null when the detector had no guess (a session can drive several tracks).
+	TrackSlug       *string `json:"track_slug"`
+	TrackConfidence *string `json:"track_confidence"`
 }
 
 // traceSampleDTO is one kept trace sample. TNs is nanoseconds since the lap's t0 (StartTime, or the
@@ -100,6 +104,9 @@ func (s *Server) handleSessionLaps(w http.ResponseWriter, r *http.Request) {
 			Complete:   l.Complete,
 			Valid:      l.Valid,
 			Timed:      l.Timed,
+
+			TrackSlug:       nonEmpty(l.TrackSlug),
+			TrackConfidence: nonEmpty(l.TrackConfidence),
 		}
 		if rec.BestLap > 0 {
 			d := int64(l.Duration - rec.BestLap)

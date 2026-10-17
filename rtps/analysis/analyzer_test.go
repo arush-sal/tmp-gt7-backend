@@ -89,6 +89,38 @@ func TestAnalyzeSession(t *testing.T) {
 	}
 }
 
+// TestAnalyzeSession_SectorsOnTheLapsOwnTrack: in a session that drove two tracks, each lap is split
+// on its own track, and only laps on the PB lap's track are compared sector by sector.
+func TestAnalyzeSession_SectorsOnTheLapsOwnTrack(t *testing.T) {
+	laps := processing.NewMemLapStore()
+	traces := processing.NewMemTraceStore()
+	base := time.Unix(1_700_000_000, 0)
+	tr, secs := reference.MockTrack()
+	_ = laps.Save(&processing.Lap{SessionID: "m", LapNumber: 1, Duration: 90 * s, Timed: true, Complete: true, Valid: true, TrackSlug: tr.ID})
+	_ = laps.Save(&processing.Lap{SessionID: "m", LapNumber: 2, Duration: 93 * s, Timed: true, Complete: true, Valid: true, TrackSlug: "elsewhere"})
+	_ = traces.SaveBatch(traceFor("m", 1, base, 90*s))
+	_ = traces.SaveBatch(traceFor("m", 2, base, 93*s))
+	kb := reference.NewStaticKB()
+	kb.Add("other-session", tr, secs) // the session itself resolves to nothing: only the laps' tracks do
+	a := Analyzer{Laps: laps, Traces: traces, KB: kb, FallbackSectors: 3}
+
+	res, err := a.AnalyzeSession(context.Background(), "m", 90*s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range res.Laps {
+		switch {
+		case l.LapNumber == 1 && len(l.SectorDeltas) != 3:
+			t.Errorf("lap 1 (PB track) sector deltas = %d, want 3", len(l.SectorDeltas))
+		case l.LapNumber == 2 && len(l.SectorDeltas) != 0:
+			t.Errorf("lap 2 (another track) sector deltas = %v, want none", l.SectorDeltas)
+		}
+	}
+	if len(res.BestSectors) != 3 || res.PredictedBest != 90*s {
+		t.Errorf("predicted best = %v from %d sectors, want 90s from lap 1's 3", res.PredictedBest, len(res.BestSectors))
+	}
+}
+
 // TestAnalyzeSession_PartialTraceNotSectorAnalyzed guards the sector-analyzability fix: a lap whose
 // trace does not faithfully cover it (a mid-race join lap or a dropout splice — its trace spans far
 // less wall-clock than the lap's authoritative GT7 duration) must be kept out of the sector-based

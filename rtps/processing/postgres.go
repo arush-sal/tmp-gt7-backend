@@ -25,21 +25,25 @@ func NewPostgresLapStore(pool *pgxpool.Pool) *PostgresLapStore {
 
 // lapUpsertSQL inserts a lap or replaces it on (session_id, lap_number) conflict — idempotent, though
 // the segmenter emits each lap once. An empty fingerprint is stored as NULL so the unique index on
-// laps.fingerprint (migration 00008) only constrains real fingerprints.
+// laps.fingerprint (migration 00008) only constrains real fingerprints; an empty track slug/confidence
+// is stored as NULL (no track guess).
 const lapUpsertSQL = `
 INSERT INTO laps
- (session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, fingerprint)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''))
+ (session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, fingerprint,
+  track_slug, track_confidence)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),NULLIF($12,''),NULLIF($13,''))
  ON CONFLICT (session_id, lap_number) DO UPDATE SET
    start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, duration_ns=EXCLUDED.duration_ns,
    frame_count=EXCLUDED.frame_count, gap_count=EXCLUDED.gap_count, complete=EXCLUDED.complete,
-   timed=EXCLUDED.timed, valid=EXCLUDED.valid, fingerprint=EXCLUDED.fingerprint`
+   timed=EXCLUDED.timed, valid=EXCLUDED.valid, fingerprint=EXCLUDED.fingerprint,
+   track_slug=EXCLUDED.track_slug, track_confidence=EXCLUDED.track_confidence`
 
 // Save upserts a lap. Duration stores as nanoseconds; counts widen to bigint (CHECK (>= 0) in the DB).
 func (s *PostgresLapStore) Save(lap *Lap) error {
 	_, err := s.pool.Exec(context.Background(), lapUpsertSQL,
 		lap.SessionID, lap.LapNumber, lap.StartTime, lap.EndTime, lap.Duration.Nanoseconds(),
-		int64(lap.FrameCount), int64(lap.GapCount), lap.Complete, lap.Timed, lap.Valid, lap.Fingerprint)
+		int64(lap.FrameCount), int64(lap.GapCount), lap.Complete, lap.Timed, lap.Valid, lap.Fingerprint,
+		lap.TrackSlug, lap.TrackConfidence)
 	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.ConstraintName == "laps_fingerprint_key" {
 		// The single INSERT failed atomically, so nothing was half-written; let the caller retry.
 		return fmt.Errorf("processing: save lap %s#%d: %w", lap.SessionID, lap.LapNumber, ErrDuplicateFingerprint)
@@ -50,7 +54,8 @@ func (s *PostgresLapStore) Save(lap *Lap) error {
 	return nil
 }
 
-const lapCols = `session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, COALESCE(fingerprint, '')`
+const lapCols = `session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, COALESCE(fingerprint, ''),
+ COALESCE(track_slug, ''), COALESCE(track_confidence, '')`
 
 // BySession returns a session's laps ordered by lap number (nil if none).
 func (s *PostgresLapStore) BySession(sessionID string) []*Lap {
@@ -98,6 +103,85 @@ func (s *PostgresLapStore) DeleteSession(sessionID string) error {
 		return fmt.Errorf("processing: delete laps of %s: %w", sessionID, err)
 	}
 	return nil
+}
+
+// LabelTrack implements TrackRefStore (one UPDATE; runs once per detector lock).
+func (s *PostgresLapStore) LabelTrack(sessionID string, since time.Time, slug string) error {
+	_, err := s.pool.Exec(context.Background(), `UPDATE laps SET track_slug=$3, track_confidence='confident'
+ WHERE session_id=$1 AND start_time >= $2 AND (track_confidence IS NULL OR track_confidence='provisional')`,
+		sessionID, since, slug)
+	if err != nil {
+		return fmt.Errorf("processing: label laps of %s as %s: %w", sessionID, slug, err)
+	}
+	return nil
+}
+
+// Lap implements TrackRefStore.
+func (s *PostgresLapStore) Lap(sessionID string, lapNumber int32) (*Lap, bool, error) {
+	return s.oneLap("SELECT "+lapCols+" FROM laps WHERE session_id=$1 AND lap_number=$2", sessionID, lapNumber)
+}
+
+// oneLap runs a query returning at most one lap row.
+func (s *PostgresLapStore) oneLap(sql string, args ...any) (*Lap, bool, error) {
+	rows, err := s.pool.Query(context.Background(), sql, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("processing: query lap: %w", err)
+	}
+	defer rows.Close()
+	laps := scanLaps(rows)
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("processing: read lap: %w", err)
+	}
+	if len(laps) == 0 {
+		return nil, false, nil
+	}
+	return laps[0], true, nil
+}
+
+// TrackLaps implements TrackRefStore. The WHERE clause matches the laps_track_fastest partial index
+// (migration 00009), which also serves the ORDER BY.
+func (s *PostgresLapStore) TrackLaps(slug string, limit int) ([]*Lap, error) {
+	rows, err := s.pool.Query(context.Background(), "SELECT "+lapCols+` FROM laps
+ WHERE track_slug=$1 AND complete AND valid AND track_confidence='confident'
+ ORDER BY duration_ns, start_time LIMIT $2`, slug, limit)
+	if err != nil {
+		return nil, fmt.Errorf("processing: track laps %s: %w", slug, err)
+	}
+	defer rows.Close()
+	laps := scanLaps(rows)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("processing: read track laps %s: %w", slug, err)
+	}
+	return laps, nil
+}
+
+// PinnedReference implements TrackRefStore.
+func (s *PostgresLapStore) PinnedReference(slug string) (*Lap, bool, error) {
+	return s.oneLap("SELECT "+lapCols+` FROM laps WHERE (session_id, lap_number) =
+ (SELECT session_id, lap_number FROM track_reference WHERE track_slug=$1)`, slug)
+}
+
+// PinReference implements TrackRefStore (upsert on the slug). A missing lap trips the FK.
+func (s *PostgresLapStore) PinReference(slug, sessionID string, lapNumber int32) error {
+	_, err := s.pool.Exec(context.Background(), `INSERT INTO track_reference (track_slug, session_id, lap_number)
+ VALUES ($1,$2,$3) ON CONFLICT (track_slug) DO UPDATE SET session_id=EXCLUDED.session_id,
+ lap_number=EXCLUDED.lap_number, pinned_at=now()`, slug, sessionID, lapNumber)
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
+		return fmt.Errorf("processing: pin %s#%d: %w", sessionID, lapNumber, ErrLapNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("processing: pin %s#%d for %s: %w", sessionID, lapNumber, slug, err)
+	}
+	return nil
+}
+
+// UnpinReference implements TrackRefStore.
+func (s *PostgresLapStore) UnpinReference(slug string) (bool, error) {
+	tag, err := s.pool.Exec(context.Background(), "DELETE FROM track_reference WHERE track_slug=$1", slug)
+	if err != nil {
+		return false, fmt.Errorf("processing: unpin %s: %w", slug, err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // PostgresTraceStore bulk-loads trace samples into the lap_trace hypertable via COPY.
@@ -201,7 +285,8 @@ func scanLaps(rows pgx.Rows) []*Lap {
 			durNs, fc, gc int64
 		)
 		if err := rows.Scan(&lap.SessionID, &lap.LapNumber, &lap.StartTime, &lap.EndTime,
-			&durNs, &fc, &gc, &lap.Complete, &lap.Timed, &lap.Valid, &lap.Fingerprint); err != nil {
+			&durNs, &fc, &gc, &lap.Complete, &lap.Timed, &lap.Valid, &lap.Fingerprint,
+			&lap.TrackSlug, &lap.TrackConfidence); err != nil {
 			return out
 		}
 		lap.Duration = time.Duration(durNs)

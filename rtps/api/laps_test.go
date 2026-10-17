@@ -26,6 +26,10 @@ func (f fakeSectors) SectorsForSession(context.Context, string) ([]reference.Sec
 	return f.sectors, f.reason, f.err
 }
 
+func (f fakeSectors) SectorsForTrack(context.Context, string) ([]reference.Sector, string, error) {
+	return f.sectors, f.reason, f.err
+}
+
 // lapsServer wires an API server with a session, lap, and trace store for the lap/trace routes.
 func lapsServer(sec processing.SectorProvider) (*Server, *session.MemStore, *processing.MemLapStore, *processing.MemTraceStore) {
 	sessions := session.NewMemStore()

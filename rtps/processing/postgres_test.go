@@ -271,3 +271,20 @@ func TestPostgresLapStore_Golden(t *testing.T) {
 		}
 	}
 }
+
+// TestPostgresLapStore_TrackReference runs the per-lap track / pin / fastest-lap contract through
+// migration 00009, dropping a session the production way (its sessions row, cascading to laps and pin).
+func TestPostgresLapStore_TrackReference(t *testing.T) {
+	pool := freshPool(t)
+	sessions := session.NewPostgresStore(pool)
+	for _, id := range []string{"s1", "s2"} {
+		if err := sessions.Save(&session.Record{ID: id, StartTime: time.Unix(1000, 0).UTC(), Status: session.StatusFinished}); err != nil {
+			t.Fatalf("save session: %v", err)
+		}
+	}
+	testTrackRefContract(t, NewPostgresLapStore(pool), func(id string) {
+		if err := sessions.Delete(id); err != nil {
+			t.Fatalf("delete session: %v", err)
+		}
+	})
+}

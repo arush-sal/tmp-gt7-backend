@@ -117,13 +117,17 @@ func MiniSectors(count int) []reference.Sector {
 	return secs
 }
 
-// SectorsForLap resolves a session's track via the RKB and splits the lap into that track's sectors.
-// When the track is unknown (or has no sector definition), it falls back to fallbackCount equal
-// mini-sectors. usedRKB reports whether real RKB sectors were used (vs the fallback).
-func SectorsForLap(ctx context.Context, kb reference.KB, sessionID string, n NormalizedLap, fallbackCount int) (results []SectorResult, usedRKB bool, err error) {
-	track, found, err := kb.TrackForSession(ctx, sessionID)
-	if err != nil {
-		return nil, false, err
+// SectorsForLap splits the lap into its track's RKB sectors: trackSlug (the lap's own Lap.TrackSlug)
+// when set, else the session's track resolved via the RKB. When the track is unknown (or has no sector
+// definition), it falls back to fallbackCount equal mini-sectors. usedRKB reports whether real RKB
+// sectors were used (vs the fallback).
+func SectorsForLap(ctx context.Context, kb reference.KB, sessionID, trackSlug string, n NormalizedLap, fallbackCount int) (results []SectorResult, usedRKB bool, err error) {
+	track, found := reference.Track{ID: trackSlug}, trackSlug != ""
+	if !found {
+		track, found, err = kb.TrackForSession(ctx, sessionID)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	if found {
 		sectors, err := kb.Sectors(ctx, track.ID)

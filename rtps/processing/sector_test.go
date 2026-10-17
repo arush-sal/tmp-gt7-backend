@@ -60,14 +60,20 @@ func TestSectorsForLap_RKBvsFallback(t *testing.T) {
 	kb.Add("s1", tr, secs)
 	n := lapFixture()
 
-	res, usedRKB, err := SectorsForLap(ctx, kb, "s1", n, 5)
+	res, usedRKB, err := SectorsForLap(ctx, kb, "s1", "", n, 5)
 	if err != nil || !usedRKB || len(res) != 3 { // mock track has 3 sectors
 		t.Errorf("known session: res=%d usedRKB=%v err=%v, want 3/true/nil", len(res), usedRKB, err)
 	}
 
-	res2, usedRKB2, err := SectorsForLap(ctx, kb, "unknown", n, 5)
+	res2, usedRKB2, err := SectorsForLap(ctx, kb, "unknown", "", n, 5)
 	if err != nil || usedRKB2 || len(res2) != 5 { // fallback to 5 mini-sectors
 		t.Errorf("unknown session: res=%d usedRKB=%v err=%v, want 5/false/nil", len(res2), usedRKB2, err)
+	}
+
+	// A lap that carries its own track uses that track, whatever the session resolves to.
+	res3, usedRKB3, err := SectorsForLap(ctx, kb, "unknown", tr.ID, n, 5)
+	if err != nil || !usedRKB3 || len(res3) != 3 {
+		t.Errorf("lap track: res=%d usedRKB=%v err=%v, want 3/true/nil", len(res3), usedRKB3, err)
 	}
 }
 

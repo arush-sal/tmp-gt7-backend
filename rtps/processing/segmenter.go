@@ -24,6 +24,16 @@ type LapSegmenter struct {
 	// OnError, if set, is called when persisting a lap fails (the Sink API is error-less, so this
 	// surfaces store failures that would otherwise be silent). nil = ignore.
 	OnError func(error)
+
+	// TrackFn, if set, reports the live detector's current track for a session (slug, confidence; ""
+	// when none) and is read as each lap is stored, so every lap carries the track it was driven on
+	// (TrackDetector.Track). nil = laps are stored unlabelled.
+	TrackFn func(sessionID string) (slug, confidence string)
+
+	// OnSaved, if set, is called with each lap after it is stored (once per lap, on the stream
+	// goroutine), so the live stored-reference loader can pick up a lap that may be the track's new
+	// reference (live.RefLoader.LapStored). nil = no notification.
+	OnSaved func(lap Lap)
 }
 
 // lapState tracks the lap currently being accumulated for one session.
@@ -139,6 +149,9 @@ func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastL
 		Fallback:    fallback,
 		Fingerprint: fp,
 	}
+	if s.TrackFn != nil {
+		lap.TrackSlug, lap.TrackConfidence = s.TrackFn(sessionID)
+	}
 	err := s.store.Save(lap)
 	if errors.Is(err, ErrDuplicateFingerprint) {
 		// Another session already owns this lap's fingerprint. Only a session's first completed lap
@@ -147,7 +160,13 @@ func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastL
 		lap.Fingerprint = ""
 		err = s.store.Save(lap)
 	}
-	if err != nil && s.OnError != nil {
-		s.OnError(fmt.Errorf("save lap %s#%d: %w", sessionID, st.lapNumber, err))
+	if err != nil {
+		if s.OnError != nil {
+			s.OnError(fmt.Errorf("save lap %s#%d: %w", sessionID, st.lapNumber, err))
+		}
+		return
+	}
+	if s.OnSaved != nil {
+		s.OnSaved(*lap)
 	}
 }

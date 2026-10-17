@@ -63,22 +63,29 @@ type pooledLap struct {
 	splits    []SectorResult
 }
 
-// PredictedReferenceLap builds the predicted (ideal) lap for a session: it resolves the track's sectors
-// once, pools the session's full racing laps whose traces faithfully cover them (same gate as
-// SessionLapSectors' best pool + SectorAnalyzable), picks the fastest owner per sector, and splices the
-// owners' in-sector samples into one synthetic lap — re-timing each sector to start at the running
-// predicted time and re-accumulating distance across the seams. Owner ties resolve to the lowest lap
-// number (mirrors analysis.predictedBest). An empty pool returns an empty (non-error) PredictedLap.
+// PredictedReferenceLap builds the predicted (ideal) lap for a session: it pools the session's full
+// racing laps on ONE track - the track of the session's fastest full racing lap, since a session can
+// drive several - resolves that track's sectors (lapSectorResolver), keeps the laps whose traces
+// faithfully cover them (same gate as SessionLapSectors' best pool + SectorAnalyzable), picks the
+// fastest owner per sector, and splices the owners' in-sector samples into one synthetic lap -
+// re-timing each sector to start at the running predicted time and re-accumulating distance across the
+// seams. Owner ties resolve to the lowest lap number (mirrors analysis.predictedBest). An empty pool
+// returns an empty (non-error) PredictedLap.
 func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces TraceStore, sessionID string, laps []Lap) (PredictedLap, error) {
-	sectors, reason, err := provider.SectorsForSession(ctx, sessionID)
+	var fastest *Lap
+	for i := range laps {
+		l := &laps[i]
+		if l.Timed && l.Complete && !l.Fallback && (fastest == nil || l.Duration < fastest.Duration) {
+			fastest = l
+		}
+	}
+	var key Lap // the fastest lap's track ("" = the session's live track)
+	if fastest != nil {
+		key = *fastest
+	}
+	sectors, reason, err := newLapSectorResolver(ctx, provider, sessionID).forLap(key)
 	if err != nil {
 		return PredictedLap{}, err
-	}
-	if reason != "" || sectors == nil {
-		sectors = MiniSectors(3)
-		if reason == "" { // defensive: nil sectors with no reason -> treat as undetected track
-			reason = "track-not-detected"
-		}
 	}
 	out := PredictedLap{Reliable: reason == "", Reason: reason}
 
@@ -92,7 +99,7 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 	// them from the splice).
 	var pool []pooledLap
 	for _, l := range laps {
-		if !l.Timed || !l.Complete || l.Fallback {
+		if !l.Timed || !l.Complete || l.Fallback || l.TrackSlug != key.TrackSlug {
 			continue
 		}
 		samples, err := traces.ByLap(sessionID, l.LapNumber)
@@ -152,27 +159,7 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 				}
 				prevTNs = tns
 
-				out.Samples = append(out.Samples, PredictedSample{
-					Fraction:      f,
-					TNs:           tns,
-					Distance:      distAcc,
-					PosX:          p.PosX,
-					PosZ:          p.PosZ,
-					Speed:         p.Speed,
-					Throttle:      p.Throttle,
-					Brake:         p.Brake,
-					RPM:           p.RPM,
-					Gear:          p.Gear,
-					Fuel:          p.Fuel,
-					TyreTempFL:    p.TyreTempFL,
-					TyreTempFR:    p.TyreTempFR,
-					TyreTempRL:    p.TyreTempRL,
-					TyreTempRR:    p.TyreTempRR,
-					Clutch:        p.Clutch,
-					Boost:         p.Boost,
-					Steering:      p.Steering,
-					DeltaToBestNs: p.DeltaToBestNs,
-				})
+				out.Samples = append(out.Samples, predictedSample(p, f, tns, distAcc))
 			}
 		}
 		cumPredictedNs += durNs
@@ -264,4 +251,58 @@ func ownerForSector(pool []pooledLap, index int) (pooledLap, SectorResult, bool)
 		return cleanLap, cleanSplit, true
 	}
 	return anyLap, anySplit, anyFound // fallback: all laps ran this sector off-track (or none drove it)
+}
+
+// predictedSample maps one trace point onto the predicted-lap sample shape at the given fraction,
+// synthetic-lap time and distance.
+func predictedSample(p NormSample, fraction float64, tns int64, distance float64) PredictedSample {
+	return PredictedSample{
+		Fraction:      fraction,
+		TNs:           tns,
+		Distance:      distance,
+		PosX:          p.PosX,
+		PosZ:          p.PosZ,
+		Speed:         p.Speed,
+		Throttle:      p.Throttle,
+		Brake:         p.Brake,
+		RPM:           p.RPM,
+		Gear:          p.Gear,
+		Fuel:          p.Fuel,
+		TyreTempFL:    p.TyreTempFL,
+		TyreTempFR:    p.TyreTempFR,
+		TyreTempRL:    p.TyreTempRL,
+		TyreTempRR:    p.TyreTempRR,
+		Clutch:        p.Clutch,
+		Boost:         p.Boost,
+		Steering:      p.Steering,
+		DeltaToBestNs: p.DeltaToBestNs,
+	}
+}
+
+// TrackReferenceLap serves one stored lap (a track's reference lap, see ResolveTrackReference) on the
+// PredictedLap shape, so clients reuse their predicted-lap overlay: the lap's own track's sectors
+// (each owned by the lap; MiniSectors(3) with the reason when the RKB has none), every trace sample on
+// the lap's distance-fraction axis with t_ns from its first sample, and the lap's GT7 time as
+// PredictedBestNs. A lap with no stored trace yields no samples and zero-duration sectors.
+func TrackReferenceLap(ctx context.Context, provider SectorProvider, traces TraceStore, lap Lap) (PredictedLap, error) {
+	sectors, reason, err := provider.SectorsForTrack(ctx, lap.TrackSlug)
+	if err != nil {
+		return PredictedLap{}, err
+	}
+	sectors, reason = withFallback(sectors, reason)
+	samples, err := traces.ByLap(lap.SessionID, lap.LapNumber)
+	if err != nil {
+		return PredictedLap{}, err
+	}
+	norm := Normalize(samples)
+	out := PredictedLap{Reliable: reason == "", Reason: reason, PredictedBestNs: lap.Duration.Nanoseconds(),
+		Samples: make([]PredictedSample, len(norm.Points))}
+	for _, sp := range SplitSectors(norm, sectors) {
+		out.Sectors = append(out.Sectors, RefSectorSeg{Index: sp.Index, Label: fmt.Sprintf("S%d", sp.Index+1),
+			OwnerLap: lap.LapNumber, DurationNs: sp.Duration.Nanoseconds()})
+	}
+	for i, p := range norm.Points {
+		out.Samples[i] = predictedSample(p, p.Fraction, p.RecvTime.Sub(norm.Points[0].RecvTime).Nanoseconds(), p.Distance)
+	}
+	return out, nil
 }

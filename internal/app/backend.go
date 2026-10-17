@@ -45,6 +45,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	var (
 		sessStore  session.Store
 		lapStore   processing.LapStore
+		trackRefs  processing.TrackRefStore // the same lap store's per-track side (labels, pins)
 		traceStore processing.TraceStore
 	)
 	switch cfg.Storage {
@@ -58,12 +59,14 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 			return fmt.Errorf("db migrate: %w", err)
 		}
 		sessStore = session.NewPostgresStore(pool)
-		lapStore = processing.NewPostgresLapStore(pool)
+		pgLaps := processing.NewPostgresLapStore(pool)
+		lapStore, trackRefs = pgLaps, pgLaps
 		traceStore = processing.NewPostgresTraceStore(pool)
 		log.Info("using postgres stores")
 	default:
 		sessStore = session.NewMemStore()
-		lapStore = processing.NewMemLapStore()
+		memLaps := processing.NewMemLapStore()
+		lapStore, trackRefs = memLaps, memLaps
 		traceStore = processing.NewMemTraceStore()
 		log.Info("using in-memory stores")
 	}
@@ -137,7 +140,41 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	// be withdrawn) until ~a full lap or a clear margin locks it "confident" for the session. Every
 	// consumer reads the track from enrich, so a provisional switch propagates: slugFor (sector timing
 	// + reference for laps analysed from then on), /v1/live and the SSE "track" event.
-	detector := processing.NewTrackDetector(rkbStore, enrich, log)
+	//
+	// Each lap stores the track the detector has when it completes (segmenter.TrackFn), and a lock
+	// backfills its stint's unlabelled/provisional laps (OnLock: one UPDATE per lock, on the stream
+	// goroutine like the lap saves). refLoader sits between the detector and enrich: on each lock it
+	// loads the track's stored reference lap off the ingest goroutine for the live stored-ref delta.
+	// segmenter.OnSaved feeds every stored lap to refLoader.LapStored, so the track's first stored lap
+	// (or a new fastest one while unpinned) becomes the live reference without waiting for a re-lock.
+	refLoader := live.NewRefLoader(enrich, delta, func(_ context.Context, slug string) (live.LoadedRef, error) {
+		ref, ok, err := processing.ResolveTrackReference(trackRefs, slug)
+		if err != nil || !ok {
+			return live.LoadedRef{}, err
+		}
+		samples, err := traceStore.ByLap(ref.Lap.SessionID, ref.Lap.LapNumber)
+		if err != nil {
+			return live.LoadedRef{}, err
+		}
+		n := processing.Normalize(samples)
+		log.Info("stored reference lap loaded for live delta", zap.String("slug", slug), zap.String("source", ref.Source),
+			zap.String("session", ref.Lap.SessionID), zap.Int32("lap", ref.Lap.LapNumber), zap.Duration("lap_time", ref.Lap.Duration))
+		return live.LoadedRef{Lap: &n, Pinned: ref.Source == processing.RefSourcePinned, LapTime: ref.Lap.Duration,
+			SessionID: ref.Lap.SessionID}, nil
+	}, func(err error) { log.Error("stored reference load failed", zap.Error(err)) })
+	defer refLoader.Close()
+	detector := processing.NewTrackDetector(rkbStore, refLoader, log)
+	detector.OnLock = func(sessionID string, since time.Time, slug string) {
+		if err := trackRefs.LabelTrack(sessionID, since, slug); err != nil {
+			log.Error("labelling laps with the locked track failed", zap.String("session", sessionID), zap.Error(err))
+			return
+		}
+		// The lock was published before this backfill, so the loader's first load may have missed the
+		// laps just labelled: reload once now that they are eligible.
+		refLoader.Reload(slug)
+	}
+	segmenter.TrackFn = detector.Track
+	segmenter.OnSaved = refLoader.LapStored
 
 	// Sink order matters for enrichSink and detector: detector.OnSessionEnd does its final match attempt
 	// and SetTrack synchronously, inline, before returning; enrichSink.OnSessionEnd no longer clears or
@@ -150,6 +187,13 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
 	withDedup(&detCfg, lapStore, traceStore, enrich, log)
+	// A discarded session's laps (and any pin on them, by cascade) are gone: if the live stored
+	// reference came from it, reload so the delta falls back to the track's fastest remaining lap.
+	purge := detCfg.OnDiscard
+	detCfg.OnDiscard = func(rec *session.Record, reason session.DiscardReason, orig string) {
+		purge(rec, reason, orig)
+		refLoader.SessionRemoved(rec.ID)
+	}
 	ingestSrv := ingest.NewServer(sessStore, sink, detCfg, log)
 	ingestSrv.Publisher = live.NewMultiPublisher(hub, delta) // publish-first egress, fanned out to the Hub and the DeltaTracker
 
@@ -158,6 +202,9 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 
 	// Read side: Analysis -> Coaching -> HTTP API.
 	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, rkbStore, log, lapStore, traceStore, rkbAdapter)
+	apiSrv.TrackRefs = trackRefs
+	apiSrv.OnReferenceChange = refLoader.Reload
+	apiSrv.AllowedHosts = api.MutationHosts(cfg.APIAddr, cfg.APIAllowedHosts)
 	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
 	// Bind the ingest listener only once we're committed to serving (after storage init), so a failed

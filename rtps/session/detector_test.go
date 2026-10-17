@@ -224,6 +224,22 @@ func TestDetector_CapturesCarName(t *testing.T) {
 	}
 }
 
+// TestDetector_CapturesCarCategory: GT7's format-C car category code is snapshotted onto the Record
+// when the session opens (empty for format-A frames, which carry no category).
+func TestDetector_CapturesCarCategory(t *testing.T) {
+	frames := inRaceRun(0, 100, 12, 1384, 1, 2, 2)
+	for _, f := range frames {
+		f.CarCategory = "GR4"
+	}
+	sink, _ := feed(testCfg(), frames...)
+	if len(sink.starts) != 1 {
+		t.Fatalf("starts=%d, want 1", len(sink.starts))
+	}
+	if got := sink.starts[0].CarCategory; got != "GR4" {
+		t.Errorf("Record.CarCategory = %q, want GR4", got)
+	}
+}
+
 // TestDetector_StreamEndFinalizes: if the stream ends (Close) while a session is still active, the
 // session is finalized rather than lost.
 func TestDetector_StreamEndFinalizes(t *testing.T) {

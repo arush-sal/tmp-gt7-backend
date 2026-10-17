@@ -3,7 +3,9 @@ package processing
 import (
 	"errors"
 	"slices"
+	"sort"
 	"sync"
+	"time"
 )
 
 // LapStore persists laps. Slice 1 ships only the in-memory MemLapStore; the interface exists so a
@@ -34,11 +36,18 @@ type MemLapStore struct {
 	bySession map[string][]*Lap
 	order     []string          // session ids in first-seen order, for deterministic List
 	byFP      map[string]string // lap fingerprint -> owning session id
+	pins      map[string]lapKey // track slug -> pinned reference lap
+}
+
+// lapKey identifies one stored lap.
+type lapKey struct {
+	session string
+	lap     int32
 }
 
 // NewMemLapStore returns an empty in-memory lap store.
 func NewMemLapStore() *MemLapStore {
-	return &MemLapStore{bySession: make(map[string][]*Lap), byFP: make(map[string]string)}
+	return &MemLapStore{bySession: make(map[string][]*Lap), byFP: make(map[string]string), pins: make(map[string]lapKey)}
 }
 
 // Save appends a snapshot of lap under its session. Lap has no pointer fields, so a shallow copy is a
@@ -104,14 +113,109 @@ func (m *MemLapStore) SessionByFingerprint(fp string) (string, bool, error) {
 	return id, ok, nil
 }
 
-// DeleteSession removes a session's laps and their fingerprints (no-op for an unknown session).
+// DeleteSession removes a session's laps, their fingerprints and any pin on them (the Postgres FK
+// cascade's equivalent). No-op for an unknown session.
 func (m *MemLapStore) DeleteSession(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.bySession[sessionID] {
 		delete(m.byFP, l.Fingerprint)
 	}
+	for slug, k := range m.pins {
+		if k.session == sessionID {
+			delete(m.pins, slug)
+		}
+	}
 	delete(m.bySession, sessionID)
 	m.order = slices.DeleteFunc(m.order, func(id string) bool { return id == sessionID })
 	return nil
+}
+
+// find returns the stored lap (not a copy) or nil. Caller holds m.mu.
+func (m *MemLapStore) find(sessionID string, lapNumber int32) *Lap {
+	for _, l := range m.bySession[sessionID] {
+		if l.LapNumber == lapNumber {
+			return l
+		}
+	}
+	return nil
+}
+
+// LabelTrack implements TrackRefStore.
+func (m *MemLapStore) LabelTrack(sessionID string, since time.Time, slug string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, l := range m.bySession[sessionID] {
+		if !l.StartTime.Before(since) && (l.TrackConfidence == "" || l.TrackConfidence == ConfidenceProvisional) {
+			l.TrackSlug, l.TrackConfidence = slug, ConfidenceConfident
+		}
+	}
+	return nil
+}
+
+// Lap implements TrackRefStore.
+func (m *MemLapStore) Lap(sessionID string, lapNumber int32) (*Lap, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if l := m.find(sessionID, lapNumber); l != nil {
+		c := *l
+		return &c, true, nil
+	}
+	return nil, false, nil
+}
+
+// TrackLaps implements TrackRefStore: eligible laps by duration, ties by start time.
+func (m *MemLapStore) TrackLaps(slug string, limit int) ([]*Lap, error) {
+	m.mu.RLock()
+	var out []*Lap
+	for _, laps := range m.bySession {
+		for _, l := range laps {
+			if RefEligible(l, slug) {
+				c := *l
+				out = append(out, &c)
+			}
+		}
+	}
+	m.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Duration != out[j].Duration {
+			return out[i].Duration < out[j].Duration
+		}
+		return out[i].StartTime.Before(out[j].StartTime)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// PinnedReference implements TrackRefStore.
+func (m *MemLapStore) PinnedReference(slug string) (*Lap, bool, error) {
+	m.mu.RLock()
+	k, ok := m.pins[slug]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, false, nil
+	}
+	return m.Lap(k.session, k.lap)
+}
+
+// PinReference implements TrackRefStore.
+func (m *MemLapStore) PinReference(slug, sessionID string, lapNumber int32) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.find(sessionID, lapNumber) == nil {
+		return ErrLapNotFound
+	}
+	m.pins[slug] = lapKey{sessionID, lapNumber}
+	return nil
+}
+
+// UnpinReference implements TrackRefStore.
+func (m *MemLapStore) UnpinReference(slug string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.pins[slug]
+	delete(m.pins, slug)
+	return ok, nil
 }

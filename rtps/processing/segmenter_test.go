@@ -288,3 +288,49 @@ func TestSegmenter_TakenFingerprintStoredWithout(t *testing.T) {
 		t.Errorf("errs=%d laps=%+v, want lap 1 stored valid without fingerprint, no error", errs, laps)
 	}
 }
+
+// TestSegmenter_LabelsLapWithCurrentTrack: each lap carries the track TrackFn reports when it closes.
+func TestSegmenter_LabelsLapWithCurrentTrack(t *testing.T) {
+	store := NewMemLapStore()
+	seg := NewLapSegmenter(store)
+	track := [2]string{}
+	seg.TrackFn = func(id string) (string, string) { return track[0], track[1] }
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	seg.OnFrame("s1", mkFrame(0, 0, 0, false))
+	seg.OnFrame("s1", mkFrame(100, 1, 30_000, false)) // closes lap 0: no track yet
+	track = [2]string{"suzuka", ConfidenceProvisional}
+	seg.OnFrame("s1", mkFrame(200, 2, 90_000, false)) // closes lap 1
+	track = [2]string{"suzuka", ConfidenceConfident}
+	seg.OnSessionEnd(rec) // flushes lap 2
+	laps := store.BySession("s1")
+	want := [][2]string{{"", ""}, {"suzuka", "provisional"}, {"suzuka", "confident"}}
+	for i, l := range laps {
+		if [2]string{l.TrackSlug, l.TrackConfidence} != want[i] {
+			t.Errorf("lap %d track = %q/%q, want %v", l.LapNumber, l.TrackSlug, l.TrackConfidence, want[i])
+		}
+	}
+}
+
+// TestSegmenter_OnSaved: every stored lap is reported, with its track label, after it is saved.
+func TestSegmenter_OnSaved(t *testing.T) {
+	store := NewMemLapStore()
+	seg := NewLapSegmenter(store)
+	seg.TrackFn = func(string) (string, string) { return "suzuka", ConfidenceConfident }
+	var saved []Lap
+	seg.OnSaved = func(l Lap) {
+		if len(store.BySession("s1")) != len(saved)+1 {
+			t.Error("OnSaved called before the lap was stored")
+		}
+		saved = append(saved, l)
+	}
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	seg.OnFrame("s1", mkFrame(0, 0, 0, false))
+	seg.OnFrame("s1", mkFrame(100, 1, 30_000, false))
+	seg.OnFrame("s1", mkFrame(200, 2, 90_000, false))
+	seg.OnSessionEnd(rec)
+	if len(saved) != 3 || saved[1].Duration != 90*time.Second || saved[1].TrackSlug != "suzuka" || !saved[1].Valid {
+		t.Errorf("saved = %+v", saved)
+	}
+}

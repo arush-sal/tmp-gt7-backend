@@ -276,3 +276,24 @@ func TestConfig_ReloadDiffClassification_Collector(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadBackend_APIAllowedHosts: api.allowed_hosts is a comma-separated host list from the flag or
+// the environment (trimmed, empties dropped); unset by default; changing it requires a restart.
+func TestLoadBackend_APIAllowedHosts(t *testing.T) {
+	if c, err := LoadBackend(src); err != nil || len(c.APIAllowedHosts) != 0 {
+		t.Fatalf("default: %v %v, want none", c.APIAllowedHosts, err)
+	}
+	c, err := LoadBackend(append([]string{"--api.allowed_hosts=garage.lan, 192.168.1.5"}, src...))
+	if err != nil || len(c.APIAllowedHosts) != 2 || c.APIAllowedHosts[0] != "garage.lan" || c.APIAllowedHosts[1] != "192.168.1.5" {
+		t.Fatalf("flag: %q %v", c.APIAllowedHosts, err)
+	}
+	t.Setenv("GT7_API_ALLOWED_HOSTS", "a.lan,,b.lan ")
+	c, err = LoadBackend(src)
+	if err != nil || len(c.APIAllowedHosts) != 2 || c.APIAllowedHosts[0] != "a.lan" || c.APIAllowedHosts[1] != "b.lan" {
+		t.Fatalf("env: %q %v", c.APIAllowedHosts, err)
+	}
+	_, restart := ClassifyBackendReload(BackendConfig{}, BackendConfig{APIAllowedHosts: []string{"x"}})
+	if _, ok := restart["api.allowed_hosts"]; !ok {
+		t.Errorf("api.allowed_hosts change should be restart-required: %v", restart)
+	}
+}

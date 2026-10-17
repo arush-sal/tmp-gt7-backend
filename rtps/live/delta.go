@@ -22,6 +22,10 @@ const (
 // fed every frame on the ingest goroutine (single producer) and records the current lap's
 // (cumulative-distance, elapsed) samples; on a lap boundary it promotes the just-completed lap to the
 // REFERENCE iff it was the fastest so far (by GT7 last_lap). Reads via Delta() are concurrent.
+//
+// It also computes the gap to the current track's STORED reference lap (StoredRefDelta), on the same
+// distance/elapsed axis. That trace is loaded off the hot path (RefLoader) and handed over already
+// normalized via SetStoredReference, so the per-frame cost is one binary search, no allocation.
 type DeltaTracker struct {
 	mu sync.Mutex
 
@@ -42,6 +46,15 @@ type DeltaTracker struct {
 
 	latest    int64 // most recent delta ns
 	haveDelta bool
+
+	// stored is the current track's stored reference lap (nil = none: track unknown, provisional, or
+	// no stored lap). It is track-scoped, so a session reset keeps it; only SetStoredReference changes it.
+	stored       *processing.NormalizedLap
+	storedLatest int64 // most recent stored-ref delta ns
+	haveStored   bool
+	// fromLine: the current lap began at a lap-line crossing this tracker saw (not the session's first,
+	// possibly joined-mid-lap lap), so its distance axis lines up with a stored lap's.
+	fromLine bool
 }
 
 // NewDeltaTracker returns an empty tracker with no reference lap yet.
@@ -71,6 +84,7 @@ func (d *DeltaTracker) Publish(f *telemetryv1.TelemetryFrame) {
 		d.havePrev = false
 		d.cur = nil
 		d.haveDelta = false
+		d.fromLine, d.haveStored = false, false
 		// A lap-counter decrease means a new session (new race, possibly a different car/track), so the
 		// previous session's best lap is no longer a valid comparison point. Drop the reference too, or
 		// Delta() would keep comparing the new session against a stale, unrelated best lap.
@@ -91,6 +105,7 @@ func (d *DeltaTracker) Publish(f *telemetryv1.TelemetryFrame) {
 		d.havePrev = false
 		d.cur = nil
 		d.haveDelta = false
+		d.fromLine, d.haveStored = true, false
 	}
 
 	// Accumulate distance, but skip the segment across a packet gap (its dx,dz would be a teleport-sized
@@ -112,6 +127,33 @@ func (d *DeltaTracker) Publish(f *telemetryv1.TelemetryFrame) {
 			d.haveDelta = true
 		}
 	}
+
+	// delta vs the stored reference: only on a timed lap begun at the line (lap 0 is the formation lap).
+	if d.stored != nil && d.fromLine && lap >= 1 {
+		if refAt, ok := d.stored.TimeAt(d.distance / d.stored.TotalDistance); ok {
+			d.storedLatest = int64(elapsed - refAt.Sub(d.stored.Points[0].RecvTime))
+			d.haveStored = true
+		}
+	}
+}
+
+// SetStoredReference installs the current track's stored reference lap (nil clears it). A degenerate
+// lap (see minRefSamples / minRefDistance) is treated as none. Called off the hot path (RefLoader).
+func (d *DeltaTracker) SetStoredReference(ref *processing.NormalizedLap) {
+	if ref != nil && (len(ref.Points) < minRefSamples || ref.TotalDistance < minRefDistance) {
+		ref = nil
+	}
+	d.mu.Lock()
+	d.stored, d.haveStored = ref, false
+	d.mu.Unlock()
+}
+
+// StoredRefDelta returns the latest live delta to the stored reference lap in ns (positive = slower).
+// ok is false with no stored reference, before a lap has started at the line, or off its distance axis.
+func (d *DeltaTracker) StoredRefDelta() (ns int64, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.storedLatest, d.haveStored
 }
 
 // Delta returns the latest live delta in ns (positive = slower than best pace here). ok is false until

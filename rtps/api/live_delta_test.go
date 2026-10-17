@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/live"
+	"github.com/arush-sal/garage/backend/rtps/processing"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -32,7 +34,8 @@ func deltaFrame(x float32, ts time.Time, lap int32, last time.Duration) *telemet
 // liveEnvelope is the subset of the /v1/live JSON body this test cares about.
 type liveEnvelope struct {
 	Enrichment struct {
-		DeltaToBestNs *int64 `json:"delta_to_best_ns"`
+		DeltaToBestNs      *int64 `json:"delta_to_best_ns"`
+		DeltaToStoredRefNs *int64 `json:"delta_to_stored_ref_ns"`
 	} `json:"enrichment"`
 }
 
@@ -99,5 +102,41 @@ func TestHandleLive_DeltaOverlay_NilTracker(t *testing.T) {
 	}
 	if body.Enrichment.DeltaToBestNs != nil {
 		t.Errorf("delta_to_best_ns = %v, want null with no DeltaTracker wired", *body.Enrichment.DeltaToBestNs)
+	}
+	if !strings.Contains(rr.Body.String(), `"delta_to_stored_ref_ns":null`) {
+		t.Errorf("delta_to_stored_ref_ns must be present and null: %s", rr.Body.String())
+	}
+}
+
+// TestHandleLive_StoredRefOverlay: with a stored reference loaded into the tracker, /v1/live surfaces
+// its StoredRefDelta as enrichment.delta_to_stored_ref_ns, next to (and independent of) delta_to_best_ns.
+func TestHandleLive_StoredRefOverlay(t *testing.T) {
+	hub := live.New()
+	hub.Publish(&telemetryv1.TelemetryFrame{RecvTimestamp: timestamppb.Now()})
+	d := live.NewDeltaTracker()
+	refBase := time.Unix(1_600_000_000, 0)
+	ref := make([]processing.Sample, 11)
+	for i := range ref { // stored lap: 100 m at 10 m/s
+		ref[i] = processing.Sample{Distance: float64(i * 10), RecvTime: refBase.Add(time.Duration(i) * time.Second)}
+	}
+	n := processing.Normalize(ref)
+	d.SetStoredReference(&n)
+	base := time.Unix(1_700_000_000, 0)
+	d.Publish(deltaFrame(0, base, 0, 0))
+	d.Publish(deltaFrame(0, base.Add(time.Second), 1, 30*time.Second)) // the line
+	d.Publish(deltaFrame(60, base.Add(4*time.Second), 1, 0))           // 60 m in 3 s vs 6 s
+
+	srv := NewServer(coach.Coach{}, nil, hub, live.NewEnrichmentState(), d, nil, nil, nil, nil, nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/live", nil))
+	var body liveEnvelope
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Enrichment.DeltaToStoredRefNs == nil || time.Duration(*body.Enrichment.DeltaToStoredRefNs) != -3*time.Second {
+		t.Fatalf("delta_to_stored_ref_ns = %v, want -3s", body.Enrichment.DeltaToStoredRefNs)
+	}
+	if body.Enrichment.DeltaToBestNs != nil {
+		t.Errorf("delta_to_best_ns = %d, want null (no session best yet)", *body.Enrichment.DeltaToBestNs)
 	}
 }

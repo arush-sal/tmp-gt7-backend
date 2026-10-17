@@ -8,13 +8,22 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/reference"
 )
 
-// fakeProvider is a fixed SectorProvider: returns its sectors + reason regardless of session.
+// fakeProvider is a fixed SectorProvider: returns its sectors + reason regardless of session, and for
+// a track slug its byTrack entry when present (else the same fixed sectors + reason).
 type fakeProvider struct {
 	sectors []reference.Sector
 	reason  string
+	byTrack map[string][]reference.Sector
 }
 
 func (f fakeProvider) SectorsForSession(_ context.Context, _ string) ([]reference.Sector, string, error) {
+	return f.sectors, f.reason, nil
+}
+
+func (f fakeProvider) SectorsForTrack(_ context.Context, slug string) ([]reference.Sector, string, error) {
+	if secs, ok := f.byTrack[slug]; ok {
+		return secs, "", nil
+	}
 	return f.sectors, f.reason, nil
 }
 
@@ -300,6 +309,37 @@ func TestSessionLapSectors_NoAnalyzablePool(t *testing.T) {
 	for _, sp := range got[0].Splits {
 		if sp.HasDelta || sp.DeltaToBest != 0 {
 			t.Errorf("sector %d: HasDelta=%v DeltaToBest=%v, want false/0 (empty pool)", sp.Index, sp.HasDelta, sp.DeltaToBest)
+		}
+	}
+}
+
+// TestSessionLapSectors_PerLapTrack: a session that drove two tracks splits each lap on its OWN track's
+// sectors and pools the per-sector best per track; an unlabelled lap falls back to the session's track.
+func TestSessionLapSectors_PerLapTrack(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	traces := NewMemTraceStore()
+	for lap := int32(1); lap <= 3; lap++ {
+		_ = traces.SaveBatch(lsTrace("s", lap, base.Add(time.Duration(lap)*time.Hour), 100*time.Second))
+	}
+	half := []reference.Sector{{Index: 0, Start: 0, End: 0.5}, {Index: 1, Start: 0.5, End: 1}}
+	laps := []Lap{
+		{SessionID: "s", LapNumber: 1, Duration: 100 * time.Second, Timed: true, Complete: true, TrackSlug: "a"},
+		{SessionID: "s", LapNumber: 2, Duration: 100 * time.Second, Timed: true, Complete: true, TrackSlug: "b"},
+		{SessionID: "s", LapNumber: 3, Duration: 100 * time.Second, Timed: true, Complete: true},
+	}
+	p := fakeProvider{sectors: mockSectors(), byTrack: map[string][]reference.Sector{"a": half, "b": MiniSectors(4)}}
+	out, err := SessionLapSectors(context.Background(), p, traces, "s", laps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []int{2, 4, 3} {
+		if len(out[i].Splits) != want {
+			t.Errorf("lap %d: %d splits, want %d (its own track's sectors)", out[i].LapNumber, len(out[i].Splits), want)
+		}
+		for _, sp := range out[i].Splits {
+			if !sp.HasDelta || sp.DeltaToBest != 0 { // alone on its track: it is that track's best
+				t.Errorf("lap %d %s: HasDelta=%v delta=%v, want true/0", out[i].LapNumber, sp.Label, sp.HasDelta, sp.DeltaToBest)
+			}
 		}
 	}
 }

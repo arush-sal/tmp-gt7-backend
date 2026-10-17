@@ -38,6 +38,7 @@ Exactly one of these is required; passing neither or both is an error.
 |---|---|---|---|
 | `--ingest.addr` | `GT7_INGEST_ADDR` | `localhost:50051` | Address the gRPC telemetry ingest server listens on (for external collectors and the replay-client). |
 | `--api.addr` | `GT7_API_ADDR` | `localhost:8080` | Address the HTTP read API listens on. |
+| `--api.allowed_hosts` | `GT7_API_ALLOWED_HOSTS` | *(empty)* | Comma-separated extra host names or IPs (such as `192.168.1.50,garage.lan`) allowed to call the API's mutating endpoints. `localhost`, `127.0.0.1`, `::1` and the host of `--api.addr` (unless it is `0.0.0.0` or `::`) are always allowed. Set it when you bind `0.0.0.0` and open the dashboard by LAN IP or hostname; it is never filled in automatically. See [Security](api.md#security). |
 | `--storage` | `GT7_STORAGE` | `memory` | Session store backing: `memory` or `postgres`. |
 | `--db.dsn` | `GT7_DB_DSN` | *(empty)* | PostgreSQL connection string. Required when `--storage postgres`. |
 | `--log.level` | `GT7_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, or `error`. |

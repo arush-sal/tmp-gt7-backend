@@ -33,4 +33,11 @@ type Lap struct {
 	// rollover frame). Empty for the formation lap, partial laps and pre-migration rows. Unique across
 	// stored laps: a replayed copy of a stored lap is how a duplicate session is recognised.
 	Fingerprint string
+
+	// TrackSlug and TrackConfidence are the track the live detector had for this lap ("" = none): set
+	// when the lap completes (ConfidenceProvisional or ConfidenceConfident) and upgraded to confident
+	// when the detector locks during the same detection stint (TrackRefStore.LabelTrack). The track
+	// belongs to the lap, not the session: one session can drive several tracks.
+	TrackSlug       string
+	TrackConfidence string
 }

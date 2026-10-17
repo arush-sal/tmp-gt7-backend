@@ -69,7 +69,6 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best 
 	}
 	res.HasPB = true
 	res.PBTime = gt7Best
-	res.PBLap = matchLap(laps, gt7Best) // 0 when no captured lap matches the authoritative best
 
 	// Compute each duration-eligible lap's sectors once; reuse for deltas + the predicted best. A lap
 	// is only *sector-analyzable* if its trace faithfully covers it (see sectorAnalyzable): sector times
@@ -78,9 +77,23 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best 
 	// standing-start spillover, a dropout splice) yields sector times that would corrupt every consumer
 	// below. Such laps stay in PB/consistency (duration-based) but are omitted here, so they contribute
 	// no best sector and get no sector deltas.
+	//
+	// A session can drive several tracks: each lap is split on its own track (Lap.TrackSlug), and only
+	// laps on the PB lap's track are compared sector by sector (another track's sectors are not
+	// comparable). With no PB lap matched the filter is moot: the prediction is suppressed below.
+	res.PBLap = matchLap(laps, gt7Best) // 0 when no captured lap matches the authoritative best
+	pbTrack := ""
+	for _, l := range laps {
+		if res.PBLap != 0 && l.LapNumber == res.PBLap {
+			pbTrack = l.TrackSlug
+		}
+	}
 	perLap := make(map[int32][]processing.SectorResult)
 	for _, l := range laps {
 		if !l.Timed || !l.Complete || l.Fallback { // duration-eligible; sector trust handled by sectorAnalyzable
+			continue
+		}
+		if res.PBLap != 0 && l.TrackSlug != pbTrack {
 			continue
 		}
 		samples, err := a.Traces.ByLap(sessionID, l.LapNumber)
@@ -91,7 +104,7 @@ func (a Analyzer) AnalyzeSession(ctx context.Context, sessionID string, gt7Best 
 			continue
 		}
 		norm := processing.Normalize(samples)
-		secs, _, err := processing.SectorsForLap(ctx, a.KB, sessionID, norm, a.FallbackSectors)
+		secs, _, err := processing.SectorsForLap(ctx, a.KB, sessionID, l.TrackSlug, norm, a.FallbackSectors)
 		if err != nil {
 			return res, err
 		}

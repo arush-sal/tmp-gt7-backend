@@ -26,8 +26,12 @@ type BackendConfig struct {
 	// collectors and the replay-client. Defaults to localhost:50051.
 	IngestAddr string
 	// APIAddr is the TCP address the HTTP read API (sessions/coaching) listens on.
-	APIAddr  string
-	LogLevel string
+	APIAddr string
+	// APIAllowedHosts are extra Host names (beyond localhost, 127.0.0.1, ::1 and api.addr's own host)
+	// the mutating API routes accept - needed when api.addr binds 0.0.0.0 and the dashboard is opened
+	// by LAN IP or hostname. Never inferred (see api.MutationHosts).
+	APIAllowedHosts []string
+	LogLevel        string
 
 	// Storage selects the session store backing: "memory" (default; dev/tests) or "postgres".
 	Storage string
@@ -66,6 +70,7 @@ func LoadBackend(args []string) (BackendConfig, error) {
 	fs := pflag.NewFlagSet("rtps", pflag.ContinueOnError)
 	fs.String("ingest.addr", "localhost:50051", "address the telemetry ingest gRPC server listens on")
 	fs.String("api.addr", "localhost:8080", "address the HTTP read API listens on")
+	fs.StringSlice("api.allowed_hosts", nil, "comma-separated extra hosts allowed to call the mutating API routes (e.g. a LAN IP or hostname)")
 	fs.String("log.level", "info", "log level: debug|info|warn|error")
 	fs.String("storage", "memory", "session store backing: memory|postgres")
 	fs.String("db.dsn", "", "PostgreSQL connection string (required when storage=postgres)")
@@ -109,6 +114,7 @@ func LoadBackend(args []string) (BackendConfig, error) {
 	cfg := BackendConfig{
 		IngestAddr:        v.GetString("ingest.addr"),
 		APIAddr:           v.GetString("api.addr"),
+		APIAllowedHosts:   hostList(v.GetStringSlice("api.allowed_hosts")),
 		LogLevel:          v.GetString("log.level"),
 		Storage:           v.GetString("storage"),
 		DBDSN:             v.GetString("db.dsn"),
@@ -128,6 +134,20 @@ func LoadBackend(args []string) (BackendConfig, error) {
 		return BackendConfig{}, err
 	}
 	return cfg, nil
+}
+
+// hostList flattens a host list that may arrive as a slice (flag, YAML list) or as one comma-separated
+// string (env, YAML scalar - viper does not split those on commas), trimming and dropping empties.
+func hostList(raw []string) []string {
+	var out []string
+	for _, item := range raw {
+		for _, h := range strings.Split(item, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				out = append(out, h)
+			}
+		}
+	}
+	return out
 }
 
 // validate rejects resolved values that would fail at runtime: an empty listen address never binds,
@@ -213,6 +233,7 @@ func ClassifyBackendReload(old, next BackendConfig) (live, restart map[string]re
 	diffField(live, restart, "heartbeat.interval", old.HeartbeatInterval.String(), next.HeartbeatInterval.String(), true)
 	diffField(live, restart, "ingest.addr", old.IngestAddr, next.IngestAddr, false)
 	diffField(live, restart, "api.addr", old.APIAddr, next.APIAddr, false)
+	diffField(live, restart, "api.allowed_hosts", strings.Join(old.APIAllowedHosts, ","), strings.Join(next.APIAllowedHosts, ","), false)
 	diffField(live, restart, "storage", old.Storage, next.Storage, false)
 	diffField(live, restart, "db.dsn", old.DBDSN, next.DBDSN, false)
 	diffField(live, restart, "ps5.ip", old.PS5IP, next.PS5IP, false)

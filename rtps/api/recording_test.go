@@ -44,7 +44,10 @@ func (f *fakeSwitch) Set(on bool, expect string, _ time.Duration) (bool, string,
 
 func postRecording(srv *Server, body string) *httptest.ResponseRecorder {
 	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/live/recording", strings.NewReader(body)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/live/recording", strings.NewReader(body))
+	req.Host = "localhost:8080" // mutating routes only accept loopback / allow-listed hosts
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
 	return rr
 }
 

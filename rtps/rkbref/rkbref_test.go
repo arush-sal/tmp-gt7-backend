@@ -228,6 +228,27 @@ func TestSectorsForSession(t *testing.T) {
 	}
 }
 
+// TestSectorsForTrack: the per-lap path resolves a slug directly (no session lookup), with the same
+// reasons as SectorsForSession.
+func TestSectorsForTrack(t *testing.T) {
+	denseCl := clPts([2]float64{0, 0}, [2]float64{10, 0}, [2]float64{20, 0}, [2]float64{30, 0})
+	store := fakeStore{recs: map[string]*rkb.Record{
+		"good": rec(denseCl, label("1", 5, 0), label("2", 25, 0)),
+		"nocl": rec(nil, label("1", 5, 0), label("2", 25, 0)),
+	}}
+	k := New(store, func(string) (string, bool) { return "", false }, nil)
+	ctx := context.Background()
+	if secs, reason, err := k.SectorsForTrack(ctx, "good"); err != nil || reason != "" || len(secs) != 2 {
+		t.Errorf("good = (%d,%q,%v)", len(secs), reason, err)
+	}
+	if secs, reason, _ := k.SectorsForTrack(ctx, "nocl"); secs != nil || reason != "no-centerline" {
+		t.Errorf("nocl = (%v,%q)", secs, reason)
+	}
+	if secs, reason, _ := k.SectorsForTrack(ctx, "unknown"); secs != nil || reason != "track-not-detected" {
+		t.Errorf("unknown = (%v,%q)", secs, reason)
+	}
+}
+
 // TestSectorsFromRecord_RealDB is a best-effort integration check against ~/.garage/rkb.db.
 // Skipped (not failed) when the file is absent or Open fails, so the suite stays green off-box.
 func TestSectorsFromRecord_RealDB(t *testing.T) {

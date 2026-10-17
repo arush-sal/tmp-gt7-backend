@@ -8,12 +8,15 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/rtps/live"
 	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/rkb"
 	"github.com/arush-sal/garage/backend/rtps/session"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // fakeGeomProvider is a test double for processing.DetectionGeomProvider: it returns a fixed
@@ -252,9 +255,9 @@ func TestTrackDetector_MarginLocksBeforeFullLap(t *testing.T) {
 	}
 }
 
-// TestTrackDetector_LockIsKeptForTheSession: once confident, further driving (even somewhere that
-// would no longer fit) never publishes or clears again.
-func TestTrackDetector_LockIsKeptForTheSession(t *testing.T) {
+// TestTrackDetector_LockSurvivesShortExcursion: once confident, a short trip off the layout (a pit
+// lane, a run-off, a wide moment: here ~190 m driven beyond releaseDistM) neither publishes nor clears.
+func TestTrackDetector_LockSurvivesShortExcursion(t *testing.T) {
 	geoms := []rkb.TrackGeom{
 		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
 		farTrack(),
@@ -268,10 +271,118 @@ func TestTrackDetector_LockIsKeptForTheSession(t *testing.T) {
 	if enrich.lastCall().confidence != "confident" {
 		t.Fatalf("want a confident lock first, got %v", enrich.sequence())
 	}
-	feedFrames(d, "s1", jitterPoints(circlePoints(5000, 5000, 100, 200))) // drive off somewhere else
+	var detour [][2]float64
+	for r := loopRadius; r <= loopRadius+120; r += 4 { // straight out 120 m from the loop ...
+		detour = append(detour, [2]float64{r, 0})
+	}
+	for r := loopRadius + 120; r >= loopRadius; r -= 4 { // ... and back
+		detour = append(detour, [2]float64{r, 0})
+	}
+	feedFrames(d, "s1", detour)
+	feedFrames(d, "s1", lapFraction(0.5))
 	d.OnSessionEnd(rec)
 	if enrich.callCount() != calls || enrich.clears != clears {
 		t.Fatalf("lock must be kept: calls %d->%d, clears %d->%d", calls, enrich.callCount(), clears, enrich.clears)
+	}
+	if slug, conf := d.Track("s1"); slug != "" || conf != "" {
+		t.Errorf("Track after session end = %q/%q, want none", slug, conf)
+	}
+}
+
+// TestTrackDetector_ReleasesWhenPersistentlyOff: a lock is dropped once the car has driven
+// releaseAfterM continuously more than releaseDistM from the locked layout (here onto a different,
+// larger loop), the track is cleared, and a new detection stint locks the new layout.
+func TestTrackDetector_ReleasesWhenPersistentlyOff(t *testing.T) {
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		{Slug: "track-c", Points: circlePoints(0, 0, 700, 840), LengthM: 2 * math.Pi * 700},
+		farTrack(),
+	}
+	enrich := &fakeEnricher{}
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, enrich, nil)
+	var locks []string
+	d.OnLock = func(id string, since time.Time, slug string) { locks = append(locks, slug) }
+	rec := &session.Record{ID: "s1"}
+	d.OnSessionStart(rec)
+	feedFrames(d, "s1", lapFraction(0.95))
+	if slug, conf := d.Track("s1"); slug != "track-a" || conf != "confident" {
+		t.Fatalf("Track = %q/%q, want track-a/confident", slug, conf)
+	}
+	clears := enrich.clears
+	feedFrames(d, "s1", jitterPoints(circlePoints(0, 0, 700, 840)))
+	d.OnSessionEnd(rec)
+	if enrich.clears != clears+1 {
+		t.Errorf("clears %d->%d, want exactly one release", clears, enrich.clears)
+	}
+	if got := enrich.lastCall(); got.slug != "track-c" || got.confidence != "confident" {
+		t.Errorf("after release: last = %+v (seq %v), want track-c/confident", got, enrich.sequence())
+	}
+	if len(locks) != 2 || locks[0] != "track-a" || locks[1] != "track-c" {
+		t.Errorf("OnLock = %v, want [track-a track-c]", locks)
+	}
+}
+
+// TestTrackDetector_TwoTracksInOneSession_LabelsEachStint concatenates two different tracks in one
+// session (with a teleport between them, as a track change does) and runs the real segmenter + lap
+// store with the detector wired the way the backend wires it: every lap of each stint ends up labelled
+// with its own track, confident, and no lap of the second stint inherits the first stint's track.
+func TestTrackDetector_TwoTracksInOneSession_LabelsEachStint(t *testing.T) {
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		{Slug: "track-b", Points: circlePoints(20000, 0, 400, 480), LengthM: 2 * math.Pi * 400},
+		farTrack(),
+	}
+	store := processing.NewMemLapStore()
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, &fakeEnricher{}, nil)
+	d.OnLock = func(id string, since time.Time, slug string) {
+		if err := store.LabelTrack(id, since, slug); err != nil {
+			t.Error(err)
+		}
+	}
+	seg := processing.NewLapSegmenter(store)
+	seg.TrackFn = d.Track
+
+	loopA := jitterPoints(circlePoints(0, 0, loopRadius, loopN))
+	loopB := jitterPoints(circlePoints(20000, 0, 400, 480))
+	type leg struct {
+		lap int32
+		pts [][2]float64
+	}
+	legs := []leg{
+		{0, loopA[:100]}, // short first lap: completes before the lock, labelled by the backfill
+		{1, loopA[100:]}, {2, loopA}, {3, loopA[:100]},
+		{4, loopB[:100]}, // teleport onto B: the release fires part-way through this lap
+		{5, loopB}, {6, loopB}, {7, loopB[:50]},
+	}
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	d.OnSessionStart(rec)
+	base := time.Unix(1_700_000_000, 0)
+	n := 0
+	for _, l := range legs {
+		for _, p := range l.pts {
+			f := posFrame(true, float32(p[0]), float32(p[1]), l.lap, uint32(n))
+			f.RecvTimestamp = timestamppb.New(base.Add(time.Duration(n) * time.Second / 60))
+			f.LastLap = durationpb.New(time.Minute)
+			n++
+			seg.OnFrame("s1", f) // segmenter before detector: the backend's sink order
+			d.OnFrame("s1", f)
+		}
+	}
+	seg.OnSessionEnd(rec)
+	d.OnSessionEnd(rec)
+
+	want := map[int32]string{0: "track-a", 1: "track-a", 2: "track-a", 3: "track-a", 5: "track-b", 6: "track-b", 7: "track-b"}
+	for _, l := range store.BySession("s1") {
+		if l.LapNumber == 4 { // spans the release: must at least not carry the first stint's track
+			if l.TrackSlug == "track-a" {
+				t.Errorf("lap 4 (driven on B) labelled %q/%q", l.TrackSlug, l.TrackConfidence)
+			}
+			continue
+		}
+		if l.TrackSlug != want[l.LapNumber] || l.TrackConfidence != "confident" {
+			t.Errorf("lap %d = %q/%q, want %q/confident", l.LapNumber, l.TrackSlug, l.TrackConfidence, want[l.LapNumber])
+		}
 	}
 }
 
@@ -738,4 +849,42 @@ func TestTrackDetector_DirectedTwinWaitsForDirection(t *testing.T) {
 	if got := runSession(t, loopTwins(true), reversePoints(lapFraction(0.95))[:loopN/8]).callCount(); got != 0 {
 		t.Fatalf("trusted twins before direction is known: want no guess, got %d calls", got)
 	}
+}
+
+// TestTrackDetector_SlowOnLockDoesNotHoldTheSession: OnLock (Postgres I/O in production) runs after
+// the session state is unlocked, so Track() and OnFrame for the session are not blocked while it runs,
+// and the lock is already published when it is called.
+func TestTrackDetector_SlowOnLockDoesNotHoldTheSession(t *testing.T) {
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		farTrack(),
+	}
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, &fakeEnricher{}, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	d.OnLock = func(string, time.Time, string) { close(entered); <-release }
+	rec := &session.Record{ID: "s1"}
+	d.OnSessionStart(rec)
+	done := make(chan struct{})
+	go func() { feedFrames(d, "s1", lapFraction(0.95)); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnLock never called")
+	}
+	probe := make(chan string)
+	go func() {
+		d.OnFrame("s1", posFrame(true, loopRadius, 0, 0, 9999))
+		slug, conf := d.Track("s1")
+		probe <- slug + "/" + conf
+	}()
+	select {
+	case got := <-probe:
+		if got != "track-a/confident" {
+			t.Errorf("Track during OnLock = %s, want track-a/confident", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Track/OnFrame blocked by a slow OnLock")
+	}
+	close(release)
+	<-done
 }

@@ -47,9 +47,11 @@ type Record struct {
 	StartTime time.Time // recv_timestamp of the frame that opened the session
 	EndTime   time.Time // recv_timestamp of the last in-race frame (not the post-close menu frame)
 
-	CarID   int32              // GT7 car model id
-	CarName string             // human-readable car name, resolved by the collector at the frame seam
-	Source  telemetryv1.Source // LIVE vs REPLAY — replay sessions must not pollute PB data
+	CarID   int32  // GT7 car model id
+	CarName string // human-readable car name, resolved by the collector at the frame seam
+	// CarCategory is GT7's format-C car category code (e.g. "GR4"); "" for format-A telemetry.
+	CarCategory string
+	Source      telemetryv1.Source // LIVE vs REPLAY — replay sessions must not pollute PB data
 
 	FrameCount     uint64 // in-race frames attributed to this session
 	GapCount       uint64 // frames whose Gap flag was set (a packet was lost before them)

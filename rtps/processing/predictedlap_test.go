@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/arush-sal/garage/backend/rtps/reference"
 )
 
 // plTrace builds a lap's trace at the 3-sector mock boundaries (fractions 0/.4/.75/1) with per-boundary
@@ -314,5 +316,57 @@ func TestPredictedReferenceLap_EmptyPool(t *testing.T) {
 	}
 	if got.PredictedBestNs != 0 {
 		t.Errorf("PredictedBestNs = %d, want 0", got.PredictedBestNs)
+	}
+}
+
+// TestPredictedReferenceLap_PoolsTheFastestLapsTrack: in a session that drove two tracks the predicted
+// lap is spliced only from laps on the track of the session's fastest lap, on that track's sectors.
+func TestPredictedReferenceLap_PoolsTheFastestLapsTrack(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	traces := NewMemTraceStore()
+	_ = traces.SaveBatch(lsTrace("s", 1, base, 90*time.Second))
+	_ = traces.SaveBatch(lsTrace("s", 2, base.Add(time.Hour), 100*time.Second))
+	half := []reference.Sector{{Index: 0, Start: 0, End: 0.5}, {Index: 1, Start: 0.5, End: 1}}
+	laps := []Lap{
+		{SessionID: "s", LapNumber: 1, Duration: 90 * time.Second, Timed: true, Complete: true, TrackSlug: "a"},
+		{SessionID: "s", LapNumber: 2, Duration: 100 * time.Second, Timed: true, Complete: true, TrackSlug: "b"},
+	}
+	p := fakeProvider{sectors: mockSectors(), byTrack: map[string][]reference.Sector{"a": half, "b": MiniSectors(4)}}
+	pl, err := PredictedReferenceLap(context.Background(), p, traces, "s", laps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pl.Sectors) != 2 || pl.Sectors[0].OwnerLap != 1 || pl.Sectors[1].OwnerLap != 1 {
+		t.Fatalf("sectors = %+v, want track a's 2 sectors owned by lap 1", pl.Sectors)
+	}
+}
+
+// TestTrackReferenceLap: a stored reference lap is served as one lap on the predicted-lap shape: its
+// own track's sectors (owner = the lap), every trace sample on the fraction axis, and the lap's GT7
+// time as predicted_best.
+func TestTrackReferenceLap(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	traces := NewMemTraceStore()
+	_ = traces.SaveBatch(lsTrace("s", 3, base, 100*time.Second))
+	half := []reference.Sector{{Index: 0, Start: 0, End: 0.5}, {Index: 1, Start: 0.5, End: 1}}
+	lap := Lap{SessionID: "s", LapNumber: 3, Duration: 99500 * time.Millisecond, TrackSlug: "a"}
+
+	pl, err := TrackReferenceLap(context.Background(), fakeProvider{byTrack: map[string][]reference.Sector{"a": half}}, traces, lap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pl.Reliable || pl.Reason != "" || pl.PredictedBestNs != lap.Duration.Nanoseconds() {
+		t.Errorf("reliable=%v reason=%q best=%d", pl.Reliable, pl.Reason, pl.PredictedBestNs)
+	}
+	if len(pl.Sectors) != 2 || pl.Sectors[0].OwnerLap != 3 || (time.Duration(pl.Sectors[0].DurationNs)-50*time.Second).Abs() > time.Microsecond || pl.Sectors[1].Label != "S2" {
+		t.Errorf("sectors = %+v", pl.Sectors)
+	}
+	if len(pl.Samples) != 4 || pl.Samples[1].Fraction != 0.4 || pl.Samples[3].TNs != (100*time.Second).Nanoseconds() || pl.Samples[3].Distance != 100 {
+		t.Errorf("samples = %+v", pl.Samples)
+	}
+
+	pl, _ = TrackReferenceLap(context.Background(), fakeProvider{reason: "no-centerline"}, traces, lap)
+	if pl.Reliable || pl.Reason != "no-centerline" || len(pl.Sectors) != 3 {
+		t.Errorf("no sector data: reliable=%v reason=%q sectors=%d, want false/no-centerline/3 mini", pl.Reliable, pl.Reason, len(pl.Sectors))
 	}
 }
