@@ -26,6 +26,8 @@ export type LapDTO = {
   timed: boolean;
   delta_to_pb_ns: number | null; // vs stored GT7 best; null when no PB
   sectors: LapSectorsDTO;
+  track_slug?: string | null;                              // per-lap track (a session can span tracks)
+  track_confidence?: "provisional" | "confident" | null;
 };
 
 // GET /v1/sessions/{id}/laps/{n}/trace?decimate=N -> TraceSampleDTO[]. t_ns = ns since lap t0.
@@ -140,4 +142,19 @@ export type SessionSummaryDTO = {
   current_lap: number;
   total_laps: number;
   best_lap: string | null; // protobuf Duration ("115.583s"); null = no timed lap / still active
+};
+
+// Stored reference lap per track. Contract: GET/PUT/DELETE /v1/tracks/{slug}/reference-lap.
+export type CarDTO = { id: number; name: string | null; category: string | null };
+export type StoredReferenceDTO = ReferenceDTO & {
+  source: "pinned" | "fastest";
+  session_id: string;
+  lap_number: number;
+  lap_time: string;     // protobuf Duration ("90.685s")
+  recorded_at: string;  // RFC3339
+  car: CarDTO;
+};
+// GET /v1/tracks/{slug}/laps?limit=N (fastest first).
+export type TrackLapDTO = {
+  session_id: string; lap_number: number; lap_time: string; recorded_at: string; car: CarDTO; pinned: boolean;
 };

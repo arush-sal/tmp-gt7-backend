@@ -5,7 +5,7 @@
 // lap (the single snake_case -> camelCase remap point). This lets TrackTraceCanvas / TelemetryGraph /
 // the scrub read a fetched lap without reaching into the imperative live store.
 import type { Channel, TracePoint, FrameValues } from "./historyStore";
-import type { TraceSampleDTO, LapDTO, PredictedSampleDTO } from "../contract/session";
+import type { TraceSampleDTO, LapDTO, PredictedSampleDTO, ReferenceDTO } from "../contract/session";
 import { radToDeg } from "./format";
 import type { SectorTime } from "./sectorTimer";
 
@@ -125,4 +125,26 @@ export function lapDtoToSectorTimes(lap: LapDTO): SectorTime[] {
     deltaMs: s.delta_to_best_ns == null ? null : s.delta_to_best_ns / 1e6,
     fastest: s.delta_to_best_ns === 0, // 0 => this lap owns (is session-fastest in) this sector
   }));
+}
+
+/** Time (seconds) the lap is ahead(-)/behind(+) the reference at a track fraction, given the lap's
+ *  elapsed time `t` there. NaN when the reference has no samples. Used for the scrubbed-lap header
+ *  delta when the stored lap is the reference (trace samples only carry the predicted-based delta). */
+export function deltaVsReference(ref: ReferenceDTO, fraction: number, t: number): number {
+  if (!ref.samples?.length) return NaN;
+  const [refT] = resampleByFraction(ref.samples.map(s => s.fraction), ref.samples.map(s => s.t_ns / 1e9), [fraction]);
+  return t - refT;
+}
+
+/** Re-base sector deltas on a reference's sectors (matched by label): delta = lap sector - ref sector.
+ *  Sectors the reference lacks keep a null delta; none when either side is unreliable. `fastest` is cleared: the session-fastest star is a
+ *  session-best concept and would hide the delta. */
+export function sectorsVsReference(times: SectorTime[], ref: ReferenceDTO, lapReliable = true): SectorTime[] {
+  // Unreliable sectors (lap or reference): labels like S1..Sn can collide between real and fallback
+  // sectors, so show no delta rather than a wrong one.
+  if (!lapReliable || !ref.reliable) return times.map(st => ({ ...st, deltaMs: null, fastest: false }));
+  return times.map(st => {
+    const r = ref.sectors?.find(x => x.label === st.sector);
+    return { ...st, deltaMs: r && st.timeMs !== null ? st.timeMs - r.duration_ns / 1e6 : null, fastest: false };
+  });
 }

@@ -4,6 +4,12 @@ import type { Corner, CornerAnalysis } from "../contract/corner";
 import type { SectorTime } from "../lib/sectorTimer";
 import { msToSectorTime, msToSectorDelta } from "../lib/format";
 
+export type LapHistoryRow = {
+  lap: number; time: string; best: boolean;
+  canSetRef?: boolean; // complete lap on a confidently detected track
+  isRef?: boolean;     // this lap is the stored reference for its track
+};
+
 interface Props {
   view: LiveView | null;
   corners: Corner[];
@@ -13,13 +19,15 @@ interface Props {
   usedPerLap?: number | null;
   lapsLeft?: number | null;
   sectorTimes?: SectorTime[] | null;
-  lapHistory?: { lap: number; time: string; best: boolean }[];
+  lapHistory?: LapHistoryRow[];
+  onSetReference?: (lap: number) => void; // "Set as reference" (shown on rows with canSetRef)
+  refError?: string | null;               // inline error chip text from the last pin attempt
   peaksSection?: ReactNode; // Speed Peaks & Valleys panel (rendered only when a lap is selected)
 }
 
 export default function RightPanel({
   view, corners, selectedCornerId, onCornerSelect, selectedCornerDetail,
-  usedPerLap = null, lapsLeft = null, sectorTimes = null, lapHistory = [], peaksSection = null,
+  usedPerLap = null, lapsLeft = null, sectorTimes = null, lapHistory = [], peaksSection = null, onSetReference, refError = null,
 }: Props) {
   const opportunities = [...corners]
     .filter(c => c.delta > 0.05)
@@ -60,7 +68,10 @@ export default function RightPanel({
 
       {/* ── Lap history: every completed lap + time, scrollable, fixed height ── */}
       <div className="section">
-        <div className="label" style={{ marginBottom: 6 }}>Lap History</div>
+        <div className="section__row" style={{ marginBottom: 6 }}>
+          <span className="label">Lap History</span>
+          {refError && <span className="chip chip--red" role="alert">{refError}</span>}
+        </div>
         <div className="lap-history-list">
           {lapHistory.length === 0 ? (
             <div className="data-row" style={{ borderBottom: "none" }}>
@@ -69,7 +80,14 @@ export default function RightPanel({
           ) : (
             lapHistory.map(l => (
               <div className="data-row" key={l.lap}>
-                <span className="text-muted">Lap {l.lap}</span>
+                <span className="text-muted">
+                  Lap {l.lap}
+                  {l.isRef && <span className="text-purple" title="Stored reference for this track" aria-label="Stored reference"> ★</span>}
+                  {l.canSetRef && !l.isRef && onSetReference && (
+                    <button type="button" className="lap-ref-btn" aria-label={`Set lap ${l.lap} as reference`}
+                      title="Set as reference lap for this track" onClick={() => onSetReference(l.lap)}>☆</button>
+                  )}
+                </span>
                 <span className={`mono ${l.best ? "text-blue lap-best-hl" : ""}`}>{l.time}</span>
               </div>
             ))

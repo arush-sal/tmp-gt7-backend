@@ -1221,3 +1221,17 @@ body {
 .btn--primary:hover { filter: brightness(1.06); background: var(--red); }
 
 .session-picker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* Stored-reference menu (track header) */
+.ref-menu { position: relative; display: inline-block; margin-left: 6px; }
+.ref-menu summary { cursor: pointer; list-style: none; }
+.ref-menu summary::-webkit-details-marker { display: none; }
+.ref-menu__pop {
+  position: absolute; z-index: 20; top: 100%; left: 0; min-width: 260px; padding: 8px;
+  display: flex; flex-wrap: wrap; gap: 6px;
+  background: var(--surface, var(--bg, #fff)); color: inherit; border: 1px solid var(--border, rgba(128,128,128,.4));
+}
+.ref-menu__list { list-style: none; margin: 4px 0 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow: auto; }
+.ref-menu__list .chip { width: 100%; text-align: left; }
+.lap-ref-btn { background: none; border: 0; cursor: pointer; color: inherit; padding: 0 4px; font-size: 12px; }
+.lap-ref-btn:hover { color: var(--blue, #1f6feb); }

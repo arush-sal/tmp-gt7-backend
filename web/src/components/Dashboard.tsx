@@ -8,6 +8,7 @@ import { useCoaching } from "../hooks/useCoaching";
 import { useAllLapTraces } from "../hooks/useAllLapTraces";
 import { useMedian } from "../hooks/useMedian";
 import { useReference } from "../hooks/useReference";
+import { useSelectedReference } from "../hooks/useSelectedReference";
 import { usePeaks } from "../hooks/usePeaks";
 import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
@@ -15,9 +16,11 @@ import { useSessions } from "../hooks/useSessions";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
-import { frameToDisplay } from "../lib/liveView";
+import { frameToDisplay, storedDeltaView } from "../lib/liveView";
 import { nsToClock } from "../lib/format";
-import { lapDtoToSectorTimes, predictedToSamples } from "../lib/lapView";
+import { lapDtoToSectorTimes, predictedToSamples, deltaVsReference, sectorsVsReference } from "../lib/lapView";
+import { loadRefSource, saveRefSource, type RefSource } from "../lib/referenceSource";
+import { pinReference, refErrorText } from "../lib/referenceApi";
 import { resetLapCache } from "../lib/lapCache";
 import { toDrawGeometry } from "../lib/rkbGeometry";
 import { insideFraction, isMismatch } from "../lib/trackMismatch";
@@ -29,6 +32,7 @@ import SessionHeader from "./SessionHeader";
 import SessionPicker from "./SessionPicker";
 import RecordToggle from "./RecordToggle";
 import { TrackPicker, type TrackListItem } from "./track/TrackPicker";
+import ReferenceMenu from "./track/ReferenceMenu";
 import TrackTraceCanvas from "./track/TrackTraceCanvas";
 import { ConfidenceBadges } from "./track/ConfidenceBadges";
 import TelemetryPanel from "./telemetry/TelemetryPanel";
@@ -212,15 +216,58 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   }, [live, viewing, latestLap, userPickedLap]);
   // Switching session (or back to live) restarts lap auto-follow; a stale lap number must not carry over.
   useEffect(() => { setUserPickedLap(false); setSelectedLap("current"); }, [selectedSessionId]);
+  // The reference (predicted) lap is cut on the backend-detected track's RKB sectors, so refetch when
+  // that track changes (a provisional switch), not only as laps complete. A stored session being
+  // viewed is not live-detected, so only the lap count keys it.
+  const detectedTrack = viewing ? "" : (snapshot?.enrichment?.track ?? "");
+  const sessionReference = useReference(viewSessionId, `${latestLap}:${detectedTrack}`);
+  // The track whose stored reference applies. Live: the detected track. Viewing a stored session:
+  // the selected lap's own track (a session can span tracks), else the session's dominant track.
+  // Only CONFIDENT tracks count: the backend only loads confident tracks, and fetching on a provisional
+  // guess would flip sources and fire a request per flip.
+  const confidentSlug = (l: { track_slug?: string | null; track_confidence?: string | null } | undefined) =>
+    l?.track_slug && l.track_confidence === "confident" ? l.track_slug : null;
+  const selectedLapSlug = typeof selectedLap === "number"
+    ? confidentSlug(laps.laps.find(l => l.lap_number === selectedLap)) : null;
+  const dominantSlug = useMemo(() => {
+    const n = new Map<string, number>();
+    for (const l of laps.laps) { const t = confidentSlug(l); if (t) n.set(t, (n.get(t) ?? 0) + 1); }
+    return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  }, [laps.laps]);
+  const refSlug = viewing ? (selectedLapSlug ?? dominantSlug) : (snapshot?.enrichment?.track_confidence === "confident" ? snapshot.enrichment.track ?? null : null);
+  const [refSource, setRefSourceState] = useState<RefSource>(loadRefSource);
+  const setRefSource = (v: RefSource) => { setRefSourceState(v); saveRefSource(v); };
+  const [pinVersion, setPinVersion] = useState(0); // bumped after a pin/clear -> refetch the stored reference
+  // THE selected reference: every reference consumer below reads `reference` / `refStored`.
+  const selectedRef = useSelectedReference(refSlug, refSource, sessionReference, pinVersion, `${latestLap}:${laps.laps.length}`);
+  const reference = selectedRef.reference;
+  const refStored = selectedRef.effective === "stored";
+  // Reference (ideal) drive-line for the track canvas.
+  const referenceLap = useMemo(
+    () => (reference?.samples?.length ? predictedToSamples(reference.samples) : null), [reference]);
+  const [refError, setRefError] = useState<string | null>(null);
+  const setLapAsReference = async (lap: number) => {
+    // PUT to the LAP's own track (a session can span tracks), not the currently shown one.
+    const slug = confidentSlug(laps.laps.find(l => l.lap_number === lap));
+    if (!slug || !viewSessionId) return;
+    setRefError(null);
+    try { await pinReference(slug, viewSessionId, lap); setPinVersion(v => v + 1); }
+    catch (e) { setRefError(refErrorText(e)); }
+  };
   // Lap History list: every completed racing lap with its time, ascending; fastest flagged.
   const lapHistory = useMemo(() => {
     const rows = laps.laps
       .filter(l => l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.duration_ns > 0)
       .sort((a, b) => b.lap_number - a.lap_number)
-      .map(l => ({ lap: l.lap_number, time: nsToClock(l.duration_ns), durationNs: l.duration_ns }));
+      .map(l => ({
+        lap: l.lap_number, time: nsToClock(l.duration_ns), durationNs: l.duration_ns,
+        canSetRef: l.complete && l.valid && !!confidentSlug(l),
+        isRef: selectedRef.stored != null && l.track_slug === refSlug
+          && selectedRef.stored.session_id === viewSessionId && selectedRef.stored.lap_number === l.lap_number,
+      }));
     const bestNs = rows.reduce((m, r) => (m === 0 || r.durationNs < m ? r.durationNs : m), 0);
-    return rows.map(r => ({ lap: r.lap, time: r.time, best: r.durationNs === bestNs }));
-  }, [laps.laps, totalLaps]);
+    return rows.map(r => ({ lap: r.lap, time: r.time, best: r.durationNs === bestNs, canSetRef: r.canSetRef, isRef: r.isRef }));
+  }, [laps.laps, totalLaps, selectedRef.stored, refSlug, viewSessionId]);
   // "All laps" overlay: fetch every completed lap's trace (cache-first) only while "all" is selected.
   const allLapViews = useAllLapTraces(viewSessionId, selectedLap === "all" ? lapHistory.map(l => l.lap) : []);
   const overlayLaps = useMemo(() => allLapViews.map(v => v.points), [allLapViews]);
@@ -253,15 +300,14 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // overlays (Task 4) and the canvas reference drive-line (Task 5); reference also carries the
   // predicted-best used for the per-lap delta (Task 6).
   const median = useMedian(viewSessionId, latestLap);
-  // The reference (predicted) lap is cut on the backend-detected track's RKB sectors, so refetch when
-  // that track changes (a provisional switch), not only as laps complete. A stored session being
-  // viewed is not live-detected, so only the lap count keys it.
-  const detectedTrack = viewing ? "" : (snapshot?.enrichment?.track ?? "");
-  const reference = useReference(viewSessionId, `${latestLap}:${detectedTrack}`);
-  // Reference (ideal) drive-line for the track canvas: the predicted lap's spliced samples.
-  const referenceLap = useMemo(
-    () => (reference?.samples?.length ? predictedToSamples(reference.samples) : null), [reference]);
-  const baseView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
+  const lapFractions = useMemo(() => (lapView ? lapView.fractions() : []), [lapView]);
+  // Stored source: the header delta is vs the stored lap (live: enrichment.delta_to_stored_ref_ns;
+  // scrubbed lap: lap time minus the stored lap's time at the same track fraction).
+  const frameShown = frame && refStored && reference && scrubIndex !== null
+    ? { ...frame, delta: deltaVsReference(reference, lapFractions[scrubIndex] ?? 0, frame.t) }
+    : frame;
+  const liveBase = view && refStored && snapshot && !frame ? { ...view, ...storedDeltaView(snapshot) } : view;
+  const baseView = liveBase && frameShown ? { ...liveBase, ...frameToDisplay(frameShown) } : liveBase;
   const displayView = baseView && (!live || viewing) && coaching.predicted
     ? { ...baseView, predicted: coaching.predicted }
     : baseView;
@@ -270,9 +316,12 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   const selectedLapDto = typeof selectedLap === "number"
     ? laps.laps.find(l => l.lap_number === selectedLap)
     : undefined;
-  const shownSectors = typeof selectedLap === "number"
+  const rawSectors = typeof selectedLap === "number"
     ? (selectedLapDto ? lapDtoToSectorTimes(selectedLapDto) : null)
     : sectorTimes;
+  // Stored source: sector deltas compare against the stored lap's sectors, not the session best.
+  const shownSectors = rawSectors && refStored && reference
+    ? sectorsVsReference(rawSectors, reference, selectedLapDto?.sectors.reliable ?? true) : rawSectors;
 
   // Speed peaks & valleys for the selected lap, vs the chosen reference.
   const [peaksRef, setPeaksRef] = useState<"predicted" | number>("predicted");
@@ -412,13 +461,20 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
         trackPicker={
           // No selected/detected track (e.g. right after a refresh, before auto-detect
           // re-locks) -> render nothing rather than an empty "select track" dropdown.
-          sel.slug ? (
-            <TrackPicker
-              value={sel.slug}
-              provisional={sel.provisional}
-              items={candidates}
-              onPick={slug => setSel(s => reduceManual(s, slug))}
-            />
+          sel.slug || refSlug ? (
+            <>
+              {sel.slug && (
+                <TrackPicker
+                  value={sel.slug}
+                  provisional={sel.provisional}
+                  items={candidates}
+                  onPick={slug => setSel(s => reduceManual(s, slug))}
+                />
+              )}
+              {refSlug && (
+                <ReferenceMenu key={refSlug} slug={refSlug} stored={selectedRef.stored} onChanged={() => setPinVersion(v => v + 1)} />
+              )}
+            </>
           ) : undefined
         }
         sessionPicker={
@@ -531,6 +587,24 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               selectedLap={selectedLap}
               analysisLap={analysisLap}
               referenceLap={referenceLap}
+              referenceControl={
+                <>
+                  <select aria-label="Reference source" className="header-select" value={refSource}
+                    onChange={e => setRefSource(e.target.value as RefSource)}>
+                    <option value="stored">Stored lap</option>
+                    <option value="predicted">Predicted (this session)</option>
+                  </select>
+                  {refSource === "stored" && selectedRef.error && (
+                    <span className="chip chip--red" role="alert">Couldn't load stored lap</span>
+                  )}
+                  {refSource === "stored" && !selectedRef.error && !refSlug && (
+                    <span className="text-muted" role="status">track not confirmed yet</span>
+                  )}
+                  {refSource === "stored" && selectedRef.noStored && (
+                    <span className="text-muted" role="status">no stored lap for this track</span>
+                  )}
+                </>
+              }
               overlayLaps={overlayLaps}
               zoomXRange={graphXRange}
               onZoomWindow={zoomWindowBy}
@@ -578,6 +652,8 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
             lapsLeft={lapsLeft}
             sectorTimes={shownSectors}
             lapHistory={lapHistory}
+            onSetReference={setLapAsReference}
+            refError={refError}
             peaksSection={
               typeof selectedLap === "number" ? (
                 <PeaksTable

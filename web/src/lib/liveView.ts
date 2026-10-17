@@ -117,3 +117,11 @@ export function isStale(s: LiveSnapshot, nowMs: number, thresholdMs = 3000): boo
   if (Number.isNaN(served)) return true;
   return nowMs - served > thresholdMs;
 }
+
+/** Header delta fields from the live snapshot's delta vs the track's STORED reference lap
+ *  (enrichment.delta_to_stored_ref_ns). Placeholder when idle or when there is no stored delta. */
+export function storedDeltaView(s: LiveSnapshot): Pick<LiveView, "delta" | "deltaTone"> {
+  const ns = s.enrichment.delta_to_stored_ref_ns ?? null;
+  if (!s.frame || ns === null) return { delta: PLACEHOLDER, deltaTone: "none" };
+  return { delta: nsToDeltaSeconds(ns), deltaTone: ns === 0 ? "none" : ns < 0 ? "blue" : "red" };
+}

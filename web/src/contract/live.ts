@@ -84,6 +84,7 @@ export type Enrichment = {
   car_name: string | null;
   track: string | null;
   delta_to_best_ns: number | null;  // ns; null until a reference lap; -ve = ahead
+  delta_to_stored_ref_ns?: number | null; // ns vs the track's stored reference lap; null/absent when none
   track_confidence?: string | null; // "provisional" (best guess, may switch) | "confident" (locked); null/absent until a first guess
 };
 

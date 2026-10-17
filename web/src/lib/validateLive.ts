@@ -127,6 +127,9 @@ function validateEnrichment(raw: unknown): Enrichment {
     car_name: (e.car_name as string | null),
     track: (e.track as string | null),
     delta_to_best_ns: delta,
+    // optional; read leniently (older backends omit it)
+    ...(typeof e.delta_to_stored_ref_ns === "number" || e.delta_to_stored_ref_ns === null
+      ? { delta_to_stored_ref_ns: e.delta_to_stored_ref_ns as number | null } : {}),
     ...(trackConfidence !== undefined ? { track_confidence: trackConfidence } : {}),
   };
 }

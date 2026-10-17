@@ -60,13 +60,14 @@ export default function TrackTraceCanvas(props: {
   onPinPeak?: (index: number) => void;
   scrubIndex?: number | null;
   onScrub?: (i: number) => void;
+  referenceControl?: ReactNode; // reference SOURCE switch, rendered beside the "reference on" toggle
 }) {
   const {
     store, geometry, theme, footer, selectedLap = "all",
     analysisLap = null, referenceLap = null, overlayLaps = [], zoomXRange = null,
     onZoomWindow, onResetView, peakMarkers = [],
     hoveredPeak = null, pinnedPeak = null, onHoverPeak, onPinPeak,
-    scrubIndex = null, onScrub,
+    scrubIndex = null, onScrub, referenceControl = null,
   } = props;
   // Analysis mode: the zoom/reset controls manipulate the shared lap-time window (which also drives
   // the graphs), instead of the canvas's own spatial zoom used in live mode.
@@ -294,11 +295,12 @@ export default function TrackTraceCanvas(props: {
               className="chip"
               onClick={() => setShowReference(v => !v)}
               aria-pressed={showReference}
-              title="toggle the predicted (ideal) reference line"
+              title="toggle the reference line"
             >
               {showReference ? "reference on" : "reference off"}
             </button>
           )}
+          {referenceControl}
           <button type="button" className="chip" onClick={handleExportPng}>export png</button>
         </div>
       </div>

@@ -73,3 +73,29 @@ describe("overlayColumns", () => {
     expect(overlayColumns(lap, "tyreFL", null, reference).reference).toBeNull();
   });
 });
+
+describe("overlayColumns fed a stored-lap DTO", () => {
+  it("overlays the stored lap's channels (steering rad->deg) on the lap's fractions", async () => {
+    const { storedRef } = await import("../mock/storedRef");
+    const ref = storedRef();
+    expect(overlayColumns(lap, "speed", null, ref).reference).toEqual([100, 150, 200]);
+    const steer = overlayColumns(lap, "steering", null, ref).reference!;
+    expect(steer[0]).toBeCloseTo(0);
+    expect(steer[1]).toBeCloseTo(180); // PI rad
+  });
+});
+
+describe("sectorsVsReference", () => {
+  const times = [{ sector: "S1", timeMs: 31000, deltaMs: 5, fastest: true }];
+  it("deltas vs the reference's sector by label", async () => {
+    const { sectorsVsReference } = await import("./lapView");
+    const { storedRef } = await import("../mock/storedRef");
+    expect(sectorsVsReference(times, storedRef())[0]).toMatchObject({ deltaMs: 1000, fastest: false });
+  });
+  it("no delta when the lap's sectors or the reference are unreliable", async () => {
+    const { sectorsVsReference } = await import("./lapView");
+    const { storedRef } = await import("../mock/storedRef");
+    expect(sectorsVsReference(times, storedRef(), false)[0].deltaMs).toBeNull();
+    expect(sectorsVsReference(times, storedRef({ reliable: false }))[0].deltaMs).toBeNull();
+  });
+});

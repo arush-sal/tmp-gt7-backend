@@ -7,6 +7,7 @@ import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import { validateLive } from "../lib/validateLive";
 import { liveSample } from "../mock/liveSample";
 import { resetLapCache } from "../lib/lapCache";
+import { storedRef } from "../mock/storedRef";
 
 // Force `sectorTimes` to be a FRESH reference on every render, mirroring the live case (real
 // geometry recomputes it each frame). This is what the perf regression test needs so a memo that
@@ -488,5 +489,72 @@ describe("Dashboard (live)", () => {
       act(() => subs.forEach(h => h.onSnapshot(validateLive(dup))));
       expect(screen.getByText(/REPLAY/)).toBeTruthy();
     });
+  });
+});
+
+describe("Dashboard reference source", () => {
+  const lapRow = (n: number, over: object = {}) => ({
+    lap_number: n, duration_ns: 90e9 + n, complete: true, valid: true, timed: true, delta_to_pb_ns: null,
+    sectors: { reliable: true, reason: null, splits: [] }, track_slug: "suzuka", track_confidence: "confident", ...over,
+  });
+  const setup = async (storedStatus: number, conf: string | null = "confident", laps: object[] = []) => {
+    const urls: string[] = [];
+    const calls: { url: string; method: string }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      urls.push(url);
+      if (/\/sessions\/[^/]+\/laps$/.test(url)) return { ok: true, status: 200, json: async () => laps };
+      if (url.includes("/reference-lap")) calls.push({ url, method: init?.method ?? "GET" });
+      if (url.includes("/reference-lap")) return { ok: storedStatus < 400, status: storedStatus, json: async () => storedRef() };
+      return { ok: true, status: 200, json: async () => [] };
+    }) as unknown as typeof fetch);
+    const subs: LiveHandlers[] = [];
+    const source: LiveSource = (_u, h) => { subs.push(h); return () => {}; };
+    render(<Dashboard source={source} />);
+    const ls = liveSample as { enrichment: object };
+    const snap = { ...ls, enrichment: { ...ls.enrichment, track: "suzuka", track_confidence: conf, delta_to_best_ns: -2500000000, delta_to_stored_ref_ns: 1000000000 } };
+    act(() => subs.forEach(h => h.onSnapshot(validateLive(snap))));
+    return Object.assign(urls, { calls });
+  };
+
+  it("header lap delta follows the reference source (stored vs predicted)", async () => {
+    const urls = await setup(200);
+    await waitFor(() => expect(urls.some(u => u.startsWith("/v1/tracks/suzuka/reference-lap"))).toBe(true));
+    await waitFor(() => expect(screen.getByText("+1.000s")).toBeTruthy());       // stored (default)
+    expect(screen.queryByText(/2\.500s/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Reference source"), { target: { value: "predicted" } });
+    expect(screen.getByText(/2\.500s/)).toBeTruthy();                           // predicted/session delta
+    expect(localStorage.getItem("gt7:ref-source")).toBe("predicted");
+  });
+
+  it("falls back to the predicted delta with a muted note when the track has no stored lap", async () => {
+    await setup(404);
+    await waitFor(() => expect(screen.getByText("no stored lap for this track")).toBeTruthy());
+    expect(screen.getByText(/2\.500s/)).toBeTruthy();
+  });
+
+  it("provisional track: no stored-reference fetch, note says the track is not confirmed", async () => {
+    const urls = await setup(200, "provisional");
+    await waitFor(() => expect(screen.getByText("track not confirmed yet")).toBeTruthy());
+    expect(urls.some(u => u.includes("/reference-lap"))).toBe(false);
+  });
+
+  it("only valid, complete, confident laps get Set-as-reference, and the PUT goes to the lap's own track", async () => {
+    const urls = await setup(200, "confident", [
+      lapRow(1), lapRow(2, { valid: false }), lapRow(3, { track_slug: "fuji" }), lapRow(4, { track_confidence: "provisional" }),
+      lapRow(5, { complete: false }),
+    ]);
+    await screen.findByRole("button", { name: "Set lap 1 as reference" });
+    expect(screen.queryByRole("button", { name: "Set lap 2 as reference" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set lap 4 as reference" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set lap 5 as reference" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Set lap 3 as reference" }));
+    await waitFor(() => expect(urls.calls.some(c => c.method === "PUT" && c.url === "/v1/tracks/fuji/reference-lap")).toBe(true));
+  });
+
+  it("a failed stored-reference load shows an error chip, not the predicted fallback or the no-stored note", async () => {
+    await setup(500);
+    expect((await screen.findByText("Couldn't load stored lap")).getAttribute("role")).toBe("alert");
+    expect(screen.queryByText("no stored lap for this track")).toBeNull();
+    expect((screen.getByLabelText("Reference source") as HTMLSelectElement).value).toBe("stored");
   });
 });
