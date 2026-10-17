@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { loadGeom, saveGeom, clampGeom, type PanelGeom } from "./panelGeometry";
+import { loadGeom, saveGeom, clampGeom, clampDockWidth, dockMaxWidth, loadDockWidth, saveDockWidth, type PanelGeom } from "./panelGeometry";
 
 const D: PanelGeom = { x: 10, y: 10, width: 320, height: 260 };
 
@@ -69,5 +69,39 @@ describe("clampGeom", () => {
     const c = clampGeom(g, 1280, 800, 240, 180);
     expect(c.x).toBeGreaterThanOrEqual(0);
     expect(c.y).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("dock width", () => {
+  beforeEach(() => {
+    const store: Record<string, string> = {};
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store[k] ?? null,
+      setItem: (k: string, v: string) => { store[k] = v; },
+    });
+  });
+  it("clamps to [280, available - 330], min wins when space is small", () => {
+    expect(clampDockWidth(100, 1000)).toBe(280);
+    expect(clampDockWidth(900, 1000)).toBe(670);
+    expect(clampDockWidth(400, 1000)).toBe(400);
+    expect(clampDockWidth(400, 300)).toBe(280);
+    expect(dockMaxWidth(0)).toBe(280);
+  });
+  it("defaults to 380 when missing or bad", () => {
+    expect(loadDockWidth()).toBe(380);
+    localStorage.setItem("gt7:telemetry-width", "abc");
+    expect(loadDockWidth()).toBe(380);
+    localStorage.setItem("gt7:telemetry-width", "-5");
+    expect(loadDockWidth()).toBe(380);
+    localStorage.setItem("gt7:telemetry-width", "0");
+    expect(loadDockWidth()).toBe(380);
+  });
+  it("round-trips the preference without viewport clamping, floored at min", () => {
+    saveDockWidth(450.4);
+    expect(loadDockWidth()).toBe(450);
+    saveDockWidth(2000);
+    expect(loadDockWidth()).toBe(2000);
+    localStorage.setItem("gt7:telemetry-width", "100");
+    expect(loadDockWidth()).toBe(280);
   });
 });

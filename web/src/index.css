@@ -285,8 +285,12 @@ body {
 .chip[disabled], .chip[aria-disabled="true"] { cursor: not-allowed; opacity: .3; }
 
 .chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.graph-legend .chip { background: none; border: 0; padding: 0 6px; font: inherit; cursor: pointer; }
+/* Hover readouts append values to every chip; the legend must never wrap or change height,
+   or the cards below shift under the cursor and the hover feedback-loops (panel jitter). */
+.graph-legend .chip { background: none; border: 0; padding: 0 6px; font: inherit; cursor: pointer;
+  white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .graph-legend .chip--static { cursor: default; }
+.graph-legend .chip:focus-visible { outline-offset: -2px; }
 
 /* ── Data rows ───────────────────────────────────────────────────────────── */
 
@@ -358,7 +362,7 @@ body {
 /* Left-docked telemetry panel: fixed width, full height, its own card chrome. */
 .telemetry-dock {
   position: relative;
-  flex: 0 0 380px;
+  flex: 0 0 380px; /* default; Dashboard overrides flex-basis inline (user-resizable) */
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -368,6 +372,14 @@ body {
   box-shadow: var(--shadow);
   overflow: hidden;
 }
+.telemetry-dock__resizer {
+  position: absolute; top: 0; right: 0; width: 6px; height: 100%;
+  cursor: col-resize; z-index: 6; touch-action: none;
+}
+.telemetry-dock__resizer:hover,
+.telemetry-dock__resizer:focus-visible,
+.telemetry-dock__resizer.is-dragging { background: var(--border); outline: none; }
+.telemetry-dock__resizer:focus-visible { box-shadow: inset 0 0 0 2px var(--red); }
 /* Docked, so the panel header is no longer a drag handle. */
 .telemetry-dock .telemetry-panel__header { cursor: default; }
 
@@ -566,7 +578,7 @@ body {
 }
 .accordion-tab:hover { background: var(--surface-3); }
 
-.graph-legend  { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; flex-shrink: 0; padding: 0 10px 8px; }
+.graph-legend  { display: flex; flex-wrap: nowrap; overflow: hidden; gap: 4px 10px; margin-top: 8px; flex-shrink: 0; padding: 0 10px 8px; }
 
 /* ── Floating panel shell (react-rnd) ───────────────────────────────────────
    Rnd sets inline position/size on this element directly; we only style its

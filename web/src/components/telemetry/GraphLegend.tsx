@@ -32,6 +32,7 @@ export default function GraphLegend({ variant, channels, hidden, medianAvailable
         aria-pressed={disabled ? undefined : !off}
         aria-disabled={disabled || undefined}
         disabled={disabled}
+        title={`${label}${val != null ? ` ${val}` : ""}`}
         onClick={disabled ? undefined : () => onToggle(key)}
       >
         {label}{val != null ? ` ${val}` : ""}
@@ -42,7 +43,7 @@ export default function GraphLegend({ variant, channels, hidden, medianAvailable
   const staticChip = (key: string, label: string, color: string, seriesKey: string) => {
     const val = hover?.values[seriesKey];
     return (
-      <span key={key} className="chip chip--static" style={{ color }}>
+      <span key={key} className="chip chip--static" style={{ color }} title={`${label}${val != null ? ` ${val}` : ""}`}>
         {label}{val != null ? ` ${val}` : ""}
       </span>
     );

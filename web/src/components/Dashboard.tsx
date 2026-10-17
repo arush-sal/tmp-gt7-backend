@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Corner, CornerAnalysis } from "../contract/corner";
 import { useSession } from "../hooks/useSession";
 import { useHistory } from "../hooks/useHistory";
@@ -22,6 +22,7 @@ import { toDrawGeometry } from "../lib/rkbGeometry";
 import { insideFraction, isMismatch } from "../lib/trackMismatch";
 import { initialSel, reduceAuto, reduceManual } from "../lib/trackSelection";
 import { clampIndex } from "../lib/trackScrub";
+import { DOCK_WIDTH_DEFAULT, clampDockWidth, dockMaxWidth, DOCK_WIDTH_MIN, loadDockWidth, saveDockWidth } from "../lib/panelGeometry";
 import { loadVersioned, saveVersioned } from "../lib/persistState";
 import SessionHeader from "./SessionHeader";
 import { TrackPicker, type TrackListItem } from "./track/TrackPicker";
@@ -89,6 +90,39 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   useEffect(() => {
     try { localStorage.setItem("gt7:telemetry-open", telemetryOpen ? "1" : "0"); } catch { /* no storage */ }
   }, [telemetryOpen]);
+
+  // Dock width: `dockWidth` is the user's preference; the rendered width is clamped to the measured
+  // .center-column so the track panel keeps its minimum. Shrinking the window never overwrites the
+  // saved preference, so it returns when the window widens.
+  const [dockWidth, setDockWidth] = useState(() => loadDockWidth());
+  const centerRef = useRef<HTMLDivElement>(null);
+  const [available, setAvailable] = useState<number | null>(null); // null = not measured: unconstrained
+  useEffect(() => {
+    const el = centerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setAvailable(el.clientWidth));
+    ro.observe(el);
+    setAvailable(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  const avail = available ?? Infinity;
+  const dockEffective = clampDockWidth(dockWidth, avail);
+  const dockMax = dockMaxWidth(avail);
+  const setDock = (w: number, persist: boolean) => {
+    const c = clampDockWidth(w, avail);
+    setDockWidth(c);
+    if (persist) saveDockWidth(c);
+  };
+  const [dockDrag, setDockDrag] = useState<{ x: number; w: number } | null>(null);
+  useEffect(() => {
+    if (!telemetryOpen) setDockDrag(null); // closing mid-drag must not leave user-select disabled
+  }, [telemetryOpen]);
+  useEffect(() => {
+    if (!dockDrag) return;
+    const prev = document.body.style.userSelect;
+    document.body.style.userSelect = "none"; // no text selection while dragging
+    return () => { document.body.style.userSelect = prev; };
+  }, [dockDrag]);
 
   // Track list for the picker — fetched once; failure just leaves the list empty.
   const [trackList, setTrackList] = useState<TrackListItem[]>([]);
@@ -388,9 +422,39 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
       />
 
       <div className="dashboard-body">
-        <div className="center-column">
+        <div className="center-column" ref={centerRef}>
           {telemetryOpen ? (
-            <aside className="telemetry-dock">
+            <aside className="telemetry-dock" style={{ flexBasis: dockEffective }}>
+              <div
+                className={`telemetry-dock__resizer${dockDrag ? " is-dragging" : ""}`}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="resize telemetry"
+                aria-valuenow={Math.round(dockEffective)}
+                aria-valuemin={DOCK_WIDTH_MIN}
+                aria-valuemax={Number.isFinite(dockMax) ? Math.round(dockMax) : undefined}
+                tabIndex={0}
+                onPointerDown={e => {
+                  if (e.button !== 0) return;
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setDockDrag({ x: e.clientX, w: dockEffective });
+                }}
+                onPointerMove={e => { if (dockDrag) setDock(dockDrag.w + e.clientX - dockDrag.x, false); }}
+                onPointerUp={e => {
+                  if (!dockDrag) return;
+                  setDock(dockDrag.w + e.clientX - dockDrag.x, true);
+                  setDockDrag(null);
+                }}
+                onPointerCancel={() => setDockDrag(null)}
+                onLostPointerCapture={() => setDockDrag(null)}
+                onDoubleClick={() => setDock(DOCK_WIDTH_DEFAULT, true)}
+                onKeyDown={e => {
+                  if (e.key === "ArrowLeft") { e.preventDefault(); setDock(dockEffective - 20, true); }
+                  else if (e.key === "ArrowRight") { e.preventDefault(); setDock(dockEffective + 20, true); }
+                  else if (e.key === "Home") { e.preventDefault(); setDock(DOCK_WIDTH_MIN, true); }
+                  else if (e.key === "End") { e.preventDefault(); setDock(dockMax, true); }
+                }}
+              />
               <button
                 type="button"
                 className="telemetry-dock__toggle chip"

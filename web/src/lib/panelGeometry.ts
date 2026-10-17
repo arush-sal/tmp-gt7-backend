@@ -32,3 +32,41 @@ export function clampGeom(g: PanelGeom, vw: number, vh: number, minW: number, mi
   const y = Math.min(Math.max(g.y, 0), Math.max(0, vh - 40)); // keep >=40px of the header grabbable
   return { x, y, width, height };
 }
+
+/** DOCK_WIDTH_KEY is the localStorage key for the user's preferred dock width. */
+export const DOCK_WIDTH_KEY = "gt7:telemetry-width";
+/** DOCK_WIDTH_DEFAULT is the dock width used when no valid preference is stored. */
+export const DOCK_WIDTH_DEFAULT = 380;
+/** DOCK_WIDTH_MIN is the narrowest the dock can be resized to. */
+export const DOCK_WIDTH_MIN = 280;
+/** TRACK_PANEL_MIN is the minimum width the track panel keeps beside the dock. */
+export const TRACK_PANEL_MIN = 320;
+/** CENTER_GAP is the flex gap of .center-column (must match index.css). */
+export const CENTER_GAP = 10;
+
+/** dockMaxWidth is the widest the dock may be given the measured .center-column width; never below the minimum. */
+export const dockMaxWidth = (available: number): number =>
+  Math.max(DOCK_WIDTH_MIN, available - TRACK_PANEL_MIN - CENTER_GAP);
+
+/** clampDockWidth clamps a width to [DOCK_WIDTH_MIN, dockMaxWidth(available)]. */
+export const clampDockWidth = (w: number, available: number): number =>
+  Math.min(Math.max(w, DOCK_WIDTH_MIN), dockMaxWidth(available));
+
+/** loadDockWidth returns the stored width preference (not clamped to available space), default when missing/invalid. */
+export function loadDockWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(DOCK_WIDTH_KEY));
+    return Math.max(DOCK_WIDTH_MIN, Number.isFinite(n) && n > 0 ? n : DOCK_WIDTH_DEFAULT);
+  } catch {
+    return DOCK_WIDTH_DEFAULT;
+  }
+}
+
+/** saveDockWidth persists the dock width preference (rounded); failures are non-fatal. */
+export function saveDockWidth(w: number): void {
+  try {
+    localStorage.setItem(DOCK_WIDTH_KEY, String(Math.round(w)));
+  } catch {
+    /* storage disabled/full — non-fatal */
+  }
+}
