@@ -2,6 +2,7 @@ import { useState } from "react";
 import { setRecording, RecordingError } from "../lib/liveApi";
 
 interface Props {
+  live: boolean;        // connection state (fresh live telemetry), same signal the old StatusDot showed
   available: boolean;   // a live session exists and we are not viewing a stored one
   sessionId: string;    // enrichment.session_id or "" (sent so the backend can detect a stale view)
   duplicate?: boolean;  // live feed replays a stored session: OFF must not imply the original is deleted
@@ -17,10 +18,19 @@ function errorText(e: unknown): string {
   return "Couldn't change recording";
 }
 
-export default function RecordToggle({ available, recording, sessionId, duplicate = false, send = setRecording }: Props) {
+export default function RecordToggle({ available, recording, sessionId, duplicate = false, live, send = setRecording }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (!available) return null;
+  const clickable = available && live;
+  if (!clickable) {
+    // Connection state only: OFFLINE (grey), or LIVE while recording controls don't apply (stored session).
+    return (
+      <span className={`chip ${live ? "chip--green" : "chip--grey"}`} role="status" aria-label={live ? "live" : "not live"}
+        title={live ? "Recording controls apply to the live session" : "No live telemetry"}>
+        {live ? "● LIVE" : "● OFFLINE"}
+      </span>
+    );
+  }
 
   const click = async () => {
     const msg = duplicate
@@ -35,9 +45,10 @@ export default function RecordToggle({ available, recording, sessionId, duplicat
 
   return (
     <>
-      <button type="button" className={`chip ${recording ? "chip--red" : "chip--dim"}`} disabled={busy} onClick={click}
-        title={recording ? "Click to stop recording and discard this session" : "Click to start recording a fresh session"}>
-        {recording ? "● REC" : "○ Not recording"}
+      <button type="button" className={`chip ${recording ? "chip--red" : "chip--green"}`} disabled={busy} onClick={click}
+        aria-pressed={recording}
+        title={recording ? "Click to stop recording and discard this session" : "Live telemetry, not recording. Click to record"}>
+        {recording ? "● REC" : "● LIVE"}
       </button>
       {error && <span className="chip chip--red" role="alert">{error}</span>}
     </>

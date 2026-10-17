@@ -69,10 +69,12 @@ export default function App() {
 
   const toggleTheme = () => setTheme(t => (t === "light" ? "dark" : "light"));
   const [live, setLive] = useState(false);
+  // The bar owns the slot element; Dashboard portals the record toggle into it.
+  const [recordSlot, setRecordSlot] = useState<HTMLElement | null>(null);
 
   return (
     <>
-      <AppBar theme={theme} onToggleTheme={toggleTheme} live={live} />
+      <AppBar theme={theme} onToggleTheme={toggleTheme} live={live} recordSlotRef={phase.kind === "dashboard" ? setRecordSlot : undefined} />
       <div className="app">
         {phase.kind === "onboarding" ? (
           <OnboardingFlow
@@ -82,7 +84,7 @@ export default function App() {
             }}
           />
         ) : (
-          <Dashboard theme={theme} onLiveChange={setLive} />
+          <Dashboard recordSlot={recordSlot} theme={theme} onLiveChange={setLive} />
         )}
       </div>
     </>

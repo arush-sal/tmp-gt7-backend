@@ -3,6 +3,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
 import Dashboard from "./Dashboard";
+import AppBar from "./AppBar";
+import { useState } from "react";
 import type { LiveSource, LiveHandlers } from "../lib/liveSource";
 import { validateLive } from "../lib/validateLive";
 import { liveSample } from "../mock/liveSample";
@@ -59,6 +61,12 @@ function fakeSource(): { source: LiveSource; push: () => void; pushIdle: () => v
     }))),
     fail: (m: string) => subscribers.forEach(h => h.onError(new Error(m))),
   };
+}
+
+// The record toggle is portalled into the app bar, so record tests render both like App does.
+function WithBar({ source }: { source: LiveSource }) {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  return (<><AppBar theme="light" onToggleTheme={() => {}} live recordSlotRef={setSlot} /><Dashboard source={source} recordSlot={slot} /></>);
 }
 
 describe("Dashboard (live)", () => {
@@ -449,24 +457,25 @@ describe("Dashboard (live)", () => {
     it("record toggle reflects enrichment.recording and hides while viewing a stored session", async () => {
       const subs: LiveHandlers[] = [];
       const source: LiveSource = (_u, h) => { subs.push(h); return () => {}; };
-      render(<Dashboard source={source} />);
+      render(<WithBar source={source} />);
       const ls = liveSample as { enrichment: object };
       act(() => subs.forEach(h => h.onSnapshot(validateLive(liveSample))));
       expect(screen.getByText("● REC")).toBeTruthy(); // absent => recording
       act(() => subs.forEach(h => h.onSnapshot(validateLive({ ...ls, enrichment: { ...ls.enrichment, recording: false } }))));
-      expect(screen.getByText("○ Not recording")).toBeTruthy();
+      expect(screen.getByText("● LIVE")).toBeTruthy();
       await waitFor(() => expect(screen.getAllByRole("option").some(o => /Old Car/.test(o.textContent ?? ""))).toBe(true));
       fireEvent.change(screen.getByLabelText("Session"), { target: { value: "stored-9" } });
-      expect(screen.queryByText("○ Not recording")).toBeNull();
+      expect(screen.queryByRole("button", { name: /LIVE|REC/ })).toBeNull(); // connection state only
+      expect(screen.getByTitle("Recording controls apply to the live session")).toBeTruthy();
     });
 
-    it("session_id \"\" + recording:false keeps a clickable Not recording toggle and never fetches an empty id", async () => {
+    it("session_id \"\" + recording:false keeps a clickable LIVE (not recording) toggle and never fetches an empty id", async () => {
       const subs: LiveHandlers[] = [];
       const source: LiveSource = (_u, h) => { subs.push(h); return () => {}; };
-      render(<Dashboard source={source} />);
+      render(<WithBar source={source} />);
       const ls = liveSample as { enrichment: object };
       act(() => subs.forEach(h => h.onSnapshot(validateLive({ ...ls, enrichment: { ...ls.enrichment, session_id: "", recording: false } }))));
-      const b = screen.getByText("○ Not recording") as HTMLButtonElement;
+      const b = screen.getByText("● LIVE") as HTMLButtonElement;
       expect(b.disabled).toBe(false);
       expect(urls.some(u => u.includes("/v1/sessions//"))).toBe(false);
     });

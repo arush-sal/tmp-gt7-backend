@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { toLiveView, isStale, frameToDisplay } from "./liveView";
+import { PLACEHOLDER } from "./format";
 import type { LiveSnapshot } from "../contract/live";
 import type { FrameValues } from "./historyStore";
 
@@ -28,7 +29,14 @@ describe("toLiveView (live)", () => {
   });
   it("leaves lap uncapped when total_laps is 0 (time trial)", () => {
     const uncapped = toLiveView({ ...base, frame: { ...base.frame!, current_lap: 3, total_laps: 0 } });
-    expect(uncapped.lap).toBe("3/0");
+    expect(uncapped.lap).toBe("3");
+  });
+  it("placeholders lap when current_lap < 0 (menus)", () => {
+    expect(toLiveView({ ...base, frame: { ...base.frame!, current_lap: -1, total_laps: 0 } }).lap).toBe(PLACEHOLDER);
+  });
+  it("placeholders position when GT7 reports -1 (time trial / menus)", () => {
+    expect(toLiveView({ ...base, frame: { ...base.frame!, current_position: -1, total_positions: -1 } }).position).toBe(PLACEHOLDER);
+    expect(toLiveView({ ...base, frame: { ...base.frame!, current_position: 0, total_positions: 8 } }).position).toBe(PLACEHOLDER);
   });
   it("formats position", () => expect(v.position).toBe("P3/16"));
   it("formats best lap from Duration", () => expect(v.bestLap).toBe("1:17.210"));

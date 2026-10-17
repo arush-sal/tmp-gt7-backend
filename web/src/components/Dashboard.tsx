@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Corner, CornerAnalysis } from "../contract/corner";
 import { useSession } from "../hooks/useSession";
@@ -41,8 +42,8 @@ import CornerDetailPanel from "./CornerDetailPanel";
 import RightPanel from "./RightPanel";
 import PeaksTable from "./PeaksTable";
 
-export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange }: {
-  source?: LiveSource; theme?: "light" | "dark"; onLiveChange?: (live: boolean) => void;
+export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange, recordSlot }: {
+  source?: LiveSource; recordSlot?: HTMLElement | null; theme?: "light" | "dark"; onLiveChange?: (live: boolean) => void;
 }) {
   // Gate the stream once, share it with both subscriptions: after a race finishes, one latch
   // stops cooldown frames reaching history, sectors, view, and track alike (see gateAfterRace).
@@ -487,12 +488,16 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
             onSelect={setSelectedSessionId}
             onOpen={sessionsList.refresh}
           />
-          <RecordToggle
-            available={!viewing && snapshot?.status === "live"}
-            sessionId={snapshot?.enrichment?.session_id ?? ""}
-            duplicate={!!snapshot?.enrichment?.duplicate_of}
-            recording={snapshot?.enrichment?.recording ?? true}
-          />
+          {recordSlot && createPortal(
+            <RecordToggle
+              live={live}
+              available={!viewing && snapshot?.status === "live"}
+              sessionId={snapshot?.enrichment?.session_id ?? ""}
+              duplicate={!!snapshot?.enrichment?.duplicate_of}
+              recording={snapshot?.enrichment?.recording ?? true}
+            />,
+            recordSlot,
+          )}
           </>
         }
         lapSelector={

@@ -56,6 +56,12 @@ function steeringOf(fl?: number, fr?: number): string {
   return `${deg >= 0 ? "+" : "-"}${Math.abs(deg).toFixed(1)}°`;
 }
 
+// total_laps <= 0 (time trial) shows the bare lap; current_lap < 0 (menus) has no lap.
+function lapOf(cur: number, total: number): string {
+  if (cur < 0) return PLACEHOLDER;
+  return total > 0 ? `${Math.min(cur, total)}/${total}` : `${cur}`;
+}
+
 export function toLiveView(s: LiveSnapshot): LiveView {
   const f = s.frame;
   const d = s.derived;
@@ -65,10 +71,9 @@ export function toLiveView(s: LiveSnapshot): LiveView {
     speed: f ? `${Math.round(f.car_speed)}` : PLACEHOLDER,
     gear: f ? `${f.current_gear}` : PLACEHOLDER,
     rpm: f ? `${Math.round(f.rpm)}` : PLACEHOLDER,
-    lap: f
-      ? `${f.total_laps > 0 ? Math.min(f.current_lap, f.total_laps) : f.current_lap}/${f.total_laps}`
-      : PLACEHOLDER,
-    position: f ? `P${f.current_position}/${f.total_positions}` : PLACEHOLDER,
+    lap: f ? lapOf(f.current_lap, f.total_laps) : PLACEHOLDER,
+    // GT7 reports -1 when there is no race position (time trial, menus).
+    position: f && f.current_position > 0 && f.total_positions > 0 ? `P${f.current_position}/${f.total_positions}` : PLACEHOLDER,
     fuelPct: d ? `${Math.round(d.fuel_pct)}%` : PLACEHOLDER,
     currentLapTime: d ? nsToClock(d.current_lap_time_ns) : PLACEHOLDER,
     delta: f && delta !== null ? nsToDeltaSeconds(delta) : PLACEHOLDER, // gated by frame: idle -> placeholder
