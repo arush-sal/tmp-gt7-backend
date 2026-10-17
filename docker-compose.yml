@@ -20,7 +20,11 @@ services:
     ports:
       - "5432:5432" # exposed for host-side psql/debugging; drop if you don't need it
     volumes:
-      - garage-tsdb:/var/lib/postgresql/data
+      # On-disk bind mount, NOT a named volume: `docker system prune --volumes` (needed on this
+      # low-disk host) would delete a named volume and every recorded session with it. Override the
+      # location with GARAGE_DB_DIR; `make deploy-stack` creates the directory first so Docker
+      # doesn't create it root-owned. Postgres chowns it to its own uid on first start.
+      - ${GARAGE_DB_DIR:-${HOME}/.garage/timescaledb}:/var/lib/postgresql/data
     healthcheck:
       # rtps depends on this being ready — pg_isready gates startup ordering below.
       test: ["CMD-SHELL", "pg_isready -U gt7 -d gt7"]
@@ -51,5 +55,3 @@ services:
         condition: service_healthy
     restart: on-failure
 
-volumes:
-  garage-tsdb:
