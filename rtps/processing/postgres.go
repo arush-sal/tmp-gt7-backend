@@ -55,7 +55,8 @@ func (s *PostgresLapStore) Save(lap *Lap) error {
 }
 
 const lapCols = `session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, COALESCE(fingerprint, ''),
- COALESCE(track_slug, ''), COALESCE(track_confidence, '')`
+ COALESCE(track_slug, ''), COALESCE(track_confidence, ''),
+ COALESCE((SELECT total_laps FROM sessions WHERE sessions.id = laps.session_id), 0)`
 
 // BySession returns a session's laps ordered by lap number (nil if none).
 func (s *PostgresLapStore) BySession(sessionID string) []*Lap {
@@ -139,10 +140,12 @@ func (s *PostgresLapStore) oneLap(sql string, args ...any) (*Lap, bool, error) {
 }
 
 // TrackLaps implements TrackRefStore. The WHERE clause matches the laps_track_fastest partial index
-// (migration 00009), which also serves the ORDER BY.
+// (migration 00009), which also serves the ORDER BY; the race-lap-1 exclusion (RefEligible) is a
+// filter on top of that index scan, so it needs no new index or migration.
 func (s *PostgresLapStore) TrackLaps(slug string, limit int) ([]*Lap, error) {
 	rows, err := s.pool.Query(context.Background(), "SELECT "+lapCols+` FROM laps
  WHERE track_slug=$1 AND complete AND valid AND track_confidence='confident'
+ AND NOT (lap_number = 1 AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = laps.session_id AND s.total_laps > 0))
  ORDER BY duration_ns, start_time LIMIT $2`, slug, limit)
 	if err != nil {
 		return nil, fmt.Errorf("processing: track laps %s: %w", slug, err)
@@ -286,7 +289,7 @@ func scanLaps(rows pgx.Rows) []*Lap {
 		)
 		if err := rows.Scan(&lap.SessionID, &lap.LapNumber, &lap.StartTime, &lap.EndTime,
 			&durNs, &fc, &gc, &lap.Complete, &lap.Timed, &lap.Valid, &lap.Fingerprint,
-			&lap.TrackSlug, &lap.TrackConfidence); err != nil {
+			&lap.TrackSlug, &lap.TrackConfidence, &lap.TotalLaps); err != nil {
 			return out
 		}
 		lap.Duration = time.Duration(durNs)
@@ -295,4 +298,14 @@ func scanLaps(rows pgx.Rows) []*Lap {
 		out = append(out, &lap)
 	}
 	return out
+}
+
+// UnpinReferenceIf implements TrackRefStore.
+func (s *PostgresLapStore) UnpinReferenceIf(slug, sessionID string, lapNumber int32) (bool, error) {
+	tag, err := s.pool.Exec(context.Background(),
+		"DELETE FROM track_reference WHERE track_slug=$1 AND session_id=$2 AND lap_number=$3", slug, sessionID, lapNumber)
+	if err != nil {
+		return false, fmt.Errorf("processing: conditional unpin %s: %w", slug, err)
+	}
+	return tag.RowsAffected() > 0, nil
 }

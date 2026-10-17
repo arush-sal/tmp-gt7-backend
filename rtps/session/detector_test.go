@@ -936,3 +936,133 @@ func TestRecording_PendingDroppedAtFinalize(t *testing.T) {
 		t.Errorf("stored=%d recording=%v, want 2/true (request never applied to the next session)", n, c.Recording())
 	}
 }
+
+// countStore counts Saves over a MemStore.
+type countStore struct {
+	*MemStore
+	saves int
+}
+
+func (c *countStore) Save(r *Record) error { c.saves++; return c.MemStore.Save(r) }
+
+// TestDetector_PersistsTotalLapsOnChange: a total_laps that arrives (or changes) after the session was
+// confirmed is persisted while the session is still active, once per change - never per frame - and
+// a later 0 (GT7 reports 0 after a race) keeps the last positive total.
+func TestDetector_PersistsTotalLapsOnChange(t *testing.T) {
+	st := &countStore{MemStore: NewMemStore()}
+	d := NewDetector(&capSink{}, st, testCfg())
+	pkg := uint32(100)
+	feedRun := func(startMs, count int, tot int32) {
+		for i := range count {
+			d.Observe(mkFrame(startMs+i*100, true, 1384, pkg, 1, tot))
+			pkg++
+		}
+	}
+	total := func() int32 { r, _ := st.Get("sess-1ns"); return r.TotalLaps }
+
+	feedRun(0, 8, 0) // confirmed (500ms) with total_laps 0
+	if st.saves != 1 || total() != 0 {
+		t.Fatalf("after confirm: saves=%d total=%d, want 1 / 0", st.saves, total())
+	}
+	feedRun(800, 5, 10) // total arrives while active
+	if total() != 10 || st.saves != 2 {
+		t.Fatalf("after total arrives: saves=%d total=%d, want 2 / 10 (persisted once, before close)", st.saves, total())
+	}
+	feedRun(1300, 5, 0) // 0 after the race must not clobber, and must not write
+	feedRun(1800, 5, 10)
+	if total() != 10 || st.saves != 2 {
+		t.Fatalf("repeat/zero: saves=%d total=%d, want 2 / 10", st.saves, total())
+	}
+	feedRun(2300, 3, 12) // a changed value is persisted again
+	if total() != 12 || st.saves != 3 {
+		t.Fatalf("changed total: saves=%d total=%d, want 3 / 12", st.saves, total())
+	}
+}
+
+// flakyStore fails the Saves whose 1-based ordinals are in failOn.
+type flakyStore struct {
+	*MemStore
+	saves  int
+	failOn map[int]bool
+}
+
+func (f *flakyStore) Save(r *Record) error {
+	f.saves++
+	if f.failOn[f.saves] {
+		return errors.New("boom")
+	}
+	return f.MemStore.Save(r)
+}
+
+// TestDetector_RetriesFailedTotalLapsSave: a failed Save of a new total is retried by later frames that
+// repeat the same value, throttled to once per second of frame time; OnTotalLaps fires only after a
+// successful write.
+func TestDetector_RetriesFailedTotalLapsSave(t *testing.T) {
+	st := &flakyStore{MemStore: NewMemStore(), failOn: map[int]bool{2: true}} // 1 = confirm, 2 = the total
+	var hooks int
+	cfg := testCfg()
+	cfg.OnTotalLaps = func(*Record) { hooks++ }
+	cfg.OnError = func(error) {}
+	d := NewDetector(&capSink{}, st, cfg)
+	pkg := uint32(100)
+	run := func(startMs, count int, tot int32) {
+		for i := range count {
+			d.Observe(mkFrame(startMs+i*100, true, 1384, pkg, 1, tot))
+			pkg++
+		}
+	}
+	stored := func() int32 { r, _ := st.Get("sess-1ns"); return r.TotalLaps }
+
+	run(0, 8, 0)
+	run(800, 1, 10) // first attempt: fails
+	if st.saves != 2 || stored() != 0 || hooks != 0 {
+		t.Fatalf("after failed save: saves=%d stored=%d hooks=%d, want 2 / 0 / 0", st.saves, stored(), hooks)
+	}
+	run(900, 5, 10) // same value within 1 s of the failure: throttled, no new attempt
+	if st.saves != 2 {
+		t.Fatalf("retried inside the throttle window: saves=%d", st.saves)
+	}
+	run(1800, 2, 10) // >= 1 s after the failure: retried, succeeds
+	if st.saves != 3 || stored() != 10 || hooks != 1 {
+		t.Fatalf("after retry: saves=%d stored=%d hooks=%d, want 3 / 10 / 1", st.saves, stored(), hooks)
+	}
+	run(2000, 5, 10) // persisted: no more writes
+	if st.saves != 3 || hooks != 1 {
+		t.Fatalf("after success: saves=%d hooks=%d, want 3 / 1", st.saves, hooks)
+	}
+}
+
+// TestDetector_FinalSaveOfTotalFiresHook: a total whose save failed, with the session closing before
+// the throttled retry, is persisted by the final Save; OnTotalLaps must still fire for it so a live
+// lap-1 reference loaded while the total was unknown gets re-resolved.
+func TestDetector_FinalSaveOfTotalFiresHook(t *testing.T) {
+	st := &flakyStore{MemStore: NewMemStore(), failOn: map[int]bool{2: true}} // 1 = confirm, 2 = the total
+	var hooks int
+	cfg := testCfg()
+	cfg.OnTotalLaps = func(*Record) { hooks++ }
+	cfg.OnError = func(error) {}
+	d := NewDetector(&capSink{}, st, cfg)
+	pkg := uint32(100)
+	frame := func(ms int, lap, tot int32) { d.Observe(mkFrame(ms, true, 1384, pkg, lap, tot)); pkg++ }
+
+	for ms := 0; ms < 800; ms += 100 {
+		frame(ms, 0, 0) // grid/out-lap, total unknown: confirms with total 0
+	}
+	frame(800, 0, 10) // total arrives: its save fails
+	for ms := 900; ms < 1300; ms += 100 {
+		frame(ms, 1, 10) // lap 1 from the line, inside the 1 s retry throttle
+	}
+	for ms := 1300; ms < 1500; ms += 100 {
+		frame(ms, 2, 10) // rollover 1 -> 2: lap 1 is a completed timed lap
+	}
+	if hooks != 0 {
+		t.Fatalf("hooks = %d before close, want 0 (the only total save failed)", hooks)
+	}
+	d.Close() // final Save persists total 10
+	if r, _ := st.Get("sess-1ns"); r.TotalLaps != 10 {
+		t.Fatalf("stored total = %d after close, want 10", r.TotalLaps)
+	}
+	if hooks != 1 {
+		t.Errorf("hooks = %d after the final save persisted the total, want 1", hooks)
+	}
+}

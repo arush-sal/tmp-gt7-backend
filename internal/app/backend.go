@@ -66,6 +66,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	default:
 		sessStore = session.NewMemStore()
 		memLaps := processing.NewMemLapStore()
+		memLaps.SessionTotalLaps = sessionTotalLaps(sessStore) // same session total the Postgres subquery reads
 		lapStore, trackRefs = memLaps, memLaps
 		traceStore = processing.NewMemTraceStore()
 		log.Info("using in-memory stores")
@@ -148,7 +149,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	// segmenter.OnSaved feeds every stored lap to refLoader.LapStored, so the track's first stored lap
 	// (or a new fastest one while unpinned) becomes the live reference without waiting for a re-lock.
 	refLoader := live.NewRefLoader(enrich, delta, func(_ context.Context, slug string) (live.LoadedRef, error) {
-		ref, ok, err := processing.ResolveTrackReference(trackRefs, slug)
+		ref, ok, err := processing.ResolveTrackReference(trackRefs, slug, log)
 		if err != nil || !ok {
 			return live.LoadedRef{}, err
 		}
@@ -160,7 +161,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 		log.Info("stored reference lap loaded for live delta", zap.String("slug", slug), zap.String("source", ref.Source),
 			zap.String("session", ref.Lap.SessionID), zap.Int32("lap", ref.Lap.LapNumber), zap.Duration("lap_time", ref.Lap.Duration))
 		return live.LoadedRef{Lap: &n, Pinned: ref.Source == processing.RefSourcePinned, LapTime: ref.Lap.Duration,
-			SessionID: ref.Lap.SessionID}, nil
+			SessionID: ref.Lap.SessionID, LapNumber: ref.Lap.LapNumber}, nil
 	}, func(err error) { log.Error("stored reference load failed", zap.Error(err)) })
 	defer refLoader.Close()
 	detector := processing.NewTrackDetector(rkbStore, refLoader, log)
@@ -174,7 +175,15 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 		refLoader.Reload(slug)
 	}
 	segmenter.TrackFn = detector.Track
-	segmenter.OnSaved = refLoader.LapStored
+	segmenter.OnSaved = func(l processing.Lap) {
+		// The segmenter's lap does not carry the session total (the lap stores fill it at read time, from
+		// the session row the Detector keeps current). Only lap 1 can be a race's excluded lap, so only
+		// it costs a session lookup (one query per race in Postgres mode).
+		if l.LapNumber == 1 {
+			l.TotalLaps = sessionTotalLaps(sessStore)(l.SessionID)
+		}
+		refLoader.LapStored(l)
+	}
 
 	// Sink order matters for enrichSink and detector: detector.OnSessionEnd does its final match attempt
 	// and SetTrack synchronously, inline, before returning; enrichSink.OnSessionEnd no longer clears or
@@ -187,6 +196,9 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
 	withDedup(&detCfg, lapStore, traceStore, enrich, log)
+	// A session's total_laps was just persisted: a lap 1 loaded as the live reference before it was known
+	// is now a race's ineligible first lap, so the loader re-resolves (once per total change).
+	detCfg.OnTotalLaps = func(rec *session.Record) { refLoader.TotalLapsKnown(rec.ID) }
 	// A discarded session's laps (and any pin on them, by cascade) are gone: if the live stored
 	// reference came from it, reload so the delta falls back to the track's fastest remaining lap.
 	purge := detCfg.OnDiscard
@@ -420,5 +432,15 @@ func withDedup(cfg *session.Config, laps processing.LapStore, traces processing.
 	cfg.OnDuplicateDiverged = func(rec *session.Record, orig string) {
 		log.Warn("dropped duplicate session has a lap not in the original; still dropping",
 			zap.String("session", rec.ID), zap.String("duplicate_of", orig))
+	}
+}
+
+// sessionTotalLaps returns a lookup of a session's stored total_laps (0 when absent).
+func sessionTotalLaps(st session.Store) func(string) int32 {
+	return func(id string) int32 {
+		if r, ok := st.Get(id); ok {
+			return r.TotalLaps
+		}
+		return 0
 	}
 }

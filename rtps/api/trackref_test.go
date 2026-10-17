@@ -20,6 +20,12 @@ func trackRefServer(t *testing.T) (*Server, *session.MemStore, *processing.MemLa
 	sec := fakeSectors{sectors: []reference.Sector{{Index: 0, Start: 0, End: 0.5}, {Index: 1, Start: 0.5, End: 1}}}
 	srv, sessions, laps, traces := lapsServer(sec)
 	srv.TrackRefs = laps
+	laps.SessionTotalLaps = func(id string) int32 {
+		if r, ok := sessions.Get(id); ok {
+			return r.TotalLaps
+		}
+		return 0
+	}
 	changed := &[]string{}
 	srv.OnReferenceChange = func(slug string) { *changed = append(*changed, slug) }
 
@@ -245,5 +251,69 @@ func TestAPI_SessionLaps_TrackFields(t *testing.T) {
 	}
 	if v, ok := rows[2]["track_confidence"]; !ok || v != nil {
 		t.Errorf("unlabelled lap track_confidence = %v (present %v), want null", v, ok)
+	}
+}
+
+// raceLap1Server adds a 10-lap race (s9) whose lap 1 is the fastest lap on suzuka.
+func raceLap1Server(t *testing.T) *Server {
+	t.Helper()
+	srv, sessions, laps, _ := trackRefServer(t)
+	_ = sessions.Save(&session.Record{ID: "s9", CarID: 7, TotalLaps: 10, Status: session.StatusFinished})
+	base := time.Unix(1_700_100_000, 0).UTC()
+	for n, d := range map[int32]time.Duration{1: 60 * time.Second, 2: 97 * time.Second} {
+		_ = laps.Save(&processing.Lap{SessionID: "s9", LapNumber: n, StartTime: base.Add(time.Duration(n) * 3 * time.Minute), Duration: d,
+			Timed: true, Complete: true, Valid: true, TrackSlug: "suzuka", TrackConfidence: "confident"})
+	}
+	return srv
+}
+
+// TestAPI_RaceLap1NotReference: a race's lap 1 is never the fastest reference, cannot be pinned (409),
+// is not listed in the track's laps, and is reference_eligible=false in its session's laps.
+func TestAPI_RaceLap1NotReference(t *testing.T) {
+	srv := raceLap1Server(t)
+	const path = "/v1/tracks/suzuka/reference-lap"
+	if b := decodeRef(t, doJSON(t, srv, http.MethodGet, path, "")); b.SessionID != "s9" || b.LapNumber != 2 {
+		t.Errorf("reference = %s#%d, want s9#2 (not the faster race lap 1)", b.SessionID, b.LapNumber)
+	}
+	rr := doJSON(t, srv, http.MethodPut, path, `{"session_id": "s9", "lap_number": 1}`)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"error":"lap not usable as reference"`) {
+		t.Errorf("PUT race lap 1 = %d %s, want 409", rr.Code, rr.Body.String())
+	}
+	var tl []trackLapDTO
+	if err := json.Unmarshal(doJSON(t, srv, http.MethodGet, "/v1/tracks/suzuka/laps", "").Body.Bytes(), &tl); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range tl {
+		if l.SessionID == "s9" && l.LapNumber == 1 {
+			t.Errorf("track laps list race lap 1: %+v", l)
+		}
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(doJSON(t, srv, http.MethodGet, "/v1/sessions/s9/laps", "").Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows[0]["reference_eligible"] != false || rows[1]["reference_eligible"] != true {
+		t.Errorf("reference_eligible = %v / %v, want false / true", rows[0]["reference_eligible"], rows[1]["reference_eligible"])
+	}
+}
+
+// TestAPI_PinnedRaceLap1Removed: a pin on a race's lap 1 (made before the total was known) is removed on
+// resolution, so GET falls back to the fastest lap with source "fastest" and a later DELETE has nothing
+// to clear.
+func TestAPI_PinnedRaceLap1Removed(t *testing.T) {
+	srv, sessions, laps, _ := trackRefServer(t)
+	_ = sessions.Save(&session.Record{ID: "s9", CarID: 7, Status: session.StatusActive}) // total not yet known
+	_ = laps.Save(&processing.Lap{SessionID: "s9", LapNumber: 1, StartTime: time.Unix(1_700_100_000, 0).UTC(), Duration: 60 * time.Second,
+		Timed: true, Complete: true, Valid: true, TrackSlug: "suzuka", TrackConfidence: "confident"})
+	const path = "/v1/tracks/suzuka/reference-lap"
+	if b := decodeRef(t, doJSON(t, srv, http.MethodPut, path, `{"session_id": "s9", "lap_number": 1}`)); b.Source != "pinned" {
+		t.Fatalf("pin in the unknown-total window = %s, want pinned", b.Source)
+	}
+	_ = sessions.Save(&session.Record{ID: "s9", CarID: 7, TotalLaps: 10, Status: session.StatusActive}) // the Detector persists the total
+	if b := decodeRef(t, doJSON(t, srv, http.MethodGet, path, "")); b.Source != "fastest" || b.SessionID != "s1" || b.LapNumber != 2 {
+		t.Errorf("GET = %s %s#%d, want fastest s1#2", b.Source, b.SessionID, b.LapNumber)
+	}
+	if _, ok, _ := laps.PinnedReference("suzuka"); ok {
+		t.Error("pin still stored")
 	}
 }

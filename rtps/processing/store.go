@@ -37,6 +37,11 @@ type MemLapStore struct {
 	order     []string          // session ids in first-seen order, for deterministic List
 	byFP      map[string]string // lap fingerprint -> owning session id
 	pins      map[string]lapKey // track slug -> pinned reference lap
+
+	// SessionTotalLaps reports a session's total_laps (0 = unknown or a time trial), read at every
+	// lap read to fill Lap.TotalLaps: the memory counterpart of PostgresLapStore's sessions-row
+	// subquery, so both stores judge race-lap-1 eligibility from the same session value. nil = 0.
+	SessionTotalLaps func(sessionID string) int32
 }
 
 // lapKey identifies one stored lap.
@@ -54,6 +59,7 @@ func NewMemLapStore() *MemLapStore {
 // full snapshot — the store is decoupled from any mutation by the caller.
 func (m *MemLapStore) Save(lap *Lap) error {
 	snapshot := *lap
+	snapshot.TotalLaps = 0 // never stored: read time fills it from the session (see SessionTotalLaps)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if lap.Fingerprint != "" {
@@ -77,7 +83,7 @@ func (m *MemLapStore) BySession(sessionID string) []*Lap {
 	if laps == nil {
 		return nil // unknown session — distinct from a session with zero laps
 	}
-	return copyLaps(laps)
+	return m.copyLaps(laps)
 }
 
 // List returns all laps, grouped by session in first-seen order.
@@ -86,20 +92,28 @@ func (m *MemLapStore) List() []*Lap {
 	defer m.mu.RUnlock()
 	var out []*Lap
 	for _, id := range m.order {
-		out = append(out, copyLaps(m.bySession[id])...)
+		out = append(out, m.copyLaps(m.bySession[id])...)
 	}
 	return out
 }
 
 // copyLaps returns fresh *Lap snapshots so callers can't mutate the store's copies through returned
 // pointers (Lap has no pointer fields, so a value copy is a full snapshot).
-func copyLaps(laps []*Lap) []*Lap {
+func (m *MemLapStore) copyLaps(laps []*Lap) []*Lap {
 	out := make([]*Lap, len(laps))
 	for i, l := range laps {
-		c := *l
-		out[i] = &c
+		out[i] = m.view(l)
 	}
 	return out
+}
+
+// view returns a snapshot of the stored lap with TotalLaps filled from its session.
+func (m *MemLapStore) view(l *Lap) *Lap {
+	c := *l
+	if m.SessionTotalLaps != nil {
+		c.TotalLaps = m.SessionTotalLaps(l.SessionID)
+	}
+	return &c
 }
 
 // SessionByFingerprint returns the session owning fp (never matches the empty fingerprint).
@@ -158,8 +172,7 @@ func (m *MemLapStore) Lap(sessionID string, lapNumber int32) (*Lap, bool, error)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if l := m.find(sessionID, lapNumber); l != nil {
-		c := *l
-		return &c, true, nil
+		return m.view(l), true, nil
 	}
 	return nil, false, nil
 }
@@ -170,9 +183,8 @@ func (m *MemLapStore) TrackLaps(slug string, limit int) ([]*Lap, error) {
 	var out []*Lap
 	for _, laps := range m.bySession {
 		for _, l := range laps {
-			if RefEligible(l, slug) {
-				c := *l
-				out = append(out, &c)
+			if c := m.view(l); RefEligible(c, slug) {
+				out = append(out, c)
 			}
 		}
 	}
@@ -218,4 +230,15 @@ func (m *MemLapStore) UnpinReference(slug string) (bool, error) {
 	_, ok := m.pins[slug]
 	delete(m.pins, slug)
 	return ok, nil
+}
+
+// UnpinReferenceIf implements TrackRefStore.
+func (m *MemLapStore) UnpinReferenceIf(slug, sessionID string, lapNumber int32) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if k, ok := m.pins[slug]; !ok || k != (lapKey{sessionID, lapNumber}) {
+		return false, nil
+	}
+	delete(m.pins, slug)
+	return true, nil
 }

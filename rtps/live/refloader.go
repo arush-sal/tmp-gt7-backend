@@ -28,6 +28,9 @@ type RefLoader struct {
 	slug   string    // current confident track ("" = none)
 	gen    uint64    // bumped on every track change and reload
 	loaded LoadedRef // what is installed in delta for slug (zero = nothing)
+	// loading: the worker is resolving a reference that has not been installed yet. Its result may
+	// predate a fact that changes eligibility (a session's race total), so TotalLapsKnown fences it.
+	loading bool
 
 	retryBase time.Duration // first retry delay after a failed load (tests shorten it)
 
@@ -45,6 +48,7 @@ type LoadedRef struct {
 	Pinned    bool
 	LapTime   time.Duration
 	SessionID string // the session holding the lap (its removal invalidates the reference)
+	LapNumber int32  // the lap within SessionID (TotalLapsKnown: lap 1 of a race stops being eligible)
 }
 
 // Retry backoff for a failed load: retryBase, doubling, capped at retryMax, while the request is
@@ -124,6 +128,26 @@ func (l *RefLoader) SessionRemoved(sessionID string) {
 	l.wake()
 }
 
+// TotalLapsKnown is told when a session's positive total_laps was just persisted. If the loaded
+// reference is that session's lap 1 - loaded while the total was still unknown - the lap is now a race's
+// ineligible first lap, so the reference is re-resolved (replaced by the next fastest lap, or cleared).
+// A load still in flight is fenced the same way: it may have resolved that lap 1 before the total was
+// persisted, so its result is discarded (gen bump) and the track re-resolved.
+// Once per total change, never per frame.
+func (l *RefLoader) TotalLapsKnown(sessionID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.slug == "" {
+		return
+	}
+	lap1Loaded := l.loaded.Lap != nil && l.loaded.SessionID == sessionID && l.loaded.LapNumber == 1
+	if !lap1Loaded && !l.loading {
+		return
+	}
+	l.gen++
+	l.wake()
+}
+
 // follow switches to slug ("" = none): the old reference is dropped immediately, a new one queued.
 func (l *RefLoader) follow(slug string) {
 	l.mu.Lock()
@@ -158,9 +182,13 @@ func (l *RefLoader) worker() {
 		}
 		l.mu.Lock()
 		slug, gen := l.slug, l.gen
+		l.loading = slug != ""
 		l.mu.Unlock()
 		if slug != "" {
 			l.load(slug, gen)
+			l.mu.Lock()
+			l.loading = false
+			l.mu.Unlock()
 		}
 	}
 }

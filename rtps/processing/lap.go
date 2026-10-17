@@ -40,4 +40,16 @@ type Lap struct {
 	// belongs to the lap, not the session: one session can drive several tracks.
 	TrackSlug       string
 	TrackConfidence string
+
+	// TotalLaps is the owning session's total_laps (0 = a time trial, > 0 = a race). It is a property
+	// of the session, never stored per lap: both lap stores fill it at READ time from the session's
+	// current total_laps (PostgresLapStore: sessions-row subquery; MemLapStore.SessionTotalLaps), so a
+	// total that arrives after the lap was stored still applies. Laps handed out by the segmenter
+	// (OnSaved) do not carry it; the wiring in internal/app fills it. RaceLap1 and RefEligible use it.
+	TotalLaps int32
 }
+
+// RaceLap1 reports whether l is the first lap of a race. That lap always contains the start (standing
+// or rolling) and its distance axis begins behind the line, so it makes a bad reference. Time trials
+// (TotalLaps 0) have no such lap.
+func (l *Lap) RaceLap1() bool { return l.LapNumber == 1 && l.TotalLaps > 0 }

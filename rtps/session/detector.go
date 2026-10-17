@@ -103,6 +103,10 @@ type Config struct {
 	// FingerprintOwner, if set, enables duplicate-session dropping: it returns the stored session that
 	// already owns a lap fingerprint (see LapFingerprint). nil disables dedup.
 	FingerprintOwner func(fp string) (sessionID string, found bool)
+	// OnTotalLaps is called after a confirmed session's changed positive total_laps was persisted (see
+	// Detector.attribute), once per persisted change, on the stream goroutine. The app uses it to
+	// re-resolve a live reference that was loaded while the total was unknown. nil = ignore.
+	OnTotalLaps func(rec *Record)
 	// OnDiscard is called once when a confirmed session is discarded, after its session row was
 	// deleted and the sinks were told it ended (see Detector.discard). The app purges the session's laps
 	// and traces here. duplicateOf is the original session for DiscardDuplicate, else "".
@@ -148,6 +152,11 @@ type Detector struct {
 	partialLap   int32
 	dedupDecided bool // the first completed lap's dedup decision was made (later laps never discard)
 	lateWarned   bool // OnLateDuplicate already reported
+
+	// savedTotal is the total_laps last SUCCESSFULLY persisted for the open session (d.cur.TotalLaps is
+	// the latest seen); nextTotalSave throttles retries after a failed Save, by frame timestamp.
+	savedTotal    int32
+	nextTotalSave time.Time
 
 	lastInRaceTs time.Time // recv_timestamp of the most recent in-race frame (becomes EndTime)
 	closePending bool      // an in_race=false run is being debounced toward a close
@@ -318,6 +327,7 @@ func (d *Detector) open(f *telemetryv1.TelemetryFrame, ts time.Time) {
 	}
 	d.active = true
 	d.started = false
+	d.savedTotal, d.nextTotalSave = 0, time.Time{}
 	d.closePending = false
 	d.moved = false
 	d.dupOf = ""
@@ -349,9 +359,10 @@ func (d *Detector) attribute(f *telemetryv1.TelemetryFrame, ts time.Time) {
 		d.cur.BestLap = f.GetBestLap().AsDuration() // nil-safe: yields 0 when unset
 		d.cur.LastLap = f.GetLastLap().AsDuration()
 	}
-	if f.GetTotalLaps() > 0 {
-		d.cur.TotalLaps = f.GetTotalLaps()
+	if tl := f.GetTotalLaps(); tl > 0 {
+		d.cur.TotalLaps = tl
 	}
+	d.persistTotalLaps(ts)
 	d.clock = f.GetTimeOnTrack().AsDuration()
 	if f.GetCarSpeed() > minMovingSpeedKPH {
 		d.moved = true
@@ -424,6 +435,33 @@ func (d *Detector) discard(reason DiscardReason, duplicateOf string) {
 	d.publishRecording()
 }
 
+// totalSaveRetry is the minimum gap (by frame timestamp) between attempts to persist a total_laps after a
+// failed Save, so a failing database is not hit at the frame rate.
+const totalSaveRetry = time.Second
+
+// persistTotalLaps writes a confirmed session's row when its latest total_laps differs from the last
+// one successfully persisted. A confirmed session's row must not keep a stale total_laps until it
+// closes: lap eligibility (processing.RefEligible: a race's lap 1 is never a reference) reads it from
+// the stored row while the session is still active. It writes on CHANGE only (once or twice per
+// session, never per frame), with the existing full Save: that is rare enough that a narrower
+// UpdateTotalLaps store method would add interface surface for no gain. Unconfirmed sessions are saved
+// with the total at confirm (maybeConfirm). A failed Save is surfaced and retried by later frames, at
+// most once per totalSaveRetry. OnTotalLaps fires after each successful write.
+func (d *Detector) persistTotalLaps(ts time.Time) {
+	if !d.started || d.discarded || d.cur.TotalLaps <= 0 || d.cur.TotalLaps == d.savedTotal || ts.Before(d.nextTotalSave) {
+		return
+	}
+	if err := d.store.Save(d.cur); err != nil {
+		d.nextTotalSave = ts.Add(totalSaveRetry)
+		d.onError(fmt.Errorf("save total_laps for session %s: %w", d.cur.ID, err))
+		return
+	}
+	d.savedTotal = d.cur.TotalLaps
+	if d.cfg.OnTotalLaps != nil {
+		d.cfg.OnTotalLaps(d.cur)
+	}
+}
+
 // maybeConfirm emits OnSessionStart (once) and persists the active record the moment the session has
 // lasted at least MinSession. Sessions that close before this never confirm and are dropped silently
 // — this is what discards the finish-line results flap.
@@ -440,6 +478,7 @@ func (d *Detector) maybeConfirm(f *telemetryv1.TelemetryFrame, ts time.Time) {
 			return
 		}
 		d.started = true
+		d.savedTotal = d.cur.TotalLaps // the confirm Save carried it
 		if lap := f.GetCurrentLap(); lap >= 1 {
 			d.partialLap = lap // confirmed mid-lap: this first lap is partial (see partialLap)
 		}
@@ -468,6 +507,13 @@ func (d *Detector) finalize() {
 		if err := d.store.Save(d.cur); err != nil {
 			// The session row already exists (saved active at confirm); only the final update failed.
 			d.onError(fmt.Errorf("save final session %s: %w", d.cur.ID, err))
+		} else if d.cur.TotalLaps > 0 && d.cur.TotalLaps != d.savedTotal {
+			// The final Save carried a total whose own save failed and was never retried (the session
+			// closed inside the retry throttle): it is persisted now, so OnTotalLaps still fires.
+			d.savedTotal = d.cur.TotalLaps
+			if d.cfg.OnTotalLaps != nil {
+				d.cfg.OnTotalLaps(d.cur)
+			}
 		}
 		d.sink.OnSessionEnd(d.cur)
 	}

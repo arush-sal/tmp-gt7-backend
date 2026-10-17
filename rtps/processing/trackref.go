@@ -3,6 +3,8 @@ package processing
 import (
 	"errors"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Reference-lap sources (TrackReference.Source, and the API's "source" field).
@@ -35,12 +37,18 @@ type TrackRefStore interface {
 	PinReference(slug, sessionID string, lapNumber int32) error
 	// UnpinReference removes slug's pin, reporting whether one existed.
 	UnpinReference(slug string) (removed bool, err error)
+	// UnpinReferenceIf removes slug's pin only if it still points at sessionID/lapNumber (a
+	// compare-and-delete), reporting whether it did. Resolution uses it so a stale read of an ineligible
+	// pin can never delete a newer pin set concurrently.
+	UnpinReferenceIf(slug, sessionID string, lapNumber int32) (removed bool, err error)
 }
 
 // RefEligible reports whether l can be slug's reference lap: a complete, valid lap that the detector
-// confidently placed on exactly slug (layout + direction).
+// confidently placed on exactly slug (layout + direction), and not the first lap of a race. The
+// session's total_laps rides on the Lap itself (Lap.TotalLaps, filled by every store), so this stays
+// the single rule that the API, the live loader and the stores' queries all mirror.
 func RefEligible(l *Lap, slug string) bool {
-	return l.Complete && l.Valid && l.TrackSlug == slug && l.TrackConfidence == ConfidenceConfident
+	return l.Complete && l.Valid && l.TrackSlug == slug && l.TrackConfidence == ConfidenceConfident && !l.RaceLap1()
 }
 
 // TrackReference is a resolved reference lap for a track and where it came from.
@@ -50,13 +58,26 @@ type TrackReference struct {
 }
 
 // ResolveTrackReference picks slug's reference lap: the pinned lap if any, otherwise the fastest
-// reference-eligible stored lap. found is false when the track has neither.
-func ResolveTrackReference(s TrackRefStore, slug string) (TrackReference, bool, error) {
-	if l, ok, err := s.PinnedReference(slug); err != nil || ok {
-		if !ok {
-			return TrackReference{}, false, err
-		}
+// reference-eligible stored lap. A pin that is no longer eligible is removed and logged (log may be nil).
+// found is false when the track has neither.
+func ResolveTrackReference(s TrackRefStore, slug string, log *zap.Logger) (TrackReference, bool, error) {
+	l, ok, err := s.PinnedReference(slug)
+	if err != nil {
+		return TrackReference{}, false, err
+	}
+	if ok && RefEligible(l, slug) {
 		return TrackReference{Lap: *l, Source: RefSourcePinned}, true, nil
+	}
+	if ok {
+		// The pin is no longer valid (a race's lap 1 pinned before that rule existed, or while the
+		// session's total_laps was not yet known). Remove it explicitly so the UI can show the fallback
+		// honestly (its "Clear pin" only exists for a pinned source) and log it once.
+		if removed, err := s.UnpinReferenceIf(slug, l.SessionID, l.LapNumber); err != nil {
+			return TrackReference{}, false, err
+		} else if removed && log != nil {
+			log.Info("reference pin removed: lap not eligible", zap.String("slug", slug),
+				zap.String("session", l.SessionID), zap.Int32("lap", l.LapNumber))
+		}
 	}
 	laps, err := s.TrackLaps(slug, 1)
 	if err != nil || len(laps) == 0 {

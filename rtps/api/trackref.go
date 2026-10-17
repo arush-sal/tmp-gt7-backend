@@ -73,7 +73,7 @@ func (s *Server) writeTrackReference(w http.ResponseWriter, r *http.Request, slu
 		writeError(w, http.StatusNotFound, "no stored reference for track")
 		return
 	}
-	ref, ok, err := processing.ResolveTrackReference(s.TrackRefs, slug)
+	ref, ok, err := processing.ResolveTrackReference(s.TrackRefs, slug, s.log)
 	if err != nil {
 		s.log.Error("resolve track reference failed", zap.String("slug", slug), zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "failed to resolve reference lap")
@@ -212,7 +212,7 @@ func (s *Server) handleTrackLaps(w http.ResponseWriter, r *http.Request) {
 	isPin := func(l *processing.Lap) bool {
 		return hasPin && pinned.SessionID == l.SessionID && pinned.LapNumber == l.LapNumber
 	}
-	if hasPin && !slices.ContainsFunc(laps, isPin) {
+	if hasPin && !pinned.RaceLap1() && !slices.ContainsFunc(laps, isPin) {
 		laps = append(laps, pinned)
 	}
 	cars := map[string]carDTO{} // one session lookup per session, not per row

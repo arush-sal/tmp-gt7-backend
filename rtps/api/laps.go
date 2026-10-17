@@ -41,6 +41,9 @@ type lapDTO struct {
 	// null when the detector had no guess (a session can drive several tracks).
 	TrackSlug       *string `json:"track_slug"`
 	TrackConfidence *string `json:"track_confidence"`
+	// ReferenceEligible: this lap can be its track's stored reference (processing.RefEligible on the
+	// lap's own track; false without a confident track, and for a race's lap 1).
+	ReferenceEligible bool `json:"reference_eligible"`
 }
 
 // traceSampleDTO is one kept trace sample. TNs is nanoseconds since the lap's t0 (StartTime, or the
@@ -107,6 +110,8 @@ func (s *Server) handleSessionLaps(w http.ResponseWriter, r *http.Request) {
 
 			TrackSlug:       nonEmpty(l.TrackSlug),
 			TrackConfidence: nonEmpty(l.TrackConfidence),
+
+			ReferenceEligible: l.TrackSlug != "" && processing.RefEligible(l, l.TrackSlug),
 		}
 		if rec.BestLap > 0 {
 			d := int64(l.Duration - rec.BestLap)

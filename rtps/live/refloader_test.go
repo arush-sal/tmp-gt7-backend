@@ -329,3 +329,102 @@ func TestRefLoader_RetriesFailedLoad(t *testing.T) {
 		t.Errorf("retries continued after the track was cleared: %d -> %d", n, always.count())
 	}
 }
+
+// TestRefLoader_RaceLap1Ignored: the first lap of a race never triggers a reload, even when it would
+// be the fastest; a time-trial lap 1 still does.
+func TestRefLoader_RaceLap1Ignored(t *testing.T) {
+	refs := &fakeRefs{}
+	l := lockedLoader(t, refs, NewDeltaTracker())
+	defer l.Close()
+
+	race := eligibleLap("suzuka", 90*time.Second)
+	race.TotalLaps = 10
+	l.LapStored(race)
+	time.Sleep(20 * time.Millisecond)
+	if refs.count() != 1 {
+		t.Fatalf("loads = %d after a race lap 1, want 1", refs.count())
+	}
+	l.LapStored(eligibleLap("suzuka", 90*time.Second)) // time trial: TotalLaps 0
+	eventually(t, "reload on a time-trial lap 1", func() bool { return refs.count() == 2 })
+}
+
+// TestRefLoader_TotalLapsKnownReResolvesLap1: a lap-1 reference loaded while the session total was
+// unknown is re-resolved when the total arrives; another session's total, or a non-lap-1 reference,
+// changes nothing.
+func TestRefLoader_TotalLapsKnownReResolvesLap1(t *testing.T) {
+	refs := &fakeRefs{ref: LoadedRef{Lap: storedRefLap(), LapTime: 100 * time.Second, SessionID: "s1", LapNumber: 1}}
+	l := lockedLoader(t, refs, NewDeltaTracker())
+	defer l.Close()
+	l.TotalLapsKnown("other")
+	time.Sleep(20 * time.Millisecond)
+	if refs.count() != 1 {
+		t.Fatalf("loads = %d after another session's total, want 1", refs.count())
+	}
+	refs.set(LoadedRef{Lap: storedRefLap(), LapTime: 101 * time.Second, SessionID: "s1", LapNumber: 2})
+	l.TotalLapsKnown("s1")
+	eventually(t, "re-resolve after the total arrived", func() bool { return refs.count() == 2 })
+	time.Sleep(10 * time.Millisecond)
+	l.TotalLapsKnown("s1") // the loaded reference is now lap 2: nothing to do
+	time.Sleep(20 * time.Millisecond)
+	if refs.count() != 2 {
+		t.Errorf("loads = %d, want 2 (lap 2 stays)", refs.count())
+	}
+}
+
+// gatedRefs returns refs[i] for the i-th resolve; the call at index gateAt blocks until release is
+// closed, so a test can act while that load is in flight.
+type gatedRefs struct {
+	mu      sync.Mutex
+	refs    []LoadedRef
+	n       int
+	gateAt  int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedRefs) resolve(context.Context, string) (LoadedRef, error) {
+	g.mu.Lock()
+	i := g.n
+	g.n++
+	g.mu.Unlock()
+	if i == g.gateAt {
+		close(g.entered)
+		<-g.release
+	}
+	return g.refs[min(i, len(g.refs)-1)], nil
+}
+
+func (g *gatedRefs) count() int { g.mu.Lock(); defer g.mu.Unlock(); return g.n }
+
+// TestRefLoader_TotalLapsKnownDuringInFlightLoad: a load in flight when the session's total arrives
+// could install that session's (now ineligible) lap 1; the total must fence it off and re-resolve.
+func TestRefLoader_TotalLapsKnownDuringInFlightLoad(t *testing.T) {
+	other := LoadedRef{Lap: storedRefLap(), LapTime: 99 * time.Second, SessionID: "s0", LapNumber: 3}
+	lap1 := LoadedRef{Lap: storedRefLap(), LapTime: 98 * time.Second, SessionID: "s1", LapNumber: 1}
+	lap2 := LoadedRef{Lap: storedRefLap(), LapTime: 100 * time.Second, SessionID: "s1", LapNumber: 2}
+	g := &gatedRefs{refs: []LoadedRef{other, lap1, lap2}, gateAt: 1, entered: make(chan struct{}), release: make(chan struct{})}
+	l := NewRefLoader(&fakeTrackEnricher{}, NewDeltaTracker(), g.resolve, nil)
+	defer l.Close()
+	slug, conf := "suzuka", processing.ConfidenceConfident
+	l.SetTrack("s1", &slug, &conf)
+	eventually(t, "initial load installed", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.loaded.SessionID == "s0"
+	})
+	l.Reload("suzuka") // in flight: would resolve to s1 lap 1 (total still unknown)
+	<-g.entered
+	l.TotalLapsKnown("s1") // the total arrives mid-load
+	close(g.release)
+	eventually(t, "re-resolved after the total", func() bool { return g.count() == 3 })
+	time.Sleep(10 * time.Millisecond)
+	l.mu.Lock()
+	got := l.loaded
+	l.mu.Unlock()
+	if got.SessionID == "s1" && got.LapNumber == 1 {
+		t.Fatalf("installed s1 lap 1 after its race total arrived")
+	}
+	if got.LapNumber != 2 {
+		t.Errorf("installed lap %d of %s, want s1 lap 2", got.LapNumber, got.SessionID)
+	}
+}

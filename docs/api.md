@@ -132,6 +132,13 @@ Returns the session's laps in lap order: `lap_number`, `duration_ns`, `complete`
   session can contain laps on several tracks, so the track belongs to the lap, not the session.
 - `track_confidence`: `"provisional"` (the detector's guess when the lap completed; it may still have
   switched) or `"confident"` (the detector locked on this track), or `null`.
+- `reference_eligible`: whether this lap can be its track's stored reference lap: complete, valid,
+  `confident` on its track, and not the first lap of a race (`total_laps` > 0). Clients use it to show
+  or hide "set as reference" instead of repeating the rule. The field is always present: the web
+  dashboard is embedded in the `rtps` binary, so the dashboard and the API always ship together.
+  A race's lap 1 becomes ineligible once the session's positive `total_laps` is persisted. That is
+  normally before lap 1 completes, because GT7 reports the total from the grid. If it arrives later,
+  eligibility updates then, and any pin or live reference on that lap is removed or re-resolved.
 
 A lap completed before the detector locked carries the provisional guess (or `null`) until the lock,
 which then marks every lap of that detection run `confident` on the locked track. If the car leaves
@@ -145,6 +152,10 @@ get the new track. Each lap's sector splits use its own track's sectors.
 Returns the stored reference lap for one track layout (`slug` is exact: layout and direction). The
 reference is the lap you pinned for the track, or otherwise the fastest stored lap on it that is
 complete, valid and was detected `confident` on exactly this slug, across all sessions and cars.
+The first lap of a race (lap 1 of a session with `total_laps` > 0) is never eligible: it contains the
+start. A time trial's lap 1 is. If the pinned lap stops being eligible (for example a race's lap 1 pinned
+before this rule existed), resolving the reference removes the pin, logs "reference pin removed: lap
+not eligible" once at INFO, and the response is the fastest eligible lap (`source` `"fastest"`).
 `?decimate=N` caps the samples (default 1500; the first and last sample are always kept).
 
 The body has the same fields and shapes as `GET /v1/sessions/{id}/reference`, so the same overlay
@@ -184,7 +195,7 @@ discarded; the track then falls back to its fastest lap.
 - `400` on a malformed body.
 - `404` if the lap does not exist.
 - `409` (`{"error": "lap not usable as reference"}`) if the lap is not complete and valid, was not
-  driven on this exact `slug`, or its track was not detected `confident`.
+  driven on this exact `slug`, its track was not detected `confident`, or it is the first lap of a race.
 
 ### `DELETE /v1/tracks/{slug}/reference-lap`
 
@@ -196,7 +207,7 @@ Clears the track's pin (no body).
 ### `GET /v1/tracks/{slug}/laps`
 
 Lists the stored laps that can be the track's reference (complete, valid, detected `confident` on
-exactly this slug), fastest first, across all sessions and cars. `?limit=N` caps the list (default
+exactly this slug, not a race's first lap), fastest first, across all sessions and cars. `?limit=N` caps the list (default
 20). Each row: `session_id`, `lap_number`, `lap_time` (duration string), `recorded_at` (RFC 3339),
 `car` (as above), and `pinned` (`true` for the track's pinned lap). `limit` is capped at 200. The
 pinned lap is always listed, after the others when it is not among the fastest `limit` laps. An

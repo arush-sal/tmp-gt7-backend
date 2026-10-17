@@ -277,14 +277,18 @@ func TestPostgresLapStore_Golden(t *testing.T) {
 func TestPostgresLapStore_TrackReference(t *testing.T) {
 	pool := freshPool(t)
 	sessions := session.NewPostgresStore(pool)
-	for _, id := range []string{"s1", "s2"} {
-		if err := sessions.Save(&session.Record{ID: id, StartTime: time.Unix(1000, 0).UTC(), Status: session.StatusFinished}); err != nil {
+	for id, total := range map[string]int32{"s1": 0, "s2": 0, "s3": 0, "s4": 0} {
+		if err := sessions.Save(&session.Record{ID: id, StartTime: time.Unix(1000, 0).UTC(), Status: session.StatusFinished, TotalLaps: total}); err != nil {
 			t.Fatalf("save session: %v", err)
 		}
 	}
 	testTrackRefContract(t, NewPostgresLapStore(pool), func(id string) {
 		if err := sessions.Delete(id); err != nil {
 			t.Fatalf("delete session: %v", err)
+		}
+	}, func(id string, n int32) {
+		if _, err := pool.Exec(context.Background(), "UPDATE sessions SET total_laps=$2 WHERE id=$1", id, n); err != nil {
+			t.Fatalf("set total_laps: %v", err)
 		}
 	})
 }

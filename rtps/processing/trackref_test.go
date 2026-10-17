@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // trackRefStore is what the contract test drives: the lap store plus its track-reference methods.
@@ -24,8 +27,9 @@ func refLap(session string, n int32, start int, dur time.Duration, valid bool, s
 // testTrackRefContract is the shared Mem/Postgres contract for per-lap tracks, the fastest-lap query,
 // pins (incl. the cascade when the pinned lap's session goes) and reference resolution. dropSession
 // removes a whole session the way production does (the Postgres session row cascade, or the lap
-// store's DeleteSession for memory).
-func testTrackRefContract(t *testing.T, s trackRefStore, dropSession func(id string)) {
+// store's DeleteSession for memory). setTotal sets a session's total_laps the way the Detector's
+// persistence does (the sessions row, or the memory session lookup).
+func testTrackRefContract(t *testing.T, s trackRefStore, dropSession func(id string), setTotal func(id string, n int32)) {
 	t.Helper()
 	sec := time.Second
 	for _, l := range []*Lap{
@@ -78,11 +82,11 @@ func testTrackRefContract(t *testing.T, s trackRefStore, dropSession func(id str
 		t.Errorf("Lap(s1,99) found=%v err=%v, want not found", ok, err)
 	}
 
-	ref, ok, err := ResolveTrackReference(s, "suzuka")
+	ref, ok, err := ResolveTrackReference(s, "suzuka", nil)
 	if err != nil || !ok || ref.Source != RefSourceFastest || lapID(&ref.Lap) != "s1#3" {
 		t.Fatalf("resolve unpinned = %+v %v %v, want fastest s1#3", ref, ok, err)
 	}
-	if _, ok, _ := ResolveTrackReference(s, "nowhere"); ok {
+	if _, ok, _ := ResolveTrackReference(s, "nowhere", nil); ok {
 		t.Error("resolve unknown track: want not found")
 	}
 
@@ -95,7 +99,7 @@ func testTrackRefContract(t *testing.T, s trackRefStore, dropSession func(id str
 	if p, ok, err := s.PinnedReference("suzuka"); err != nil || !ok || lapID(p) != "s2#2" {
 		t.Fatalf("pinned = %v %v %v, want s2#2", p, ok, err)
 	}
-	ref, _, _ = ResolveTrackReference(s, "suzuka")
+	ref, _, _ = ResolveTrackReference(s, "suzuka", nil)
 	if ref.Source != RefSourcePinned || lapID(&ref.Lap) != "s2#2" {
 		t.Errorf("resolve pinned = %+v", ref)
 	}
@@ -108,7 +112,7 @@ func testTrackRefContract(t *testing.T, s trackRefStore, dropSession func(id str
 	if _, ok, _ := s.PinnedReference("suzuka"); ok {
 		t.Error("pin survived its session's deletion")
 	}
-	ref, _, _ = ResolveTrackReference(s, "suzuka")
+	ref, _, _ = ResolveTrackReference(s, "suzuka", nil)
 	if ref.Source != RefSourceFastest || lapID(&ref.Lap) != "s1#3" {
 		t.Errorf("after cascade = %+v, want fastest s1#3", ref)
 	}
@@ -122,6 +126,80 @@ func testTrackRefContract(t *testing.T, s trackRefStore, dropSession func(id str
 	if removed, err := s.UnpinReference("suzuka"); err != nil || removed {
 		t.Errorf("second unpin = %v %v, want nothing removed", removed, err)
 	}
+
+	// Race lap 1 (lap 1 of a session with total_laps > 0) is never eligible, even when it is the
+	// fastest; a time-trial lap 1 (total_laps 0) is. s3 is a race whose total arrives late, s4 a time
+	// trial. Eligibility follows the session's CURRENT total at read time.
+	for _, l := range []*Lap{
+		refLap("s3", 1, 2000, 50*sec, true, "monza", ConfidenceConfident),
+		refLap("s3", 2, 2100, 120*sec, true, "monza", ConfidenceConfident),
+		refLap("s4", 1, 3000, 55*sec, true, "monza", ConfidenceConfident),
+	} {
+		if err := s.Save(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	laps, _ = s.TrackLaps("monza", 10)
+	assertLapIDs(t, "monza, total not yet known", laps, "s3#1", "s4#1", "s3#2")
+
+	// A pin made while the total was unknown (the P1 window, or before the rule existed).
+	if err := s.PinReference("monza", "s3", 1); err != nil {
+		t.Fatal(err)
+	}
+	setTotal("s3", 10) // the total arrives after lap 1 was stored
+	laps, _ = s.TrackLaps("monza", 10)
+	assertLapIDs(t, "monza excludes race lap 1", laps, "s4#1", "s3#2")
+	if l, _, _ := s.Lap("s3", 1); l.TotalLaps != 10 || RefEligible(l, "monza") {
+		t.Errorf("s3#1 TotalLaps=%d eligible=%v, want 10 / false", l.TotalLaps, RefEligible(l, "monza"))
+	}
+	if l, _, _ := s.Lap("s4", 1); l.TotalLaps != 0 || !RefEligible(l, "monza") {
+		t.Errorf("time-trial lap 1 TotalLaps=%d eligible=%v, want 0 / true", l.TotalLaps, RefEligible(l, "monza"))
+	}
+	if by := s.BySession("s3"); by[0].TotalLaps != 10 {
+		t.Errorf("BySession TotalLaps = %d, want 10", by[0].TotalLaps)
+	}
+
+	// Resolution finds the pinned race lap 1 ineligible: the pin is removed (observably, one INFO log)
+	// and the fastest eligible lap is the reference.
+	core, logs := observer.New(zap.InfoLevel)
+	ref, ok, err = ResolveTrackReference(s, "monza", zap.New(core))
+	if err != nil || !ok || ref.Source != RefSourceFastest || lapID(&ref.Lap) != "s4#1" {
+		t.Fatalf("monza resolve = %v %v %v %v, want fastest s4#1", lapID(&ref.Lap), ref.Source, ok, err)
+	}
+	if _, pinned, _ := s.PinnedReference("monza"); pinned {
+		t.Error("ineligible pin was not removed")
+	}
+	if logs.FilterMessage("reference pin removed: lap not eligible").Len() != 1 {
+		t.Errorf("want one pin-removed INFO log, got %v", logs.All())
+	}
+	ResolveTrackReference(s, "monza", zap.New(core)) //nolint:errcheck // second resolve: nothing left to remove
+	if logs.Len() != 1 {
+		t.Errorf("pin-removed log repeated: %d entries", logs.Len())
+	}
+
+	// Compare-and-delete: a stale read of an ineligible pin must not delete a newer pin. Simulate the
+	// race by re-pinning between the read (s3#1) and the conditional unpin.
+	if err := s.PinReference("monza", "s3", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PinReference("monza", "s4", 1); err != nil { // the concurrent PUT
+		t.Fatal(err)
+	}
+	if removed, err := s.UnpinReferenceIf("monza", "s3", 1); err != nil || removed {
+		t.Errorf("stale UnpinReferenceIf = %v %v, want not removed", removed, err)
+	}
+	if p, ok, _ := s.PinnedReference("monza"); !ok || lapID(p) != "s4#1" {
+		t.Errorf("newer pin lost: %v %v", lapID(p), ok)
+	}
+	if removed, err := s.UnpinReferenceIf("monza", "s4", 1); err != nil || !removed {
+		t.Errorf("matching UnpinReferenceIf = %v %v, want removed", removed, err)
+	}
+
+	// The total only ever changes to a new positive value (the Detector keeps the last positive one;
+	// a 0 after the race is never written), so a changed total keeps lap 1 excluded.
+	setTotal("s3", 12)
+	laps, _ = s.TrackLaps("monza", 10)
+	assertLapIDs(t, "monza after total change", laps, "s4#1", "s3#2")
 }
 
 func lapID(l *Lap) string {
@@ -146,5 +224,7 @@ func assertLapIDs(t *testing.T, what string, laps []*Lap, want ...string) {
 
 func TestMemLapStore_TrackReference(t *testing.T) {
 	s := NewMemLapStore()
-	testTrackRefContract(t, s, func(id string) { _ = s.DeleteSession(id) })
+	totals := map[string]int32{}
+	s.SessionTotalLaps = func(id string) int32 { return totals[id] }
+	testTrackRefContract(t, s, func(id string) { _ = s.DeleteSession(id) }, func(id string, n int32) { totals[id] = n })
 }
