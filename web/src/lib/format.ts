@@ -76,3 +76,10 @@ export function msToSectorDelta(ms: number): string {
   const sign = ms >= 0 ? "+" : "-";
   return `${sign}${(Math.abs(ms) / 1_000).toFixed(3)}`;
 }
+
+/** Radians -> degrees. Single home for the conversion (live steering text, graph channel, backend DTOs). */
+export const radToDeg = (rad: number): number => rad * (180 / Math.PI);
+
+/** Mean front-wheel steer angle in degrees from the optional wire radians; NaN unless both present. */
+export const steeringDeg = (fl?: number, fr?: number): number =>
+  fl === undefined || fr === undefined ? NaN : radToDeg((fl + fr) / 2);

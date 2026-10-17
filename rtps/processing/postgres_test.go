@@ -84,7 +84,7 @@ func TestPostgresTraceStore_RoundTrip(t *testing.T) {
 	samples := []Sample{
 		{RecvTime: time.Unix(1000, 0).UTC(), SessionID: "s1", LapNumber: 1, Seq: 2, Distance: 5.5,
 			PosX: 2, PosY: 2, PosZ: 3, Speed: 120, Throttle: 80, Brake: 0, RPM: 6500, Gear: 3, Yaw: 0.11, AngVelY: 0.22,
-			SurfaceType: "TCGG"},
+			SurfaceType: "TCGG", Steering: -0.35},
 		{RecvTime: time.Unix(999, 0).UTC(), SessionID: "s1", LapNumber: 1, Seq: 1, Distance: 0,
 			PosX: 1, PosY: 2, PosZ: 3, Speed: 100, Throttle: 50, Brake: 0, RPM: 6000, Gear: 3, Yaw: 0.1, AngVelY: 0.2},
 		{RecvTime: time.Unix(1002, 0).UTC(), SessionID: "s1", LapNumber: 2, Seq: 3, Distance: 0, Gear: 4},
@@ -108,6 +108,12 @@ func TestPostgresTraceStore_RoundTrip(t *testing.T) {
 	}
 	if lap1[1].SurfaceType != "TCGG" { // round-trips the per-wheel surface code
 		t.Errorf("surface_type = %q, want TCGG", lap1[1].SurfaceType)
+	}
+	if lap1[1].Steering != -0.35 { // REAL round-trip
+		t.Errorf("steering = %v, want -0.35", lap1[1].Steering)
+	}
+	if lap1[0].Steering != 0 { // unset -> DEFAULT 0
+		t.Errorf("steering default = %v, want 0", lap1[0].Steering)
 	}
 	if lap1[0].SurfaceType != "" { // unset -> DEFAULT '' (not NULL)
 		t.Errorf("surface_type default = %q, want empty", lap1[0].SurfaceType)

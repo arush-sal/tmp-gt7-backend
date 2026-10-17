@@ -4,7 +4,7 @@ import type { LapSample } from "./lapView";
 
 const s = (t: number): LapSample => ({
   t, posX: 0, posZ: 0, surface: "", distance: 0, throttle: 0, brake: 0, clutch: 0, rpm: 0,
-  gear: 0, speed: 0, boost: 0, delta: 0, tyreFL: 0, tyreFR: 0, tyreRL: 0, tyreRR: 0, fuel: 0,
+  gear: 0, speed: 0, boost: 0, delta: 0, tyreFL: 0, tyreFR: 0, tyreRL: 0, tyreRR: 0, fuel: 0, steering: 0,
 });
 
 beforeEach(resetLapCache);

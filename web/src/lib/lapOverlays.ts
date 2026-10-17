@@ -6,12 +6,14 @@
 import type { Channel } from "./historyStore";
 import type { LapView } from "./lapView";
 import { resampleByFraction } from "./lapView";
+import { radToDeg } from "./format";
 import type { MedianDTO, ReferenceDTO, PredictedSampleDTO } from "../contract/session";
 
 // channel -> the predicted-sample field carrying that channel's value. Only channels a single-series
 // card can show and that the reference lap carries; tyre channels are deliberately absent.
 const REF_FIELD: Partial<Record<Channel, keyof PredictedSampleDTO>> = {
   speed: "speed", throttle: "throttle", brake: "brake", rpm: "rpm", gear: "gear", boost: "boost", fuel: "fuel",
+  steering: "steering",
 };
 
 export type Overlay = { median: number[] | null; reference: number[] | null };
@@ -41,7 +43,8 @@ export function overlayColumns(
   const field = REF_FIELD[channel];
   if (field && reference?.samples?.length) {
     const grid = reference.samples.map(s => s.fraction);
-    const values = reference.samples.map(s => Number(s[field]));
+    // The wire carries steering in radians; the graph (and the lap column it overlays) is in degrees.
+    const values = reference.samples.map(s => field === "steering" ? radToDeg(s.steering) : Number(s[field]));
     refCol = resampleByFraction(grid, values, targets);
   }
 

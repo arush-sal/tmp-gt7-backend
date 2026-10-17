@@ -101,6 +101,8 @@ func mkChannelFrame() *telemetryv1.TelemetryFrame {
 	f.TyreTempRr = 83
 	f.Clutch = 0.5
 	f.Boost = 1.5
+	f.WheelSteeringAngleFrontLeft = 0.2
+	f.WheelSteeringAngleFrontRight = 0.1
 	return f
 }
 
@@ -127,6 +129,9 @@ func TestTraceRecorder_Channels(t *testing.T) {
 	}
 	if s.Clutch != 0.5 || s.Boost != 1.5 {
 		t.Errorf("clutch/boost = %v/%v, want 0.5/1.5", s.Clutch, s.Boost)
+	}
+	if want := float32(0.2+0.1) / 2; s.Steering < want-1e-6 || s.Steering > want+1e-6 { // mean of the two front wheels, radians
+		t.Errorf("Steering = %v, want %v (mean of FL/FR)", s.Steering, want)
 	}
 }
 

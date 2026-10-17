@@ -6,8 +6,8 @@ interface Props {
   onClose: () => void;
 }
 
-// A small "Custom Graphs" picker: catalog entries not already shown. needs-backend entries
-// (steering) are listed but disabled so the gap is visible without being addable.
+// A small "Custom Graphs" picker: catalog entries not already shown. needs-backend entries, if any,
+// are listed but disabled so the gap is visible without being addable.
 export default function GraphPicker({ shownKeys, onAdd, onClose }: Props) {
   const shown = new Set(shownKeys);
   const options = CARD_CATALOG.filter(c => !shown.has(c.key));

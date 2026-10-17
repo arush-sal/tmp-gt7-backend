@@ -66,6 +66,9 @@ func TestAPI_SessionReference(t *testing.T) {
 	if last := got.Samples[len(got.Samples)-1]; last.Fraction < 0.999 {
 		t.Errorf("last sample fraction = %v, want ~1", last.Fraction)
 	}
+	if got.Samples[0].Steering != 0.25 { // steering reaches the reference DTO
+		t.Errorf("sample0 steering = %v, want 0.25", got.Samples[0].Steering)
+	}
 }
 
 // TestAPI_SessionReference_Decimate caps the samples array and keeps the first + last sample.

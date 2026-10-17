@@ -1,9 +1,10 @@
 import type { LiveSnapshot, Frame, Derived, Enrichment } from "../contract/live";
 import type { LapSample } from "./lapView";
+import { steeringDeg } from "./format";
 
 export type Channel =
   | "throttle" | "brake" | "clutch" | "rpm" | "gear" | "speed" | "boost" | "delta"
-  | "tyreFL" | "tyreFR" | "tyreRL" | "tyreRR" | "fuel";
+  | "tyreFL" | "tyreFR" | "tyreRL" | "tyreRR" | "fuel" | "steering";
 
 export type TracePoint = {
   readonly posX: number; readonly posZ: number;
@@ -25,6 +26,7 @@ function project(f: Frame, d: Derived, e: Enrichment): LapSample {
     delta: e.delta_to_best_ns === null ? NaN : e.delta_to_best_ns / 1e9,
     tyreFL: f.tyre_temp_fl, tyreFR: f.tyre_temp_fr, tyreRL: f.tyre_temp_rl, tyreRR: f.tyre_temp_rr,
     fuel: d.fuel_pct,
+    steering: steeringDeg(f.wheel_steering_angle_front_left, f.wheel_steering_angle_front_right),
   };
 }
 

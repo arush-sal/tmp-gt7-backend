@@ -1,6 +1,6 @@
 import type { LiveSnapshot } from "../contract/live";
 import type { FrameValues } from "./historyStore";
-import { nsToClock, nsToDeltaSeconds, parseDuration, PLACEHOLDER } from "./format";
+import { steeringDeg, nsToClock, nsToDeltaSeconds, parseDuration, PLACEHOLDER } from "./format";
 
 // Tyre-temperature bands (grip-window semantics, not raw hot/cold):
 //   under   (< 75 C)      -> red   : tyres below the working window, low grip
@@ -51,8 +51,8 @@ export function predictedOf(ns: number | null | undefined): string {
 
 // Averaged front-wheel steer angle in degrees, e.g. "+6.9°"; PLACEHOLDER unless both wheels present.
 function steeringOf(fl?: number, fr?: number): string {
-  if (fl === undefined || fr === undefined) return PLACEHOLDER;
-  const deg = ((fl + fr) / 2) * (180 / Math.PI);
+  const deg = steeringDeg(fl, fr);
+  if (Number.isNaN(deg)) return PLACEHOLDER;
   return `${deg >= 0 ? "+" : "-"}${Math.abs(deg).toFixed(1)}°`;
 }
 

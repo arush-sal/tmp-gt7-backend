@@ -15,6 +15,7 @@ export const CHANNEL_COLOR: Record<Channel, string> = {
   tyreRL: "#1e6fd9",   // blue
   tyreRR: "#2ed16a",   // green
   fuel: "#2ed16a",     // green
+  steering: "#1e6fd9", // blue
 };
 
 // Median + reference: solid, distinct from every channel colour and from each other.

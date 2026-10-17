@@ -38,6 +38,7 @@ type predictedSampleDTO struct {
 	TyreTempRR    float32 `json:"tyre_temp_rr"`
 	Clutch        float32 `json:"clutch"`
 	Boost         float32 `json:"boost"`
+	Steering      float32 `json:"steering"` // radians, mean of the front road-wheel angles
 	DeltaToBestNs *int64  `json:"delta_to_best_ns"`
 }
 
@@ -114,6 +115,7 @@ func toPredictedLapDTO(pl processing.PredictedLap, decimate int) predictedLapDTO
 			TyreTempRR:    sm.TyreTempRR,
 			Clutch:        sm.Clutch,
 			Boost:         sm.Boost,
+			Steering:      sm.Steering,
 			DeltaToBestNs: sm.DeltaToBestNs,
 		}
 	}

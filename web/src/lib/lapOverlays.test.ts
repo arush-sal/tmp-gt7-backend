@@ -24,7 +24,7 @@ describe("resampleByFraction", () => {
 const trace = (i: number, dist: number): TraceSampleDTO => ({
   seq: i, t_ns: i * 1e9, distance: dist, pos_x: 0, pos_z: 0, throttle: 0, brake: 0, speed: 0,
   gear: 0, rpm: 0, fuel: 0, tyre_temp_fl: 0, tyre_temp_fr: 0, tyre_temp_rl: 0, tyre_temp_rr: 0,
-  clutch: 0, boost: 0, delta_to_best_ns: null, surface_type: "",
+  clutch: 0, boost: 0, delta_to_best_ns: null, surface_type: "", steering: 0,
 });
 const lap = lapViewFromTrace([trace(0, 0), trace(1, 500), trace(2, 1000)]);
 
@@ -47,12 +47,25 @@ describe("overlayColumns", () => {
     const rs = (fraction: number, speed: number): PredictedSampleDTO => ({
       fraction, t_ns: 0, distance: 0, pos_x: 0, pos_z: 0, speed, throttle: 0, brake: 0, rpm: 0,
       gear: 0, fuel: 0, tyre_temp_fl: 0, tyre_temp_fr: 0, tyre_temp_rl: 0, tyre_temp_rr: 0,
-      clutch: 0, boost: 0, delta_to_best_ns: null,
+      clutch: 0, boost: 0, delta_to_best_ns: null, steering: 0,
     });
     const reference: ReferenceDTO = {
       reliable: true, reason: null, predicted_best_ns: 0, sectors: [], samples: [rs(0, 300), rs(1, 100)],
     };
     expect(overlayColumns(lap, "speed", null, reference).reference).toEqual([300, 200, 100]);
+  });
+
+  it("steering reference is converted from the DTO's radians to degrees", () => {
+    const rs = (fraction: number, steering: number): PredictedSampleDTO => ({
+      fraction, t_ns: 0, distance: 0, pos_x: 0, pos_z: 0, speed: 0, throttle: 0, brake: 0, rpm: 0,
+      gear: 0, fuel: 0, tyre_temp_fl: 0, tyre_temp_fr: 0, tyre_temp_rl: 0, tyre_temp_rr: 0,
+      clutch: 0, boost: 0, delta_to_best_ns: null, steering,
+    });
+    const reference: ReferenceDTO = {
+      reliable: true, reason: null, predicted_best_ns: 0, sectors: [], samples: [rs(0, Math.PI / 18), rs(1, -Math.PI / 18)],
+    };
+    const col = overlayColumns(lap, "steering", null, reference).reference!;
+    expect(col.map(v => Math.round(v * 1e6) / 1e6)).toEqual([10, 0, -10]);
   });
 
   it("tyre channel gets no reference (excluded)", () => {

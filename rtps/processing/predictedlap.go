@@ -39,6 +39,7 @@ type PredictedSample struct {
 	TyreTempRR    float32
 	Clutch        float32
 	Boost         float32
+	Steering      float32 // radians, mean of the front road-wheel angles (see Sample.Steering)
 	DeltaToBestNs *int64
 }
 
@@ -169,6 +170,7 @@ func PredictedReferenceLap(ctx context.Context, provider SectorProvider, traces 
 					TyreTempRR:    p.TyreTempRR,
 					Clutch:        p.Clutch,
 					Boost:         p.Boost,
+					Steering:      p.Steering,
 					DeltaToBestNs: p.DeltaToBestNs,
 				})
 			}

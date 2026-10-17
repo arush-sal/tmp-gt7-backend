@@ -7,7 +7,7 @@ export interface CardDef {
   key: string;              // stable id used in persistence
   title: string;
   unit: string;
-  channels: Channel[];      // 1 for single, 4 for multi, 0 for needs-backend
+  channels: Channel[];      // 1 for single, 4 for multi
   kind: CardKind;
   availability: CardAvailability;
 }
@@ -22,8 +22,7 @@ export const CARD_CATALOG: CardDef[] = [
   { key: "fuel",     title: "Fuel",     unit: "%",    channels: ["fuel"],     kind: "single", availability: "available" },
   { key: "tyre",     title: "Tyre Temp", unit: "°C",
     channels: ["tyreFL","tyreFR","tyreRL","tyreRR"], kind: "multi", availability: "available" },
-  // Not decoded by the backend yet (raw GT7 'C' packet only). Shown greyed, non-addable.
-  { key: "steering", title: "Steering", unit: "°", channels: [], kind: "single", availability: "needs-backend" },
+  { key: "steering", title: "Steering", unit: "°", channels: ["steering"], kind: "single", availability: "available" },
 ];
 
 export const DEFAULT_CARD_KEYS = ["throttle", "brake", "speed", "rpm", "gear", "tyre"];

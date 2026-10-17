@@ -126,7 +126,8 @@ func (r *TraceRecorder) appendLocked(sessionID string, f *telemetryv1.TelemetryF
 		TyreTempRR:  f.GetTyreTempRr(),
 		Clutch:      f.GetClutch(),
 		Boost:       f.GetBoost(),
-		SurfaceType: f.GetSurfaceType(), // per-wheel on/off-track material code; drives sector invalidation
+		SurfaceType: f.GetSurfaceType(),                                                             // per-wheel on/off-track material code; drives sector invalidation
+		Steering:    (f.GetWheelSteeringAngleFrontLeft() + f.GetWheelSteeringAngleFrontRight()) / 2, // radians; 0 on format-A
 	}
 	// Ingest publishes to live BEFORE it Observe()s the segmenter (ingest.go: Publish then Observe), so
 	// DeltaFn (= live.DeltaTracker.Delta) already reflects THIS frame when OnFrame runs.

@@ -43,7 +43,7 @@ func mkSamples(sid string, lap int32, t0 time.Time, span time.Duration, n int) [
 		out[i] = processing.Sample{
 			RecvTime:  t0.Add(time.Duration(frac * float64(span))),
 			SessionID: sid, LapNumber: lap, Seq: uint64(i),
-			Distance: frac * 4000, Speed: 100, PosX: float32(i), PosZ: float32(i * 2),
+			Distance: frac * 4000, Speed: 100, PosX: float32(i), PosZ: float32(i * 2), Steering: 0.25,
 		}
 	}
 	return out
@@ -168,7 +168,7 @@ func TestAPI_LapTrace_Channels(t *testing.T) {
 	_ = traces.SaveBatch([]processing.Sample{
 		{SessionID: "s1", LapNumber: 1, Seq: 0, RecvTime: base,
 			Fuel: 42, TyreTempFL: 80, TyreTempFR: 81, TyreTempRL: 82, TyreTempRR: 83,
-			Clutch: 0.5, Boost: 1.5, DeltaToBestNs: &d},
+			Clutch: 0.5, Boost: 1.5, Steering: -0.3, DeltaToBestNs: &d},
 		{SessionID: "s1", LapNumber: 1, Seq: 1, RecvTime: base.Add(time.Second),
 			Fuel: 41, DeltaToBestNs: nil}, // nil delta -> JSON null
 	})
@@ -187,7 +187,7 @@ func TestAPI_LapTrace_Channels(t *testing.T) {
 	if len(raw) != 2 {
 		t.Fatalf("samples = %d, want 2", len(raw))
 	}
-	for _, key := range []string{"fuel", "tyre_temp_fl", "tyre_temp_fr", "tyre_temp_rl", "tyre_temp_rr", "clutch", "boost", "delta_to_best_ns"} {
+	for _, key := range []string{"fuel", "tyre_temp_fl", "tyre_temp_fr", "tyre_temp_rl", "tyre_temp_rr", "clutch", "boost", "steering", "delta_to_best_ns"} {
 		if _, ok := raw[0][key]; !ok {
 			t.Errorf("missing key %q in trace DTO", key)
 		}
@@ -200,6 +200,9 @@ func TestAPI_LapTrace_Channels(t *testing.T) {
 	s0 := got[0]
 	if s0.Fuel != 42 || s0.TyreTempFL != 80 || s0.TyreTempRR != 83 || s0.Clutch != 0.5 || s0.Boost != 1.5 {
 		t.Errorf("sample0 channels = %+v, want fuel42/fl80/rr83/clutch0.5/boost1.5", s0)
+	}
+	if s0.Steering != -0.3 {
+		t.Errorf("sample0 steering = %v, want -0.3", s0.Steering)
 	}
 	if s0.DeltaToBestNs == nil || *s0.DeltaToBestNs != 777 {
 		t.Errorf("sample0 delta_to_best_ns = %v, want 777", s0.DeltaToBestNs)

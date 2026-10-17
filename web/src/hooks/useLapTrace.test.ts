@@ -18,11 +18,11 @@ beforeEach(resetLapCache);
 const traceDto = (i: number): TraceSampleDTO => ({
   seq: i, t_ns: i * 1e9, distance: i, pos_x: i, pos_z: i, throttle: 0, brake: 0, speed: 0, gear: 0,
   rpm: 0, fuel: 0, tyre_temp_fl: 0, tyre_temp_fr: 0, tyre_temp_rl: 0, tyre_temp_rr: 0, clutch: 0, surface_type: "",
-  boost: 0, delta_to_best_ns: null,
+  boost: 0, delta_to_best_ns: null, steering: 0,
 });
 const sample = (t: number): LapSample => ({
   t, posX: t, posZ: 0, surface: "TTTT", distance: 0, throttle: 0, brake: 0, clutch: 0, rpm: 0, gear: 0, speed: 0,
-  boost: 0, delta: 0, tyreFL: 0, tyreFR: 0, tyreRL: 0, tyreRR: 0, fuel: 0,
+  boost: 0, delta: 0, tyreFL: 0, tyreFR: 0, tyreRL: 0, tyreRR: 0, fuel: 0, steering: 0,
 });
 
 describe("useLapTrace", () => {

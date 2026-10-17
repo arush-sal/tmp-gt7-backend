@@ -49,6 +49,7 @@ export type TraceSampleDTO = {
   clutch: number;
   boost: number;
   delta_to_best_ns: number | null;
+  steering: number; // rad, mean of front wheels; 0 when the game did not send it
   surface_type: string; // per-wheel GT7 surface code FL,FR,RL,RR (T tarmac C kerb D dirt G grass S sand s snow); "" = no data
 };
 
@@ -88,6 +89,7 @@ export type PredictedSampleDTO = {
   clutch: number;
   boost: number;
   delta_to_best_ns: number | null;
+  steering: number; // rad, mean of front wheels; 0 when the game did not send it
 };
 
 export type ReferenceDTO = {

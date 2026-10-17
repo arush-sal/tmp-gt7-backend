@@ -11,12 +11,12 @@ describe("GraphPicker", () => {
     expect(onAdd).toHaveBeenCalledWith("rpm");
   });
 
-  it("shows steering disabled (needs backend), non-addable", () => {
+  it("steering is addable", () => {
     const onAdd = vi.fn();
     render(<GraphPicker shownKeys={[]} onAdd={onAdd} onClose={vi.fn()} />);
     const steering = screen.getByRole("button", { name: /steering/i });
-    expect(steering).toBeDisabled();
+    expect(steering).toBeEnabled();
     fireEvent.click(steering);
-    expect(onAdd).not.toHaveBeenCalled();
+    expect(onAdd).toHaveBeenCalledWith("steering");
   });
 });

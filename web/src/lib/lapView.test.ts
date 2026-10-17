@@ -6,7 +6,7 @@ const dto = (over: Partial<TraceSampleDTO> = {}): TraceSampleDTO => ({
   seq: 0, t_ns: 1_000_000_000, distance: 10, pos_x: 100, pos_z: 200,
   throttle: 80, brake: 0, speed: 150, gear: 4, rpm: 8000,
   fuel: 55, tyre_temp_fl: 78, tyre_temp_fr: 79, tyre_temp_rl: 86, tyre_temp_rr: 85,
-  clutch: 1, boost: 0.5, delta_to_best_ns: -250_000_000, surface_type: "TTGT", ...over,
+  clutch: 1, boost: 0.5, delta_to_best_ns: -250_000_000, surface_type: "TTGT", steering: Math.PI / 2, ...over,
 });
 
 describe("lapViewFromTrace", () => {
@@ -26,6 +26,9 @@ describe("lapViewFromTrace", () => {
     expect(delta[0]).toBeCloseTo(-0.25); // delta_to_best_ns / 1e9 seconds
     expect(Number.isNaN(delta[1])).toBe(true);
   });
+  it("steering radians -> degrees", () => {
+    expect(v.columns(["steering"])[1][0]).toBeCloseTo(90);
+  });
   it("frameAt returns FrameValues; out-of-range -> null", () => {
     const f = v.frameAt(0)!;
     expect(f.fuel).toBe(55);
@@ -38,7 +41,7 @@ describe("lapViewFromTrace", () => {
 describe("lapViewFromSamples", () => {
   const s: LapSample = {
     t: 1, posX: 1, posZ: 2, surface: "TTTT", distance: 0, throttle: 50, brake: 0, clutch: 1, rpm: 5000,
-    gear: 3, speed: 100, boost: 0, delta: -0.1, tyreFL: 80, tyreFR: 81, tyreRL: 82, tyreRR: 83, fuel: 40,
+    gear: 3, speed: 100, boost: 0, delta: -0.1, tyreFL: 80, tyreFR: 81, tyreRL: 82, tyreRR: 83, fuel: 40, steering: 0,
   };
   const v = lapViewFromSamples([s]);
   it("reads samples directly; preserves surface (in-session)", () => {

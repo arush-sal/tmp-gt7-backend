@@ -33,7 +33,7 @@ func plTrace(session string, lap int32, base time.Time, offsets []time.Duration,
 func sfSample(session string, lap int32, base time.Time, dist float64, off time.Duration, surf string) Sample {
 	return Sample{
 		SessionID: session, LapNumber: lap, Distance: dist, RecvTime: base.Add(off),
-		PosX: float32(dist), PosZ: 0, Speed: 100, SurfaceType: surf,
+		PosX: float32(dist), PosZ: 0, Speed: 100, SurfaceType: surf, Steering: 0.25,
 	}
 }
 
@@ -85,6 +85,11 @@ func TestPredictedReferenceLap_CoversFullLapNoGap(t *testing.T) {
 	}
 	if got.Samples[0].Fraction != 0 || got.Samples[len(got.Samples)-1].Fraction < 0.999 {
 		t.Errorf("span = [%.3f, %.3f], want ~[0,1]", got.Samples[0].Fraction, got.Samples[len(got.Samples)-1].Fraction)
+	}
+	for i, p := range got.Samples { // Steering must survive the splice copy
+		if p.Steering != 0.25 {
+			t.Fatalf("sample %d Steering = %v, want 0.25", i, p.Steering)
+		}
 	}
 	const maxGap = 0.05 // sample spacing is 1/39 ~= 0.026; a dropped stretch would exceed this
 	for i := 1; i < len(got.Samples); i++ {

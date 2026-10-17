@@ -6,6 +6,7 @@
 // the scrub read a fetched lap without reaching into the imperative live store.
 import type { Channel, TracePoint, FrameValues } from "./historyStore";
 import type { TraceSampleDTO, LapDTO, PredictedSampleDTO } from "../contract/session";
+import { radToDeg } from "./format";
 import type { SectorTime } from "./sectorTimer";
 
 // A full-channel lap row: structurally identical to historyStore's internal Sample, so the live
@@ -80,7 +81,7 @@ function dtoToSample(d: TraceSampleDTO): LapSample {
     gear: d.gear, speed: d.speed, boost: d.boost,
     delta: d.delta_to_best_ns == null ? NaN : d.delta_to_best_ns / 1e9,
     tyreFL: d.tyre_temp_fl, tyreFR: d.tyre_temp_fr, tyreRL: d.tyre_temp_rl, tyreRR: d.tyre_temp_rr,
-    fuel: d.fuel,
+    fuel: d.fuel, steering: radToDeg(d.steering),
   };
 }
 
@@ -93,7 +94,7 @@ export const predictedToSamples = (samples: PredictedSampleDTO[]): LapSample[] =
     gear: d.gear, speed: d.speed, boost: d.boost,
     delta: d.delta_to_best_ns == null ? NaN : d.delta_to_best_ns / 1e9,
     tyreFL: d.tyre_temp_fl, tyreFR: d.tyre_temp_fr, tyreRL: d.tyre_temp_rl, tyreRR: d.tyre_temp_rr,
-    fuel: d.fuel,
+    fuel: d.fuel, steering: radToDeg(d.steering),
   }));
 
 /** Linear-interpolate values sampled on a sorted `grid` (fractions in [0,1]) at each of `targets`.

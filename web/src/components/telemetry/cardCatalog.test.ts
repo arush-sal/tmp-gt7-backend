@@ -1,6 +1,6 @@
 import { CARD_CATALOG, DEFAULT_CARD_KEYS, getCard } from "./cardCatalog";
 
-const KEYS = new Set(["throttle","brake","clutch","rpm","gear","speed","boost","delta","tyreFL","tyreFR","tyreRL","tyreRR","fuel"]);
+const KEYS = new Set(["throttle","brake","clutch","rpm","gear","speed","boost","delta","tyreFL","tyreFR","tyreRL","tyreRR","fuel","steering"]);
 
 describe("cardCatalog", () => {
   it("has unique keys", () => {
@@ -12,10 +12,10 @@ describe("cardCatalog", () => {
     for (const c of CARD_CATALOG) for (const ch of c.channels) expect(KEYS.has(ch)).toBe(true);
   });
 
-  it("steering is a needs-backend entry with no channels", () => {
+  it("steering is an available single-channel entry", () => {
     const steering = getCard("steering");
-    expect(steering?.availability).toBe("needs-backend");
-    expect(steering?.channels).toEqual([]);
+    expect(steering?.availability).toBe("available");
+    expect(steering?.channels).toEqual(["steering"]);
   });
 
   it("default set is throttle, brake, speed, rpm, gear, tyre in order", () => {

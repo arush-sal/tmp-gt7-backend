@@ -25,6 +25,17 @@ describe("historyStore", () => {
     expect(thr).toEqual([50, 80]);
     expect(s.size()).toBe(2);
   });
+  it("steering column = mean front-wheel angle in degrees; NaN when absent", () => {
+    const s = createHistoryStore();
+    const f = frame(1, 1e9, 50);
+    s.push(f);
+    const g = frame(1, 2e9, 50);
+    Object.assign(g.frame!, { wheel_steering_angle_front_left: 0.1, wheel_steering_angle_front_right: 0.14 });
+    s.push(g);
+    const [, st] = s.columns(["steering"]);
+    expect(Number.isNaN(st[0])).toBe(true);
+    expect(st[1]).toBeCloseTo(6.875, 2);
+  });
   it("ignores idle frames", () => {
     const s = createHistoryStore(); s.push(idle); expect(s.size()).toBe(0);
   });

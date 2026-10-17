@@ -40,6 +40,9 @@ type Sample struct {
 	// T=tarmac C=kerb D=dirt G=grass S=sand s=snow). Empty for format-A packets / pre-migration rows.
 	// Used to invalidate a sector when all four wheels are off-track (see allTyresOff).
 	SurfaceType string
+	// Steering is the front-wheel steering angle in RADIANS: the mean of the two front road-wheel angles
+	// (canonical unit; clients convert to degrees). 0 for format-A packets / pre-migration rows.
+	Steering float32
 	// DeltaToBestNs is the live delta-to-best (nanoseconds) captured for this frame, or nil when no
 	// per-sample delta was available (no reference lap yet / DeltaFn unset).
 	DeltaToBestNs *int64
