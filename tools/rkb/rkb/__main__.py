@@ -67,6 +67,39 @@ _CAPTURE_ROW_RANGES = {
     # complete (92.192 / 95.525 / 95.043 s); row 18855 on is pit/menu, grid, a GTWS
     # race replay and its rewind.
     "red-bull-ring": (os.path.join(_CAPTURE_DIR, "redbull-ring-20261017-WTC700-GTWS.pcapng"), 0, 18855),
+    # The slugs below were identified from the data, not the file names: driven lap
+    # distance vs tracks.length_m, the bbox-fit residual of the driven lap against each
+    # candidate's SVG outline, and direction (the lap's visit order of the SVG's turn /
+    # sector labels from the S/F rollover, plus the official map's direction arrow).
+    #
+    # Daytona Tri-Oval (not the road course): lap 1 drove 4025 m (tri-oval 4023, road
+    # 5729); outline residual 3.1 m vs 72 m. Rows 3535-6944 = lap 1 only, a complete
+    # flying lap; lap 2 holds the pause/home/resume (4465 frozen frames).
+    "daytona-tri-oval": (
+        os.path.join(_RAW_CAPTURE_ROOT, "daytona-2laps-pause-home-resume.pcapng"), 3535, 6945
+    ),
+    # Dragon Trail Gardens, FORWARD: laps drove 4276-4299 m (Gardens 4352, Seaside 5209,
+    # Seaside bbox 44% anisotropic); the lap visits Gardens' turn labels 3,10,11,12,13,14
+    # in increasing order (Gardens Reverse's 10..14 in decreasing order). Rows 305-19217
+    # = laps 1-3, all complete and pause-free.
+    "dragon-trail-gardens": (os.path.join(_RAW_CAPTURE_ROOT, "dragontail-3laps.pcapng"), 305, 19218),
+    # Brands Hatch GP: 3876 m/lap (GP 3946, Indy 1944); residual 6.5 m vs 125 m. Rows
+    # 404-16818 = laps 1-3 (lap 0 opens with a 270 m position jump).
+    "brands-hatch-gp": (os.path.join(_RAW_CAPTURE_ROOT, "brands-hatch-grand-prix-3laps.pcapng"), 404, 16819),
+    # 24 Heures du Mans WITH the Mulsanne chicanes: length (13549 m vs 13629 / 13567) and
+    # outline residual (37.8 vs 38.2 m) cannot separate the two layouts, but the lap has
+    # two left-right-left chicanes at 83-104 km/h exactly at the chicane layout's turn
+    # labels 10-14 on the Mulsanne straight, which the no-chicane layout does not have.
+    # Rows 25631-38240 = lap 3, a complete lap with no frozen (paused) frames.
+    "24-heures-du-mans": (os.path.join(_RAW_CAPTURE_ROOT, "le-mans-5laps.pcapng"), 25631, 38241),
+    # High Speed Ring FORWARD, despite the file name: on the main straight the car moves
+    # toward -x (the forward map's arrow points left; the reverse map's points right), and
+    # the lap's winding is the opposite of tests/fixtures/hsr_lap.csv, which IS the reverse
+    # layout (high-speed-ring-2). Rows 303-24915 = laps 1-6; lap 7 on has pauses and a
+    # 165 m reset jump.
+    "high-speed-ring": (
+        os.path.join(_RAW_CAPTURE_ROOT, "high-speed-ring-reverse-layout-20laps.pcapng"), 303, 24916
+    ),
 }
 
 
