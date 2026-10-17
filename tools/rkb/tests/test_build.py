@@ -205,3 +205,24 @@ def test_log_vd_surface_crosscheck_does_not_raise(capsys):
     _log_vd_surface_crosscheck("sardegna-road-a", rows, vd_width)
     out = capsys.readouterr().out
     assert "sardegna-road-a" in out
+
+
+def test_build_track_capture_stores_driven_line_cl_without_upgrading_fidelity():
+    import rkb.sources as S
+    from rkb.capture import centerline_from_capture
+
+    kb = S.load_kb("tests/fixtures/kb_hsr")
+    ref = TrackRef(
+        slug="high-speed-ring-2", name="High Speed Ring Reverse", ddm_id=1069,
+        num_corners=6, is_reverse=True, join="exact",
+    )
+    rec = build_track(ref, kb["high-speed-ring-2"], capture_csv="tests/fixtures/hsr_lap.csv")
+
+    b = rec["boundary"]
+    assert b["cl"] == centerline_from_capture("tests/fixtures/hsr_lap.csv")
+    assert len(b["outline"]) > 0  # the SVG outline is still the boundary shape
+    assert b["source"] == "outline"
+    # provenance says the cl is a driven line, not a surveyed centreline
+    assert rec["provenance"]["boundary"] == "outline+driven_line"
+    assert rec["confidence"]["physical_boundary_fidelity"] == "derived"
+    validate_record(rec)

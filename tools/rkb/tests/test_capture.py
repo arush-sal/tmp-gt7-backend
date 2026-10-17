@@ -178,3 +178,46 @@ def test_resolve_forward_reverse_splits_pair_by_winding():
     assert resolved["route-a"] == seg_a_fwd
     assert resolved["route-a2"] == seg_a_rev
     assert resolved["route-b"] == seg_b
+
+
+def test_affine_from_capture_uses_on_track_when_in_race_never_set(tmp_path):
+    csv_path = tmp_path / "trace.csv"
+    csv_path.write_text(
+        "pos_x,pos_z,in_race,current_lap,car_speed\n"
+        "0,0,false,1,100\n"
+        "10,0,false,1,100\n"
+        "10,10,false,1,100\n"
+        "0,10,false,1,100\n"
+        "999,999,false,-1,100\n"  # menu: excluded
+        "-500,-500,false,1,0\n"  # stationary: excluded
+    )
+    aff = affine_from_capture(str(csv_path), [(0, 0), (100, 0), (100, 100), (0, 100)])
+    assert aff.scale == pytest.approx(10.0)
+
+
+def test_split_capture_by_jumps_uses_on_track_when_in_race_never_set():
+    loop = [dict(r, in_race="false", current_lap="1", car_speed="100") for r in _square_loop(0, 0, n=2100)]
+    menu = [{"pos_x": "0", "pos_z": "0", "in_race": "false", "current_lap": "-1", "car_speed": "0"}]
+    segments = split_capture_by_jumps(menu + loop, jump_m=100.0, min_len=2000)
+    assert len(segments) == 1 and len(segments[0]) == 2100
+
+
+def test_centerline_from_capture_is_the_selected_driven_lap(tmp_path):
+    import csv as _csv
+
+    from rkb.capture import centerline_from_capture
+    from rkb.corners import select_lap
+
+    with open("tests/fixtures/hsr_lap.csv") as f:
+        rows = list(_csv.DictReader(f))
+    idx = select_lap(rows)
+    want = [[float(rows[i]["pos_x"]), float(rows[i]["pos_z"])] for i in idx]
+    assert centerline_from_capture("tests/fixtures/hsr_lap.csv") == want
+
+    # current GT7 (in_race never set) yields the same driven line
+    flipped = tmp_path / "flipped.csv"
+    with open(flipped, "w", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(dict(r, in_race="false") for r in rows)
+    assert centerline_from_capture(str(flipped)) == want

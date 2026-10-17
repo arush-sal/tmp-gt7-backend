@@ -26,6 +26,23 @@ def _bbox(px, pz, idx):
     return (px[idx].min(), px[idx].max(), pz[idx].min(), pz[idx].max())
 
 
+def on_track(row) -> bool:
+    """True when a telemetry row is the car actually driving on track.
+
+    Mirrors the backend's gate (on_track = in_race OR current_lap >= 0, plus a
+    must-move rule): current GT7 versions never set in_race (flag 0x8E bit0), so
+    in_race=false rows still count when a lap is running (current_lap >= 0; menus
+    report -1) AND the car is moving (> 5 km/h; grid/pause frames are excluded).
+    Older captures that DO set in_race=true behave exactly as before.
+    """
+    if row.get("in_race") == "true":
+        return True
+    try:
+        return int(row["current_lap"]) >= 0 and float(row["car_speed"]) > 5.0
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def select_lap(rows):
     """Pick the clean flying lap: closed loop, big x/z-span, plausible frame count.
 
@@ -33,11 +50,11 @@ def select_lap(rows):
     """
     pid = _col(rows, "package_id", int)
     lap = _col(rows, "current_lap", int)
-    inr = np.array([r["in_race"] == "true" for r in rows])
+    inr = np.array([on_track(r) for r in rows])
     px = _col(rows, "pos_x")
     pz = _col(rows, "pos_z")
 
-    # --- segment into contiguous lap runs: break on lap change, pid gap, or not-in-race ---
+    # --- segment into contiguous lap runs: break on lap change, pid gap, or not on track ---
     runs = []
     cur = []
     for i in range(len(rows)):

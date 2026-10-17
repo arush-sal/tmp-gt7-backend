@@ -57,6 +57,35 @@ _CAPTURE_MAP = {
     "special-stage-route-x": os.path.join(_RAW_CAPTURE_ROOT, "special-route-x-1lap.pcapng"),
 }
 
+# Captures taken on current GT7 versions (in_race never set; rkb.corners.on_track
+# gates them instead) that mix a live stint with menus / a race replay / a replay
+# rewind. Only the LIVE row range [start, end) of the decoded CSV is ingested, so
+# the affine bbox and the corner lap come from our own driving, never a replay.
+_CAPTURE_DIR = os.path.join(_GT7_ROOT, "captures")
+_CAPTURE_ROW_RANGES = {
+    # Red Bull Ring (full layout), WTC700: rows 0-18854 = live stint, laps 1-3
+    # complete (92.192 / 95.525 / 95.043 s); row 18855 on is pit/menu, grid, a GTWS
+    # race replay and its rewind.
+    "red-bull-ring": (os.path.join(_CAPTURE_DIR, "redbull-ring-20261017-WTC700-GTWS.pcapng"), 0, 18855),
+}
+
+
+def _load_capture_row_range_csv_map() -> dict:
+    out = {}
+    for slug, (pcap, start, end) in _CAPTURE_ROW_RANGES.items():
+        if not os.path.isfile(pcap):
+            continue
+        try:
+            with open(capture_mod.decode_capture(pcap)) as f:
+                rows = list(csv.DictReader(f))[start:end]
+            csv_path = os.path.join(OUT_DIR, "capture-csv", f"{slug}.csv")
+            capture_mod._write_rows_csv(rows, csv_path)
+            out[slug] = csv_path
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully when the capture is missing/bad
+            print(f"skipping {slug} capture: {exc}")
+    return out
+
+
 # Sardegna: ONE capture drove all 6 road layouts (a/a2/b/b2/c/c2) back-to-back with
 # no clean lap-counter separation between them -- the lap counter does not reset at
 # a scenery-select boundary, only the car's position teleports. Split by position
@@ -155,7 +184,7 @@ def main() -> None:
         vd_map=_load_vd_map(),
         out_dir=OUT_DIR,
         capture_map=_load_capture_map(),
-        capture_csv_overrides=_load_sardegna_capture_csv_map(),
+        capture_csv_overrides={**_load_sardegna_capture_csv_map(), **_load_capture_row_range_csv_map()},
         width_lap_slugs=_WIDTH_LAP_SLUGS,
     )
 

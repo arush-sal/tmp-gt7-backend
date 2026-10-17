@@ -31,3 +31,29 @@ def test_corners_from_stored_maps_px_to_world():
     assert cs[0]["turn"] == 10
     assert cs[0]["source"] == "stored" and cs[0]["apex_is_label"] is True
     assert cs[0]["apex_world"] == [ (200-100)/0.5, (300-200)/0.5 ]  # [200.0, 200.0]
+
+
+# --- on_track: GT7 no longer sets in_race (0x8E bit0); mirror the backend's gate ---
+from rkb.corners import on_track
+
+
+def test_on_track_in_race_true_always_counts():
+    assert on_track({"in_race": "true"})
+    assert on_track({"in_race": "true", "current_lap": "-1", "car_speed": "0"})
+
+
+def test_on_track_in_race_false_needs_lap_and_movement():
+    assert on_track({"in_race": "false", "current_lap": "0", "car_speed": "120"})
+    assert not on_track({"in_race": "false", "current_lap": "-1", "car_speed": "120"})  # menu
+    assert not on_track({"in_race": "false", "current_lap": "1", "car_speed": "3"})  # grid/stationary
+    assert not on_track({"in_race": "false"})  # fields absent -> not on track
+
+
+def test_detect_corners_same_when_in_race_is_never_set():
+    rows = list(csv.DictReader(open("tests/fixtures/hsr_lap.csv")))
+    expected = detect_corners(rows)
+    # current GT7: in_race false on every frame, plus menu junk (lap -1) that must be ignored
+    menu = [dict(rows[0], in_race="false", current_lap="-1", pos_x="9999", pos_z="9999") for _ in range(50)]
+    flipped = menu + [dict(r, in_race="false") for r in rows]
+    got = detect_corners(flipped)
+    assert [c["apex_world"] for c in got] == [c["apex_world"] for c in expected]

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from rkb.affine import Affine, fit_bbox, predict_affine
-from rkb.corners import detect_corners
+from rkb.corners import detect_corners, on_track, select_lap
 
 # backend root = .../backend, computed relative to this file
 # (this file: backend/tools/rkb/rkb/capture.py)
@@ -60,12 +60,27 @@ def _load_rows(csv_path) -> list:
 def corners_from_capture(csv_path) -> list:
     """Detect corners on our own capture's clean driven lap (kinematic, via rkb.corners).
 
-    Unlike VictoryDash TT captures, our own captures DO set in_race=true
-    correctly for a real race/flying lap -- do NOT force it here, feed the
-    rows through exactly as decoded so `select_lap` sees the true segmentation.
+    Unlike VictoryDash TT captures, do NOT force in_race here: feed the rows
+    through exactly as decoded so `select_lap` sees the true segmentation via
+    `on_track` (older captures set in_race=true; current GT7 never sets it, so
+    on_track falls back to current_lap >= 0 + moving).
     """
     rows = _load_rows(csv_path)
     return detect_corners(rows)
+
+
+def centerline_from_capture(csv_path) -> list:
+    """The capture's selected driven lap (`rkb.corners.select_lap`, the same lap the
+    corner detector uses) as [[x, z], ...] world metres, starting at the lap rollover
+    (the start/finish line).
+
+    This is a DRIVEN RACING LINE, not a surveyed centreline: it is published as the
+    boundary's `cl` so live track detection and centreline positioning have dense,
+    authoritative world geometry for captured tracks (the SVG outline alone is ~20-30
+    points, too sparse for the shape matcher). It must never upgrade fidelity fields.
+    """
+    rows = _load_rows(csv_path)
+    return [[float(rows[i]["pos_x"]), float(rows[i]["pos_z"])] for i in select_lap(rows)]
 
 
 def affine_from_capture(csv_path, outline_px) -> Affine:
@@ -79,8 +94,8 @@ def affine_from_capture(csv_path, outline_px) -> Affine:
     polylines -- a raw driven trace is not a clean closed centreline).
     """
     rows = _load_rows(csv_path)
-    in_race_rows = [r for r in rows if r.get("in_race") == "true"]
-    rows_for_bbox = in_race_rows if in_race_rows else rows
+    on_track_rows = [r for r in rows if on_track(r)]
+    rows_for_bbox = on_track_rows if on_track_rows else rows
     xs = [float(r["pos_x"]) for r in rows_for_bbox]
     zs = [float(r["pos_z"]) for r in rows_for_bbox]
     world_bbox = (min(xs), min(zs), max(xs), max(zs))
@@ -103,7 +118,7 @@ def affine_from_capture(csv_path, outline_px) -> Affine:
 
 
 def split_capture_by_jumps(rows, jump_m=100.0, min_len=2000) -> list:
-    """Split a multi-layout capture's IN-RACE rows into contiguous driven segments.
+    """Split a multi-layout capture's ON-TRACK rows (rkb.corners.on_track) into contiguous driven segments.
 
     GT7's own lap counter does not reset at a scenery/layout-select boundary --
     only the car's position teleports. So instead of trusting `current_lap`,
@@ -113,11 +128,10 @@ def split_capture_by_jumps(rows, jump_m=100.0, min_len=2000) -> list:
     teleport itself produces 1-2 point stub segments, and a genuinely partial
     / pit-lane run is not worth ingesting as a layout.
     """
-    in_race = [r for r in rows if r.get("in_race") == "true"]
     segments = []
     cur = []
     prev = None
-    for r in in_race:
+    for r in (r for r in rows if on_track(r)):
         x, z = float(r["pos_x"]), float(r["pos_z"])
         if prev is not None and math.hypot(x - prev[0], z - prev[1]) > jump_m:
             if cur:

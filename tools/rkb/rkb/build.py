@@ -123,16 +123,23 @@ def build_track(
     elif capture_csv is not None:
         # Our own pcap capture: authoritative driven world coordinates resolve the
         # affine (bbox fit against the KB SVG outline, like the bbox_from_driven_trace
-        # tier) and feed the kinematic corner detector -- but there is no separate
-        # measured boundary ground truth for our captures, so boundary still comes from
-        # the SVG outline (derived), same as the generic KB-only path. Width defaults to
-        # the SVG-stroke fallback too, UNLESS a width-lap capture is available and
-        # calibratable (_resolve_capture_width) -- a measured scalar width with no
-        # independent centreline still can't fabricate a boundary (spec: "don't
-        # fabricate boundaries"), so boundary stays SVG-derived regardless.
+        # tier) and feed the kinematic corner detector. There is no measured boundary
+        # ground truth for our captures, so the boundary SHAPE stays the SVG outline
+        # (source "outline", derived). Width defaults to the SVG-stroke fallback too,
+        # UNLESS a width-lap capture is available and calibratable
+        # (_resolve_capture_width).
+        #
+        # The selected driven lap IS stored as the boundary's `cl`: the SVG outline is
+        # too sparse (~20-30 points) for live track detection, which prefers `cl`, and
+        # the backend positions/partitions sectors along `cl`. That cl is a driven
+        # RACING LINE, not a measured centreline, and is marked as such by
+        # provenance.boundary = "outline+driven_line". It must not upgrade any fidelity:
+        # boundary.source stays "outline", so physical_boundary_fidelity is still
+        # "derived" (rkb.gate), and width/corners/sectors here are NOT derived from it.
         aff = capture_mod.affine_from_capture(capture_csv, outline_px)
         corners = capture_mod.corners_from_capture(capture_csv)
         boundary = boundary_mod.from_outline(outline_px, aff)
+        boundary["cl"] = capture_mod.centerline_from_capture(capture_csv)
         width = width_mod.from_svg_stroke(kb_entry.get("outline_stroke_px", 0.0), aff)
         width = _resolve_capture_width(width, width_lap_rows, calibration_table)
     else:
@@ -180,7 +187,9 @@ def build_track(
     provenance = {
         "affine": aff.source,
         "corners": corner_src,
-        "boundary": boundary["source"],
+        # A capture's driven-line cl is flagged here (not in boundary.source, which
+        # drives fidelity): see the capture branch above.
+        "boundary": boundary["source"] + ("+driven_line" if capture_csv is not None and vd_dir is None else ""),
         "width": width["source"],
     }
     affine_dict = {
