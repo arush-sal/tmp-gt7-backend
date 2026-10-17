@@ -24,12 +24,12 @@ type CandidateDiag struct {
 }
 
 // CandidateDiagnosticsForTest scores every candidate geom against the driven path using the SAME
-// subsample stride and bbox tolerance as matchDecision, returning per-candidate diagnostics sorted by
+// distance sampling and bbox tolerance as the detector, returning per-candidate diagnostics sorted by
 // score ascending. Test-only: lets the tuning test see the correct track's rank/score versus the best
 // wrong candidate, which is what the thresholds must separate.
 func CandidateDiagnosticsForTest(points [][2]float64, geoms []rkb.TrackGeom) []CandidateDiag {
 	drivenBbox := computeBbox(points)
-	sampled := subsamplePoints(points, drivenStride)
+	sampled := samplePath(points)
 	out := make([]CandidateDiag, 0, len(geoms))
 	for _, g := range geoms {
 		d := CandidateDiag{
@@ -72,15 +72,65 @@ func BboxContainsForTest(driven, cand [4]float64, tol float64) bool {
 	return bboxContains(driven, cand, tol)
 }
 
-// ForwardReverseTwinForTest exposes forwardReverseTwin to tests, taking plain fields instead of the
-// unexported candidateScore type (used by the real-RKB-corpus twin test, which cannot construct a
-// candidateScore directly from out-of-package processing_test).
+// ForwardReverseTwinForTest exposes the twin rule (isTwin) to tests, taking plain fields: it reports
+// whether a and b are an identical-geometry forward/reverse pair and, if so, the forward slug - the
+// last-resort pick decide makes when direction of travel could not tell the two apart.
 func ForwardReverseTwinForTest(
 	aSlug string, aReverse bool, aBase int, aPoints [][2]float64,
 	bSlug string, bReverse bool, bBase int, bPoints [][2]float64,
 ) (string, bool) {
-	a := candidateScore{slug: aSlug, isReverse: aReverse, base: aBase, points: aPoints}
-	b := candidateScore{slug: bSlug, isReverse: bReverse, base: bBase, points: bPoints}
-	twin, ok := forwardReverseTwin(a, b)
-	return twin.slug, ok
+	a := rkb.TrackGeom{Slug: aSlug, IsReverse: aReverse, Base: aBase, Points: aPoints}
+	b := rkb.TrackGeom{Slug: bSlug, IsReverse: bReverse, Base: bBase, Points: bPoints}
+	if !isTwin(a, b) {
+		return "", false
+	}
+	if a.IsReverse {
+		return b.Slug, true
+	}
+	return a.Slug, true
+}
+
+// computeBbox returns [min_x, min_z, max_x, max_z] over points. Caller guarantees points is non-empty.
+func computeBbox(points [][2]float64) [4]float64 {
+	b := [4]float64{points[0][0], points[0][1], points[0][0], points[0][1]}
+	for _, p := range points[1:] {
+		b = [4]float64{math.Min(b[0], p[0]), math.Min(b[1], p[1]), math.Max(b[2], p[0]), math.Max(b[3], p[1])}
+	}
+	return b
+}
+
+// samplePath keeps a point each time the path has moved sampleStepM from the last kept one: the same
+// distance sampling the detector applies to live frames.
+func samplePath(points [][2]float64) [][2]float64 {
+	var out [][2]float64
+	for _, p := range points {
+		if n := len(out); n == 0 || math.Hypot(p[0]-out[n-1][0], p[1]-out[n-1][1]) >= sampleStepM {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// meanNearestNeighborDistance is the whole-path form of the detector's running score: for every point
+// in a, the distance to its nearest point in b, averaged (+Inf if either is empty).
+func meanNearestNeighborDistance(a, b [][2]float64) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return math.Inf(1)
+	}
+	var sum float64
+	for _, p := range a {
+		sum += math.Sqrt(nearestSq(p, b))
+	}
+	return sum / float64(len(a))
+}
+
+// SampleCountForTest returns how many driven points sessionID has queued or scored for shape matching.
+func (d *TrackDetector) SampleCountForTest(sessionID string) int {
+	st := d.session(sessionID)
+	if st == nil {
+		return 0
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.samples + len(st.pending)
 }

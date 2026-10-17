@@ -132,9 +132,11 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	enrichSink := live.NewEnrichSink(analyzer, enrich, func(err error) { log.Error("enrichment failed", zap.Error(err)) })
 	defer enrichSink.Close()
 
-	// Live track detection: matches the driven path's shape against the RKB's reference geometry and
-	// writes the result into enrich only on a confident match (SetTrack), leaving prior state alone
-	// otherwise.
+	// Live track detection: keeps matching the driven path's shape (and direction of travel) against the
+	// RKB's reference geometry, publishing its best guess into enrich as "provisional" (it may switch, or
+	// be withdrawn) until ~a full lap or a clear margin locks it "confident" for the session. Every
+	// consumer reads the track from enrich, so a provisional switch propagates: slugFor (sector timing
+	// + reference for laps analysed from then on), /v1/live and the SSE "track" event.
 	detector := processing.NewTrackDetector(rkbStore, enrich, log)
 
 	// Sink order matters for enrichSink and detector: detector.OnSessionEnd does its final match attempt
@@ -147,6 +149,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	sink := session.NewMultiSink(ingest.NewLoggingSink(log), segmenter, recorder, detector, enrichSink)
 
 	detCfg := session.Config{OnError: func(err error) { log.Error("session persistence failed", zap.Error(err)) }}
+	withDedup(&detCfg, lapStore, traceStore, enrich, log)
 	ingestSrv := ingest.NewServer(sessStore, sink, detCfg, log)
 	ingestSrv.Publisher = live.NewMultiPublisher(hub, delta) // publish-first egress, fanned out to the Hub and the DeltaTracker
 
@@ -169,6 +172,11 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	// collectors and the replay-client. External streams get their own Detector but share the live
 	// Hub/DeltaTracker with this in-process source.
 	local := ingest.NewLocal(ingestSrv, cfg.LiveBufferSize)
+	// The user's Record switch drives ONLY this in-process stream's Detector (live collector or replay);
+	// external gRPC collector streams always record.
+	recording := session.NewRecordingControl()
+	local.Recording = recording
+	apiSrv.Recording = recording
 	source, err := newSource(cfg, log, local, reconfigure)
 	if err != nil {
 		_ = lis.Close()
@@ -316,4 +324,54 @@ func stopServers(gs *grpc.Server, httpSrv *http.Server) {
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 	wg.Wait()
+}
+
+// withDedup wires session discarding into cfg. A confirmed session is discarded (rolled back) when its
+// completed lap's fingerprint is already stored under another session (an in-game replay of stored laps,
+// or the same capture ingested twice), or when it ends without a completed timed lap. The Detector
+// deletes the session row and stops forwarding frames; this purges the laps and trace samples its sinks
+// already wrote (traces must be the AsyncTraceStore wrapper so queued batches are discarded too) and
+// logs once. A duplicate points the live view at the original session; any other discard clears the
+// live session link (session_id ""). The same rollback serves
+// the user's Record switch (DiscardRecordingOff).
+func withDedup(cfg *session.Config, laps processing.LapStore, traces processing.TraceStore, enrich *live.EnrichmentState, log *zap.Logger) {
+	cfg.FingerprintOwner = func(fp string) (string, bool) {
+		id, found, err := laps.SessionByFingerprint(fp)
+		if err != nil {
+			// Skip the dedup decision rather than guess: the session is kept. If it really was a
+			// duplicate, its lap still stores (the segmenter drops the taken fingerprint), so the
+			// session stays consistent.
+			log.Warn("fingerprint lookup failed; dedup skipped", zap.Error(err))
+			return "", false
+		}
+		return id, found
+	}
+	cfg.OnLateDuplicate = func(rec *session.Record, other string) {
+		log.Warn("later lap matches another stored session; session kept",
+			zap.String("session", rec.ID), zap.String("other", other))
+	}
+	cfg.OnDiscard = func(rec *session.Record, reason session.DiscardReason, orig string) {
+		if err := laps.DeleteSession(rec.ID); err != nil {
+			log.Error("purge discarded laps failed", zap.String("session", rec.ID), zap.Error(err))
+		}
+		if err := traces.DeleteSession(rec.ID); err != nil {
+			log.Error("purge discarded trace failed", zap.String("session", rec.ID), zap.Error(err))
+		}
+		switch reason {
+		case session.DiscardDuplicate:
+			enrich.SetDuplicate(orig)
+			log.Info("duplicate session dropped", zap.String("session", rec.ID), zap.String("duplicate_of", orig),
+				zap.Int32("car_id", rec.CarID))
+		case session.DiscardNoCompletedLap:
+			enrich.ClearSession() // the session no longer exists: no live link to it
+			log.Info("session dropped: no completed lap", zap.String("session", rec.ID), zap.Int32("car_id", rec.CarID))
+		case session.DiscardRecordingOff:
+			enrich.ClearSession()
+			// Logged by the API handler that switched recording off (once per toggle).
+		}
+	}
+	cfg.OnDuplicateDiverged = func(rec *session.Record, orig string) {
+		log.Warn("dropped duplicate session has a lap not in the original; still dropping",
+			zap.String("session", rec.ID), zap.String("duplicate_of", orig))
+	}
 }

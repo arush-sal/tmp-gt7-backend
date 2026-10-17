@@ -67,6 +67,7 @@ type batchSpy struct {
 
 func (b *batchSpy) SaveBatch(s []Sample) error            { b.batches++; b.all = append(b.all, s...); return nil }
 func (b *batchSpy) ByLap(string, int32) ([]Sample, error) { return nil, nil }
+func (b *batchSpy) DeleteSession(string) error            { return nil }
 
 // TestTraceRecorder_BatchFlush: samples flush in batches (buffer cap) and nothing is lost across the
 // cap flushes + the final session-end flush.

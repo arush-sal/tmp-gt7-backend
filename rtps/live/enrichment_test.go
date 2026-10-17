@@ -1,6 +1,8 @@
 package live
 
 import (
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -124,4 +126,47 @@ func TestEnrichmentState_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 	// If we reach here without data race detected by -race flag, concurrency is safe.
+}
+
+// TestEnrichmentState_SetDuplicate: a duplicate live session points session_id at the ORIGINAL and
+// sets duplicate_of, preserving the other fields; duplicate_of is omitted from JSON when unset and a
+// fresh Set (new session) clears it.
+func TestEnrichmentState_SetDuplicate(t *testing.T) {
+	s := NewEnrichmentState()
+	track := "red-bull-ring"
+	s.SetTrack("dup", &track, nil)
+	s.SetDuplicate("orig")
+	got := s.Get()
+	if got.SessionID != "orig" || got.DuplicateOf != "orig" || got.Track == nil || *got.Track != track {
+		t.Fatalf("after SetDuplicate = %+v, want session_id=orig duplicate_of=orig track kept", got)
+	}
+	b, _ := json.Marshal(got)
+	if !strings.Contains(string(b), `"duplicate_of":"orig"`) || !strings.Contains(string(b), `"session_id":"orig"`) {
+		t.Errorf("JSON = %s, want session_id and duplicate_of = orig", b)
+	}
+	s.Set(Enrichment{SessionID: "next"})
+	b, _ = json.Marshal(s.Get())
+	if strings.Contains(string(b), "duplicate_of") {
+		t.Errorf("JSON = %s, want duplicate_of omitted for a non-duplicate session", b)
+	}
+}
+
+// TestEnrichmentState_ClearSession: a discarded (not duplicate) session leaves no live link: session_id
+// is "" (the "no session" representation), and its analysis and duplicate_of are cleared; the track
+// is kept.
+func TestEnrichmentState_ClearSession(t *testing.T) {
+	s := NewEnrichmentState()
+	track := "suzuka"
+	s.SetAnalysis("gone", &analysis.SessionAnalysis{SessionID: "gone"})
+	s.SetTrack("gone", &track, nil)
+	s.SetDuplicate("orig")
+	s.ClearSession()
+	got := s.Get()
+	if got.SessionID != "" || got.Analysis != nil || got.DuplicateOf != "" || got.Track == nil {
+		t.Fatalf("after ClearSession = %+v, want empty session/analysis/duplicate_of, track kept", got)
+	}
+	b, _ := json.Marshal(got)
+	if !strings.Contains(string(b), `"session_id":""`) || strings.Contains(string(b), "duplicate_of") {
+		t.Errorf("JSON = %s", b)
+	}
 }

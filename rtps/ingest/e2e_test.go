@@ -39,11 +39,11 @@ func TestIngest_EndToEnd(t *testing.T) {
 	// menu frames so the debounce closes them.
 	var frames []*telemetryv1.TelemetryFrame
 	for i := range 12 {
-		frames = append(frames, mkFrame(i*100, true, 1384, uint32(1+i), 2, 2))
+		frames = append(frames, mkFrame(i*100, true, 1384, uint32(1+i), lapAt(i), 2))
 	}
 	frames = append(frames, mkFrame(1200, false, 1384, 100, -1, -1), mkFrame(1800, false, 1384, 101, -1, -1))
 	for i := range 12 {
-		frames = append(frames, mkFrame(2000+i*100, true, 2108, uint32(200+i), 1, 5))
+		frames = append(frames, mkFrame(2000+i*100, true, 2108, uint32(200+i), lapAt(i)-1, 5)) // laps 1 -> 2 of 5
 	}
 	frames = append(frames, mkFrame(3200, false, 2108, 300, -1, -1), mkFrame(3800, false, 2108, 301, -1, -1))
 

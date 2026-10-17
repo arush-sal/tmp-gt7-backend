@@ -52,7 +52,7 @@ func NewServer(store session.Store, sink session.Sink, cfg session.Config, log *
 // is returned to gRPC. Logging is per-stream only — never per frame (hot-path discipline).
 func (s *Server) Ingest(stream telemetryv1.Telemetry_IngestServer) error {
 	s.log.Info("ingest stream opened")
-	frames, err := s.consume(stream.Recv)
+	frames, err := s.consume(stream.Recv, s.cfg)
 	if errors.Is(err, io.EOF) {
 		s.log.Info("ingest stream closed", zap.Uint64("frames", frames))
 		return stream.SendAndClose(&telemetryv1.Ack{FramesReceived: frames})
@@ -65,8 +65,9 @@ func (s *Server) Ingest(stream telemetryv1.Telemetry_IngestServer) error {
 // a fresh Detector per stream, each frame published first (live egress) then observed, until recv
 // returns an error. io.EOF is the clean end of stream; any error (clean or not) closes the Detector, so
 // an in-progress session is always finalized, never lost. It returns the frame count and recv's error.
-func (s *Server) consume(recv func() (*telemetryv1.TelemetryFrame, error)) (uint64, error) {
-	d := session.NewDetector(s.sink, s.store, s.cfg)
+// cfg is the detector config for this stream (the in-process stream adds its RecordingControl).
+func (s *Server) consume(recv func() (*telemetryv1.TelemetryFrame, error), cfg session.Config) (uint64, error) {
+	d := session.NewDetector(s.sink, s.store, cfg)
 	defer d.Close()
 	var frames uint64
 	for {

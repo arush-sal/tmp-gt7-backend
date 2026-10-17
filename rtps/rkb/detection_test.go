@@ -47,6 +47,16 @@ create table boundary_points(slug text,side text,idx int,world_x real,world_z re
 		`insert into corners(slug,turn,apex_x,apex_z,direction,source) values('hsr',1,5.0,6.0,'left','outline_curvature')`); err != nil {
 		t.Fatal(err)
 	}
+	// cl1: length_m plus driven-lap (kinematic / derived-reverse) corners, inserted out of turn order
+	// so Apexes must come back sorted by turn.
+	if _, err := db.Exec(`update tracks set length_m=1234.5 where slug='cl1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`insert into corners(slug,turn,apex_x,apex_z,direction,source) values
+		 ('cl1',2,2.0,2.0,'left','derived-reverse'),('cl1',1,1.0,1.0,'left','kinematic')`); err != nil {
+		t.Fatal(err)
+	}
 	// hsr: 20 outline points (idx 0..19) - subsampling at stride=8 must keep every 8th one: 0,8,16.
 	for i := 0; i < 20; i++ {
 		x := float64(i)
@@ -142,8 +152,23 @@ func TestSQLiteStore_DetectionGeometry(t *testing.T) {
 	}
 	// 9 cl points at stride 8 -> idx 0,8 kept = 2 points; must come from cl (x=0,8), never the
 	// outline row (x=999).
-	if len(cl1.Points) != 2 || cl1.Points[0][0] != 0.0 || cl1.Points[1][0] != 8.0 {
-		t.Errorf("cl1 should use cl points (not outline): %v", cl1.Points)
+	if len(cl1.Points) != 4 || cl1.Points[0][0] != 0.0 || cl1.Points[1][0] != 8.0 {
+		t.Errorf("cl1 should use cl points (not outline) + 2 apexes: %v", cl1.Points)
+	}
+	if cl1.LengthM != 1234.5 {
+		t.Errorf("cl1 LengthM = %v, want 1234.5", cl1.LengthM)
+	}
+	if want := [][2]float64{{1, 1}, {2, 2}}; len(cl1.Apexes) != 2 || cl1.Apexes[0] != want[0] || cl1.Apexes[1] != want[1] {
+		t.Errorf("cl1 Apexes = %v, want turn-ordered %v", cl1.Apexes, want)
+	}
+	if !cl1.ApexOrderTrusted {
+		t.Error("cl1 apexes are all kinematic/derived-reverse: ApexOrderTrusted should be true")
+	}
+	if hsr.ApexOrderTrusted {
+		t.Error("hsr apex is outline_curvature (arbitrary order): ApexOrderTrusted should be false")
+	}
+	if hsr.LengthM != 0 {
+		t.Errorf("hsr LengthM = %v, want 0 for NULL length_m", hsr.LengthM)
 	}
 
 	rev, ok := bySlug["rev"]

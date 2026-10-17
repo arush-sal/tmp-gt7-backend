@@ -16,8 +16,14 @@ import (
 // is cold). Shutdown signals the writer via a stop channel and never closes the producer-written
 // queue, so a late SaveBatch can never panic on a closed channel; after Close it drops silently.
 type AsyncTraceStore struct {
-	inner   processing.TraceStore
-	queue   chan []processing.Sample
+	inner processing.TraceStore
+	queue chan []processing.Sample
+	// wmu serializes the writer's SaveBatch with DeleteSession, and guards deleted: once a session is
+	// deleted, any of its batches still queued (or enqueued later) are discarded rather than written,
+	// so a rolled-back duplicate session leaves no rows even with writes in flight. Session ids are
+	// UUIDs; the set grows by one id per dropped duplicate, which is negligible.
+	wmu     sync.Mutex
+	deleted map[string]struct{}
 	onDrop  func(dropped int)
 	mu      sync.Mutex // serializes producers + guards stopped
 	stopped bool
@@ -39,7 +45,7 @@ func NewAsyncTraceStore(inner processing.TraceStore, depth int, onDrop func(int)
 	}
 	a := &AsyncTraceStore{
 		inner: inner, queue: make(chan []processing.Sample, depth),
-		onDrop: onDrop, stop: make(chan struct{}),
+		onDrop: onDrop, stop: make(chan struct{}), deleted: map[string]struct{}{},
 	}
 	a.wg.Add(1)
 	go a.run()
@@ -52,18 +58,41 @@ func (a *AsyncTraceStore) run() {
 	for {
 		select {
 		case batch := <-a.queue:
-			_ = a.inner.SaveBatch(batch)
+			a.write(batch)
 		case <-a.stop:
 			for { // drain the remainder without blocking
 				select {
 				case batch := <-a.queue:
-					_ = a.inner.SaveBatch(batch)
+					a.write(batch)
 				default:
 					return
 				}
 			}
 		}
 	}
+}
+
+// write persists one batch unless its session was deleted. A batch never mixes sessions (the recorder
+// buffers per session), so checking the first sample suffices.
+func (a *AsyncTraceStore) write(batch []processing.Sample) {
+	a.wmu.Lock()
+	defer a.wmu.Unlock()
+	if len(batch) == 0 {
+		return
+	}
+	if _, gone := a.deleted[batch[0].SessionID]; gone {
+		return
+	}
+	_ = a.inner.SaveBatch(batch)
+}
+
+// DeleteSession removes the session's stored samples and discards any of its batches still queued or
+// enqueued later. It waits for an in-progress write to finish (wmu), so no write can land after it.
+func (a *AsyncTraceStore) DeleteSession(sessionID string) error {
+	a.wmu.Lock()
+	defer a.wmu.Unlock()
+	a.deleted[sessionID] = struct{}{}
+	return a.inner.DeleteSession(sessionID)
 }
 
 // SaveBatch enqueues without blocking; on overflow it drops the oldest queued batch to make room for

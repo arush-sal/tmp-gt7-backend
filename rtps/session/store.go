@@ -1,6 +1,9 @@
 package session
 
-import "sync"
+import (
+	"slices"
+	"sync"
+)
 
 // Store persists Records. Slice 1 ships only the in-memory MemStore; the interface
 // exists now so a PostgreSQL/TimescaleDB implementation can replace it later without touching the
@@ -15,6 +18,9 @@ type Store interface {
 	// List returns all records in insertion order (first-saved first). Order is stable across
 	// upserts of an existing id.
 	List() []*Record
+	// Delete removes the record for id (a no-op when absent). The Detector calls it to roll back a
+	// session found to be a duplicate of an already-stored one.
+	Delete(id string) error
 }
 
 // MemStore is a goroutine-safe in-memory Store.
@@ -67,4 +73,16 @@ func (m *MemStore) List() []*Record {
 		out = append(out, m.byID[id])
 	}
 	return out
+}
+
+// Delete removes id's record and its slot in the insertion order (no-op when absent).
+func (m *MemStore) Delete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.byID[id]; !ok {
+		return nil
+	}
+	delete(m.byID, id)
+	m.order = slices.DeleteFunc(m.order, func(o string) bool { return o == id })
+	return nil
 }

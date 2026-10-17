@@ -158,8 +158,9 @@ func TestPostgresStore_ListOrder(t *testing.T) {
 }
 
 // TestPostgresStore_DetectorGolden runs the real 4-race capture through the Detector wired to
-// Postgres — the full path SM will use in production — and asserts the persisted result: 4 sessions,
-// race 3 abandoned.
+// Postgres — the full path SM will use in production — and asserts the persisted result: 3 finished
+// sessions. Race 3 (quit at lap 1 of 10, no completed timed lap) is discarded, so its row, saved at
+// confirm, must be deleted again.
 func TestPostgresStore_DetectorGolden(t *testing.T) {
 	st := freshPGStore(t)
 	frames := loadGolden(t)
@@ -171,19 +172,12 @@ func TestPostgresStore_DetectorGolden(t *testing.T) {
 	d.Close()
 
 	got := st.List()
-	if len(got) != 4 {
-		t.Fatalf("persisted %d sessions, want 4", len(got))
+	if len(got) != 3 {
+		t.Fatalf("persisted %d sessions, want 3", len(got))
 	}
-	var abandoned int
 	for _, s := range got {
-		if s.Status == StatusAbandoned {
-			abandoned++
-			if s.TotalLaps != 10 {
-				t.Errorf("abandoned TotalLaps = %d, want 10 (race 3)", s.TotalLaps)
-			}
+		if s.Status != StatusFinished {
+			t.Errorf("session %s status=%s, want finished", s.ID, s.Status)
 		}
-	}
-	if abandoned != 1 {
-		t.Errorf("abandoned = %d, want 1", abandoned)
 	}
 }

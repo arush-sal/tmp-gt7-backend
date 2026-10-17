@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -33,6 +34,11 @@ type lapState struct {
 	lastTime   time.Time // recv_timestamp of the most recent frame (the lap's running end)
 	frameCount uint64
 	gapCount   uint64
+	// partial: the session's first frame was already on a timed lap (lap >= 1), i.e. it joined that lap
+	// mid-way (Record back on, a replay loop start, a reconnect). That lap's trace is partial even though
+	// GT7's last_lap at its rollover is a full lap time, so it is stored incomplete, invalid and
+	// unfingerprinted. Mirrors the Detector's partialLap, which likewise does not count it for rule B.
+	partial bool
 }
 
 // NewLapSegmenter returns a segmenter that writes laps to store.
@@ -69,11 +75,21 @@ func (s *LapSegmenter) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) 
 		st.open = true
 		st.lapNumber = lap
 		st.startTime = ts
+		st.partial = lap >= 1
 	case lap > st.lapNumber:
 		// Lap boundary: current_lap advanced. Close the accumulated lap — its time is the
 		// just-completed lap's last_lap. current_lap is monotonic within a session; a decrease is
 		// anomalous and ignored (the frame is attributed to the current lap, no split).
-		s.emit(sessionID, st, true, f.GetLastLap().AsDuration())
+		if st.partial {
+			st.partial = false
+			s.emit(sessionID, st, false, 0, "") // joined mid-lap: incomplete, no fingerprint
+		} else {
+			var fp string
+			if st.lapNumber >= 1 { // a completed timed lap (not the formation lap): fingerprint it
+				fp = session.LapFingerprint(f, st.lapNumber)
+			}
+			s.emit(sessionID, st, true, f.GetLastLap().AsDuration(), fp)
+		}
 		st.lapNumber = lap
 		st.startTime = ts
 		st.frameCount = 0
@@ -92,16 +108,16 @@ func (s *LapSegmenter) OnSessionEnd(rec *session.Record) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if st := s.state[rec.ID]; st != nil && st.open {
-		s.emit(rec.ID, st, false, 0)
+		s.emit(rec.ID, st, false, 0, "")
 	}
 	delete(s.state, rec.ID)
 }
 
 // emit builds and stores one Lap from the accumulated state. complete=true means it was closed by a
 // lap-counter increment (use the supplied last_lap as its duration); otherwise the duration falls
-// back to the wall-clock span. A lap is Valid for Personal-Best only if it is a timed, complete,
+// back to the wall-clock span. fp is the lap's fingerprint ("" when it has none). A lap is Valid for Personal-Best only if it is a timed, complete,
 // gap-free lap.
-func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastLap time.Duration) {
+func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastLap time.Duration, fp string) {
 	dur := lastLap
 	fallback := false
 	if dur <= 0 { // formation lap, or the partial final lap: no authoritative last_lap
@@ -109,19 +125,29 @@ func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastL
 		fallback = true
 	}
 	timed := st.lapNumber > 0
-	if err := s.store.Save(&Lap{
-		SessionID:  sessionID,
-		LapNumber:  st.lapNumber,
-		StartTime:  st.startTime,
-		EndTime:    st.lastTime,
-		Duration:   dur,
-		FrameCount: st.frameCount,
-		GapCount:   st.gapCount,
-		Complete:   complete,
-		Timed:      timed,
-		Valid:      timed && complete && st.gapCount == 0,
-		Fallback:   fallback,
-	}); err != nil && s.OnError != nil {
+	lap := &Lap{
+		SessionID:   sessionID,
+		LapNumber:   st.lapNumber,
+		StartTime:   st.startTime,
+		EndTime:     st.lastTime,
+		Duration:    dur,
+		FrameCount:  st.frameCount,
+		GapCount:    st.gapCount,
+		Complete:    complete,
+		Timed:       timed,
+		Valid:       timed && complete && st.gapCount == 0,
+		Fallback:    fallback,
+		Fingerprint: fp,
+	}
+	err := s.store.Save(lap)
+	if errors.Is(err, ErrDuplicateFingerprint) {
+		// Another session already owns this lap's fingerprint. Only a session's first completed lap
+		// decides duplicates (the Detector), so this is a later lap of a kept session: keep the lap,
+		// drop its fingerprint (the lap data matters; the fingerprint is only a dedup key).
+		lap.Fingerprint = ""
+		err = s.store.Save(lap)
+	}
+	if err != nil && s.OnError != nil {
 		s.OnError(fmt.Errorf("save lap %s#%d: %w", sessionID, st.lapNumber, err))
 	}
 }

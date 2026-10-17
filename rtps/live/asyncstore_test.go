@@ -24,6 +24,7 @@ func (b *blockingStore) SaveBatch(s []processing.Sample) error {
 	return nil
 }
 func (b *blockingStore) ByLap(string, int32) ([]processing.Sample, error) { return nil, nil }
+func (b *blockingStore) DeleteSession(string) error                       { return nil }
 
 func TestAsyncTraceStore_NeverBlocks(t *testing.T) {
 	inner := &blockingStore{release: make(chan struct{})}
@@ -108,4 +109,45 @@ func TestAsyncTraceStore_CloseRace(t *testing.T) {
 	as.Close()
 	close(stop)
 	wg.Wait()
+}
+
+// gatedStore wraps a MemTraceStore whose SaveBatch waits on gate, so a test can hold the writer
+// goroutine mid-write while more batches queue behind it.
+type gatedStore struct {
+	*processing.MemTraceStore
+	gate    chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (g *gatedStore) SaveBatch(s []processing.Sample) error {
+	g.once.Do(func() { close(g.entered) })
+	<-g.gate
+	return g.MemTraceStore.SaveBatch(s)
+}
+
+// TestAsyncTraceStore_DeleteSessionDropsQueued: deleting a session removes its stored samples AND any
+// of its batches still queued, so a dropped duplicate leaves no trace even with writes in flight.
+func TestAsyncTraceStore_DeleteSessionDropsQueued(t *testing.T) {
+	inner := &gatedStore{MemTraceStore: processing.NewMemTraceStore(), gate: make(chan struct{}), entered: make(chan struct{})}
+	a := NewAsyncTraceStore(inner, 8, nil)
+	_ = a.SaveBatch([]processing.Sample{{SessionID: "keep", LapNumber: 1}}) // writer blocks on this
+	<-inner.entered
+	_ = a.SaveBatch([]processing.Sample{{SessionID: "dup", LapNumber: 1}}) // queued behind it
+	done := make(chan error)
+	go func() { done <- a.DeleteSession("dup") }()
+	close(inner.gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	_ = a.SaveBatch([]processing.Sample{{SessionID: "dup", LapNumber: 2}}) // late write after delete
+	a.Close()
+	for lap := int32(1); lap <= 2; lap++ {
+		if got, _ := inner.ByLap("dup", lap); len(got) != 0 {
+			t.Errorf("dup lap %d has %d samples after DeleteSession, want 0", lap, len(got))
+		}
+	}
+	if got, _ := inner.ByLap("keep", 1); len(got) != 1 {
+		t.Errorf("keep has %d samples, want 1", len(got))
+	}
 }

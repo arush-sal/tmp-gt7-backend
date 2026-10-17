@@ -2,6 +2,7 @@ package processing
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -168,6 +169,68 @@ func TestPostgresLapStore_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestPostgresLapStore_Fingerprint covers migration 00008: the fingerprint round-trips, NULL (empty)
+// fingerprints never conflict, a repeated fingerprint violates the unique index, SessionByFingerprint
+// finds the owner, and DeleteSession removes a session's laps and trace rows.
+func TestPostgresLapStore_Fingerprint(t *testing.T) {
+	pool := freshPool(t)
+	ss := session.NewPostgresStore(pool)
+	for _, id := range []string{"s1", "s2"} {
+		if err := ss.Save(&session.Record{ID: id, StartTime: time.Unix(1000, 0).UTC(), Status: session.StatusFinished}); err != nil {
+			t.Fatalf("save session: %v", err)
+		}
+	}
+	ls := NewPostgresLapStore(pool)
+	at := time.Unix(1000, 0).UTC()
+	mk := func(sid string, n int32, fp string) *Lap {
+		return &Lap{SessionID: sid, LapNumber: n, StartTime: at, EndTime: at, Fingerprint: fp}
+	}
+	for _, l := range []*Lap{mk("s1", 0, ""), mk("s2", 0, ""), mk("s1", 1, "fp1")} {
+		if err := ls.Save(l); err != nil {
+			t.Fatalf("save %s#%d: %v", l.SessionID, l.LapNumber, err)
+		}
+	}
+	if err := ls.Save(mk("s2", 1, "fp1")); !errors.Is(err, ErrDuplicateFingerprint) {
+		t.Errorf("duplicate fingerprint save = %v, want ErrDuplicateFingerprint", err)
+	}
+	got := ls.BySession("s1")
+	if len(got) != 2 || got[0].Fingerprint != "" || got[1].Fingerprint != "fp1" {
+		t.Fatalf("BySession(s1) = %+v, want fingerprints \"\", fp1", got)
+	}
+	if id, ok, err := ls.SessionByFingerprint("fp1"); err != nil || !ok || id != "s1" {
+		t.Errorf("SessionByFingerprint = %q,%v want s1,true", id, ok)
+	}
+	if _, ok, err := ls.SessionByFingerprint("nope"); ok || err != nil {
+		t.Error("unknown fingerprint matched")
+	}
+
+	ts := NewPostgresTraceStore(pool)
+	if err := ts.SaveBatch([]Sample{{RecvTime: at, SessionID: "s1", LapNumber: 1}}); err != nil {
+		t.Fatalf("save trace: %v", err)
+	}
+	if err := ts.DeleteSession("s1"); err != nil {
+		t.Fatalf("trace DeleteSession: %v", err)
+	}
+	if err := ls.DeleteSession("s1"); err != nil {
+		t.Fatalf("lap DeleteSession: %v", err)
+	}
+	if got := ls.BySession("s1"); len(got) != 0 {
+		t.Errorf("laps remain after delete: %+v", got)
+	}
+	if got, _ := ts.ByLap("s1", 1); len(got) != 0 {
+		t.Errorf("trace rows remain after delete: %d", len(got))
+	}
+	if _, ok, _ := ls.SessionByFingerprint("fp1"); ok {
+		t.Error("fingerprint still owned after delete")
+	}
+
+	// A query error is reported, never disguised as "not found" (LOW a).
+	pool.Close()
+	if _, _, err := ls.SessionByFingerprint("fp1"); err == nil {
+		t.Error("SessionByFingerprint on a closed pool = nil error, want the query error")
+	}
+}
+
 // TestPostgresLapStore_Golden runs the real capture through Detector -> LapSegmenter -> Postgres (both
 // stores on one pool, so the laps FK to persisted sessions) and asserts the persisted lap breakdown.
 func TestPostgresLapStore_Golden(t *testing.T) {
@@ -182,11 +245,13 @@ func TestPostgresLapStore_Golden(t *testing.T) {
 	}
 	d.Close()
 
-	want := map[string][2]int{ // {laps, valid}
+	want := map[string][2]int{ // {laps, valid}; sess-3 (race 3, no completed lap) is discarded
 		"sess-1": {4, 2},
-		"sess-3": {4, 2},
-		"sess-5": {2, 0},
-		"sess-6": {3, 1},
+		"sess-2": {4, 2},
+		"sess-4": {3, 1},
+	}
+	if n := len(sessStore.List()); n != len(want) {
+		t.Errorf("persisted %d sessions, want %d", n, len(want))
 	}
 	for _, s := range sessStore.List() {
 		laps := lapStore.BySession(s.ID)

@@ -134,3 +134,11 @@ func scanRecord(row rowScanner) (*Record, error) {
 	rec.Status = Status(status)
 	return &rec, nil
 }
+
+// Delete removes the session row; laps and lap_trace rows cascade (FK ON DELETE CASCADE).
+func (s *PostgresStore) Delete(id string) error {
+	if _, err := s.pool.Exec(context.Background(), "DELETE FROM sessions WHERE id=$1", id); err != nil {
+		return fmt.Errorf("session: delete %s: %w", id, err)
+	}
+	return nil
+}

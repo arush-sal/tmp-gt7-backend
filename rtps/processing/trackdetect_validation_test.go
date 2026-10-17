@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/arush-sal/garage/backend/collector/protocol"
+	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/rkb"
 	"github.com/arush-sal/garage/backend/rtps/session"
@@ -49,7 +51,7 @@ type vdTelemetry struct {
 // position_z), dropping exact repeated PackageIDs. This is a simplified dedup for ordered fixture
 // data; the production collector Deduper (collector/protocol/dedup.go) additionally handles backward
 // reorders and resets, which these clean single-lap captures do not exercise.
-func drivenPathFromCapture(t *testing.T, path string) [][2]float64 {
+func drivenPathFromCapture(t testing.TB, path string) [][2]float64 {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -178,4 +180,44 @@ func logDiagnostics(t *testing.T, want string, diags []processing.CandidateDiag)
 		}
 	}
 	t.Logf("  EXPECTED %q NOT FOUND in candidate set", want)
+}
+
+// BenchmarkTrackDetector_OnFrame measures the detector's per-frame cost on the ingest goroutine: one
+// real VictoryDash Suzuka lap (~8k frames) is driven through a fresh session against the REAL RKB
+// geometry per iteration, and the cost is reported as ns/frame (amortized over every OnFrame call,
+// including the throttled re-scoring). Skipped when the capture or rkb.db is absent.
+func BenchmarkTrackDetector_OnFrame(b *testing.B) {
+	capPath := filepath.Join("..", "..", "..", "supporting-data", "victorydash", "week-29-daily-c-ryun", "telemetry.json")
+	dbPath := filepath.Join("..", "..", "tools", "rkb", "out", "rkb.db")
+	if _, err := os.Stat(capPath); err != nil {
+		b.Skip("VictoryDash capture not present")
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		b.Skip("generated rkb.db not present")
+	}
+	st, err := rkb.Open(dbPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	points := drivenPathFromCapture(b, capPath)
+	frames := make([]*telemetryv1.TelemetryFrame, len(points))
+	for i, p := range points {
+		frames[i] = &telemetryv1.TelemetryFrame{InRace: true, PositionX: float32(p[0]), PositionZ: float32(p[1])}
+	}
+
+	d := processing.NewTrackDetector(st, &fakeEnricher{}, nil)
+	d.OnSessionStart(&session.Record{ID: "warm"}) // load geometry outside the timed loop
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := &session.Record{ID: "s" + strconv.Itoa(i)}
+		d.OnSessionStart(rec)
+		for _, f := range frames {
+			d.OnFrame(rec.ID, f)
+		}
+		d.OnSessionEnd(rec)
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(frames)), "ns/frame")
 }

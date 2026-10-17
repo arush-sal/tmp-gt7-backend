@@ -42,6 +42,10 @@ func (r *recordingLapStore) BySession(sessionID string) []*processing.Lap {
 }
 
 func (r *recordingLapStore) List() []*processing.Lap { return r.inner.List() }
+func (r *recordingLapStore) SessionByFingerprint(fp string) (string, bool, error) {
+	return r.inner.SessionByFingerprint(fp)
+}
+func (r *recordingLapStore) DeleteSession(id string) error { return r.inner.DeleteSession(id) }
 
 func (r *recordingLapStore) callCount(sessionID string) int {
 	r.mu.Lock()
@@ -131,6 +135,10 @@ func (b *blockingLapStore) BySession(sessionID string) []*processing.Lap {
 }
 
 func (b *blockingLapStore) List() []*processing.Lap { return b.inner.List() }
+func (b *blockingLapStore) SessionByFingerprint(fp string) (string, bool, error) {
+	return b.inner.SessionByFingerprint(fp)
+}
+func (b *blockingLapStore) DeleteSession(id string) error { return b.inner.DeleteSession(id) }
 
 // TestEnrichSink_NoStaleRepublishAfterEnd is the regression for the staff-review-flagged race: the
 // async worker can still be inside AnalyzeSession for a session when OnSessionEnd fires. Without the

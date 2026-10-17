@@ -22,8 +22,16 @@ type Enrichment struct {
 	Analysis        *analysis.SessionAnalysis `json:"analysis"`
 	CarName         *string                   `json:"car_name"`
 	Track           *string                   `json:"track"`
-	TrackConfidence *string                   `json:"track_confidence"` // "confident"; nil until resolved
+	TrackConfidence *string                   `json:"track_confidence"` // "provisional" (may still switch) or "confident" (locked); nil until a first guess
 	DeltaToBestNs   *int64                    `json:"delta_to_best_ns"`
+	// DuplicateOf is the id of the stored ORIGINAL session while the live session is a dropped
+	// duplicate of it (an in-game replay of laps already stored); SessionID then equals it too, so the
+	// frontend links to the original. Omitted (absent from JSON) when the live session is not a duplicate.
+	DuplicateOf string `json:"duplicate_of,omitempty"`
+	// Recording is the in-process stream's Record switch: true by default and again at every new
+	// session, false after the user turned recording off for the current session. Always serialized.
+	// The API overlays it from the RecordingControl when serving (EnrichmentState does not track it).
+	Recording bool `json:"recording"`
 }
 
 // EnrichmentState is the concurrency-safe holder the egress path reads and the processing side writes.
@@ -76,6 +84,28 @@ func (e *EnrichmentState) ClearTrack(sessionID string) {
 	e.cur.SessionID = sessionID
 	e.cur.Track = nil
 	e.cur.TrackConfidence = nil
+	e.mu.Unlock()
+}
+
+// SetDuplicate marks the live session as a dropped duplicate of originalID: SessionID and DuplicateOf
+// both become originalID, preserving every other field. The next Set (a new session) clears it.
+func (e *EnrichmentState) SetDuplicate(originalID string) {
+	e.mu.Lock()
+	e.cur.SessionID = originalID
+	e.cur.DuplicateOf = originalID
+	e.mu.Unlock()
+}
+
+// ClearSession removes the live link to a session that was discarded without a duplicate original (no
+// completed lap, or recording switched off): SessionID becomes "" (the "no session" value, as when
+// idle) and its Analysis and DuplicateOf are cleared, so clients never fetch a deleted session. The
+// Track is kept: it describes where the car is, not the stored session. The next session start
+// publishes the new id as usual.
+func (e *EnrichmentState) ClearSession() {
+	e.mu.Lock()
+	e.cur.SessionID = ""
+	e.cur.Analysis = nil
+	e.cur.DuplicateOf = ""
 	e.mu.Unlock()
 }
 

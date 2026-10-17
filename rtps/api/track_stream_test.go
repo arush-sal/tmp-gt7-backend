@@ -14,6 +14,8 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/live"
 	"github.com/arush-sal/garage/backend/rtps/rkb"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -298,5 +300,72 @@ func TestLiveStream_FrameEvents_StayRecordFree(t *testing.T) {
 	})
 	if !sawFrame {
 		t.Fatal("no frame data event observed")
+	}
+}
+
+// (f) a provisional guess that locks on the SAME slug re-emits the track event, so a subscriber's
+// confidence is never left stuck at "provisional".
+func TestLiveStream_TrackEvent_ReEmitsOnConfidenceChange(t *testing.T) {
+	srv, hub, enrich := newTrackTestServer()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, sc, cancel := connectSSE(t, ts)
+	defer cancel()
+	defer func() { _ = resp.Body.Close() }()
+	time.Sleep(50 * time.Millisecond)
+
+	nextConfidence := func() string {
+		var got string
+		readSSE(t, sc, time.Now().Add(2*time.Second), func(l sseLine) bool {
+			if l.event != "track" {
+				return false
+			}
+			var ev trackEvent
+			_ = json.Unmarshal([]byte(l.data), &ev)
+			if ev.Confidence != nil {
+				got = *ev.Confidence
+			}
+			return true
+		})
+		return got
+	}
+
+	slug, prov, conf := "hsr", "provisional", "confident"
+	enrich.SetTrack("sess-1", &slug, &prov)
+	hub.Publish(&telemetryv1.TelemetryFrame{CarSpeed: 1, RecvTimestamp: timestamppb.Now()})
+	if got := nextConfidence(); got != "provisional" {
+		t.Fatalf("first track event confidence = %q, want provisional", got)
+	}
+
+	enrich.SetTrack("sess-1", &slug, &conf)
+	hub.Publish(&telemetryv1.TelemetryFrame{CarSpeed: 2, RecvTimestamp: timestamppb.Now()})
+	if got := nextConfidence(); got != "confident" {
+		t.Fatalf("second track event confidence = %q, want confident (same slug, confidence changed)", got)
+	}
+}
+
+// (g) a resolved slug the RKB has no record for is warned about once, not on every frame wake.
+func TestLiveStream_TrackEvent_MissingRecordWarnsOnce(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	hub := live.New()
+	enrich := live.NewEnrichmentState()
+	srv := NewServer(coach.Coach{}, nil, hub, enrich, nil, fakeTracks{byID: map[string]*rkb.Record{}}, zap.New(core), nil, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, sc, cancel := connectSSE(t, ts)
+	defer cancel()
+	defer func() { _ = resp.Body.Close() }()
+	time.Sleep(50 * time.Millisecond)
+
+	slug := "unknown-track"
+	enrich.SetTrack("sess-1", &slug, nil)
+	for i := 0; i < 20; i++ {
+		hub.Publish(&telemetryv1.TelemetryFrame{CarSpeed: float32(i + 1), RecvTimestamp: timestamppb.Now()})
+		readSSE(t, sc, time.Now().Add(time.Second), func(sseLine) bool { return true })
+	}
+	if n := logs.FilterMessage("track event skipped: no rkb record for resolved slug").Len(); n != 1 {
+		t.Fatalf("want exactly 1 warning for the missing record, got %d", n)
 	}
 }

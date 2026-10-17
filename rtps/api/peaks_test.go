@@ -25,6 +25,7 @@ type errTraceStore struct {
 }
 
 func (e *errTraceStore) SaveBatch(s []processing.Sample) error { return e.inner.SaveBatch(s) }
+func (e *errTraceStore) DeleteSession(id string) error         { return e.inner.DeleteSession(id) }
 
 func (e *errTraceStore) ByLap(sid string, lap int32) ([]processing.Sample, error) {
 	if e.errAll || lap == e.errLap {

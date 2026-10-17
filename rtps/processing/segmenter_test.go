@@ -81,19 +81,20 @@ func TestSegmenter_ThreeLaps(t *testing.T) {
 // (the trace is unreliable) while still recording it.
 func TestSegmenter_GapInvalidatesLap(t *testing.T) {
 	laps := runSeg(
-		mkFrame(0, 1, 0, false),
-		mkFrame(100, 1, 0, true), // gap inside lap 1
-		mkFrame(200, 2, 60_000, false),
+		mkFrame(0, 0, 0, false),        // formation lap: lap 1 below is a full lap, not joined mid-way
+		mkFrame(50, 1, 30_000, false),  // 0 -> 1
+		mkFrame(100, 1, 0, true),       // gap inside lap 1
+		mkFrame(200, 2, 60_000, false), // 1 -> 2
 		mkFrame(300, 2, 0, false),
 	)
-	// laps[0] is lap 1 (complete, but gapped)
-	if laps[0].LapNumber != 1 || !laps[0].Complete {
-		t.Fatalf("laps[0] = %+v, want complete lap 1", laps[0])
+	// laps[1] is lap 1 (complete, but gapped)
+	if laps[1].LapNumber != 1 || !laps[1].Complete {
+		t.Fatalf("laps[1] = %+v, want complete lap 1", laps[1])
 	}
-	if laps[0].GapCount != 1 {
-		t.Errorf("lap1 GapCount = %d, want 1", laps[0].GapCount)
+	if laps[1].GapCount != 1 {
+		t.Errorf("lap1 GapCount = %d, want 1", laps[1].GapCount)
 	}
-	if laps[0].Valid {
+	if laps[1].Valid {
 		t.Error("lap1 Valid = true, want false (gapped)")
 	}
 }
@@ -172,7 +173,8 @@ func TestSegmenter_FallbackFlag(t *testing.T) {
 		return fr
 	}
 	seg.OnSessionStart(&session.Record{ID: "s"})
-	seg.OnFrame("s", f(0, 1, 0))
+	seg.OnFrame("s", f(0, 0, 0)) // formation lap first, so lap 1 is a full lap
+	seg.OnFrame("s", f(50, 1, 30*time.Second))
 	seg.OnFrame("s", f(100, 2, 90*time.Second)) // closes lap 1 with last_lap=90s -> not fallback
 	seg.OnSessionEnd(&session.Record{ID: "s"})  // flushes lap 2 as partial -> fallback
 	laps := store.BySession("s")
@@ -199,9 +201,11 @@ func lapNums(laps []*Lap) []int32 {
 // errLapStore fails every Save — models a DB outage.
 type errLapStore struct{ saves int }
 
-func (e *errLapStore) Save(*Lap) error         { e.saves++; return errors.New("boom") }
-func (e *errLapStore) BySession(string) []*Lap { return nil }
-func (e *errLapStore) List() []*Lap            { return nil }
+func (e *errLapStore) Save(*Lap) error                                   { e.saves++; return errors.New("boom") }
+func (e *errLapStore) BySession(string) []*Lap                           { return nil }
+func (e *errLapStore) List() []*Lap                                      { return nil }
+func (e *errLapStore) SessionByFingerprint(string) (string, bool, error) { return "", false, nil }
+func (e *errLapStore) DeleteSession(string) error                        { return nil }
 
 // TestSegmenter_SaveErrorSurfaced: a lap-store failure must reach OnError rather than being swallowed.
 func TestSegmenter_SaveErrorSurfaced(t *testing.T) {
@@ -215,5 +219,72 @@ func TestSegmenter_SaveErrorSurfaced(t *testing.T) {
 	seg.OnSessionEnd(rec)                             // flush final lap -> Save errors
 	if errs == 0 {
 		t.Error("OnError not called on lap save failure")
+	}
+}
+
+// TestSegmenter_Fingerprint: a lap closed by a rollover from a lap >= 1 carries the session package's
+// LapFingerprint of the rollover frame; the formation lap (0) and the partial final lap carry none.
+func TestSegmenter_Fingerprint(t *testing.T) {
+	roll2 := mkFrame(400, 2, 90_000, false)
+	roll2.PositionX = 12.5
+	laps := runSeg(
+		mkFrame(0, 0, 0, false),
+		mkFrame(200, 1, 30_000, false), // 0 -> 1: formation lap, no fingerprint
+		mkFrame(300, 1, 0, false),
+		roll2, // 1 -> 2: lap 1 fingerprinted
+		mkFrame(500, 2, 0, false),
+	)
+	if len(laps) != 3 {
+		t.Fatalf("got %d laps, want 3", len(laps))
+	}
+	if laps[0].Fingerprint != "" || laps[2].Fingerprint != "" {
+		t.Errorf("formation/partial laps fingerprinted: %q / %q", laps[0].Fingerprint, laps[2].Fingerprint)
+	}
+	if want := session.LapFingerprint(roll2, 1); laps[1].Fingerprint != want {
+		t.Errorf("lap 1 fingerprint = %q, want %q", laps[1].Fingerprint, want)
+	}
+}
+
+// TestSegmenter_PartialFirstLap (M3): a session whose first frame is already on a timed lap (joined
+// mid-lap) stores that first lap as incomplete and invalid with no fingerprint, even though the
+// rollover frame carries GT7's full last_lap. The next lap is a normal fingerprinted lap.
+func TestSegmenter_PartialFirstLap(t *testing.T) {
+	laps := runSeg(
+		mkFrame(0, 2, 0, false), // joined mid lap 2
+		mkFrame(100, 2, 0, false),
+		mkFrame(200, 3, 91_832, false), // 2 -> 3: GT7 reports the full lap 2 time
+		mkFrame(300, 3, 0, false),
+		mkFrame(400, 4, 90_685, false), // 3 -> 4: a full lap
+	)
+	if len(laps) != 3 {
+		t.Fatalf("got %d laps, want 3", len(laps))
+	}
+	if l := laps[0]; l.LapNumber != 2 || l.Complete || l.Valid || l.Fingerprint != "" || !l.Fallback {
+		t.Errorf("partial first lap = %+v, want lap 2 incomplete, invalid, unfingerprinted, fallback duration", l)
+	}
+	if l := laps[1]; !l.Complete || !l.Valid || l.Fingerprint == "" || l.Duration != 90_685*time.Millisecond {
+		t.Errorf("lap 3 = %+v, want complete, valid, fingerprinted, 90.685s", l)
+	}
+}
+
+// TestSegmenter_TakenFingerprintStoredWithout (#5): a later lap whose fingerprint another session
+// already owns (the unique index) is still stored, just without the fingerprint, and no error is
+// surfaced.
+func TestSegmenter_TakenFingerprintStoredWithout(t *testing.T) {
+	roll := mkFrame(200, 2, 90_000, false)
+	store := NewMemLapStore()
+	_ = store.Save(&Lap{SessionID: "other", LapNumber: 1, Fingerprint: session.LapFingerprint(roll, 1)})
+	seg := NewLapSegmenter(store)
+	var errs int
+	seg.OnError = func(error) { errs++ }
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	for _, f := range []*telemetryv1.TelemetryFrame{mkFrame(0, 0, 0, false), mkFrame(100, 1, 30_000, false), roll} {
+		seg.OnFrame("s1", f)
+	}
+	seg.OnSessionEnd(rec)
+	laps := store.BySession("s1")
+	if errs != 0 || len(laps) != 3 || laps[1].LapNumber != 1 || laps[1].Fingerprint != "" || !laps[1].Valid {
+		t.Errorf("errs=%d laps=%+v, want lap 1 stored valid without fingerprint, no error", errs, laps)
 	}
 }

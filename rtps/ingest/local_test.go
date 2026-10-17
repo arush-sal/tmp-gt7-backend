@@ -43,7 +43,7 @@ func TestLocal_RunDeliversInOrderAndFinalizes(t *testing.T) {
 	// A confirmed in-race stint with NO trailing menu frames: only end-of-stream can close it.
 	var frames []*telemetryv1.TelemetryFrame
 	for i := range 12 {
-		frames = append(frames, mkFrame(i*100, true, 1384, uint32(i+1), 2, 2))
+		frames = append(frames, mkFrame(i*100, true, 1384, uint32(i+1), lapAt(i), 2))
 		frames[i].Sequence = uint64(i + 1)
 	}
 	l := NewLocal(srv, len(frames))
@@ -148,5 +148,50 @@ func TestLocal_PublishWaitStopUnblocks(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("PublishWait did not return after Run stopped")
+	}
+}
+
+// TestLocal_RecordingControlReachesDetector: the in-process stream's Detector honours the Local's
+// RecordingControl (a gRPC stream's Detector never gets one): switching off mid-session leaves nothing
+// stored.
+func TestLocal_RecordingControlReachesDetector(t *testing.T) {
+	store := session.NewMemStore()
+	srv := NewServer(store, session.NoopSink{}, session.Config{}, zap.NewNop())
+	l := NewLocal(srv, 64)
+	l.Recording = session.NewRecordingControl()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { l.Run(ctx); close(done) }()
+
+	for i := range 12 {
+		if err := l.PublishWait(ctx, mkFrame(i*100, true, 1384, uint32(i+1), lapAt(i), 2)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(store.List()) == 0 { // wait for the session to confirm
+		if time.Now().After(deadline) {
+			t.Fatal("session never confirmed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	res := make(chan bool, 1)
+	go func() { _, _, err := l.Recording.Set(false, "", 5*time.Second); res <- err == nil }()
+	for i := 12; ; i++ { // keep frames flowing until the request is applied
+		if err := l.PublishWait(ctx, mkFrame(i*100, true, 1384, uint32(i+1), 4, 2)); err != nil {
+			t.Fatal(err)
+		}
+		if !l.Recording.Recording() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !<-res {
+		t.Fatal("Set(false) rejected while a session was open")
+	}
+	cancel()
+	<-done
+	if n := len(store.List()); n != 0 {
+		t.Errorf("store has %d sessions after recording off, want 0", n)
 	}
 }

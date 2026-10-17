@@ -24,8 +24,13 @@ type Lap struct {
 	FrameCount uint64
 	GapCount   uint64 // frames with the gap flag — a gapped lap trace is unreliable
 
-	Complete bool // closed by a lap-counter increment (vs the session ending mid-lap)
+	Complete bool // a full lap closed by a lap-counter increment (false: cut by the session end, or a first lap the session joined mid-way)
 	Timed    bool // a timed racing lap (LapNumber > 0); excludes the formation/out lap
 	Valid    bool // usable for Personal-Best: Timed && Complete && GapCount == 0
 	Fallback bool // Duration came from the wall-clock span (GT7 last_lap was unavailable), not an authoritative lap time
+
+	// Fingerprint identifies this completed timed lap across sessions (session.LapFingerprint of the
+	// rollover frame). Empty for the formation lap, partial laps and pre-migration rows. Unique across
+	// stored laps: a replayed copy of a stored lap is how a duplicate session is recognised.
+	Fingerprint string
 }

@@ -42,10 +42,16 @@ func (f *fakeStream) SendAndClose(a *telemetryv1.Ack) error {
 	return nil
 }
 
-// mkFrame builds an in/out-of-race frame at base+ms with the fields the Detector reads.
+// mkFrame builds an in/out-of-race frame at base+ms with the fields the Detector reads. In-race frames
+// carry a driving speed so they satisfy the Detector's must-move confirmation rule.
 func mkFrame(ms int, inRace bool, car int32, pkg uint32, curLap, totLaps int32) *telemetryv1.TelemetryFrame {
 	base := time.Unix(1_700_000_000, 0)
+	var speed float32
+	if inRace {
+		speed = 100
+	}
 	return &telemetryv1.TelemetryFrame{
+		CarSpeed:      speed,
 		RecvTimestamp: timestamppb.New(base.Add(time.Duration(ms) * time.Millisecond)),
 		InRace:        inRace,
 		CarId:         car,
@@ -56,11 +62,24 @@ func mkFrame(ms int, inRace bool, car int32, pkg uint32, curLap, totLaps int32) 
 	}
 }
 
+// lapAt gives frame i of a 12-frame stint lap 2 (the session confirms at 500ms mid-lap, so lap 2 is a
+// partial first lap), lap 3 from frame 6 and lap 4 from frame 9: lap 3 is one completed timed lap, so
+// the session is stored rather than discarded as lapless.
+func lapAt(i int) int32 {
+	switch {
+	case i < 6:
+		return 2
+	case i < 9:
+		return 3
+	}
+	return 4
+}
+
 // oneRaceStream is a minimal in-race stint (> MinSession) followed by menu frames that close it.
 func oneRaceStream() []*telemetryv1.TelemetryFrame {
 	var fs []*telemetryv1.TelemetryFrame
-	for i := range 12 { // 0..1100ms in-race, lap 2/2 => finished
-		fs = append(fs, mkFrame(i*100, true, 1384, uint32(100+i), 2, 2))
+	for i := range 12 { // 0..1100ms in-race, laps 2 -> 3 of 2 (a completed lap) => finished
+		fs = append(fs, mkFrame(i*100, true, 1384, uint32(100+i), lapAt(i), 2))
 	}
 	fs = append(fs, mkFrame(1200, false, 1384, 112, -1, -1), mkFrame(1800, false, 1384, 113, -1, -1))
 	return fs
@@ -98,7 +117,7 @@ func TestServer_IngestErrorForceCloses(t *testing.T) {
 	// A confirmed (> MinSession) in-race stint, then the stream errors before any menu frame.
 	var frames []*telemetryv1.TelemetryFrame
 	for i := range 12 {
-		frames = append(frames, mkFrame(i*100, true, 1384, uint32(1+i), 2, 2))
+		frames = append(frames, mkFrame(i*100, true, 1384, uint32(1+i), lapAt(i), 2))
 	}
 	boom := errors.New("connection reset")
 	fs := &fakeStream{frames: frames, recvErr: boom}

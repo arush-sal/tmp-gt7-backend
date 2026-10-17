@@ -55,6 +55,11 @@ func loadGolden(t *testing.T) []*telemetryv1.TelemetryFrame {
 			InRace:        row[6] == "true",
 			Source:        telemetryv1.Source_SOURCE_LIVE,
 		})
+		// The fixture predates the must-move rule and carries no speed column. Every in-race frame of
+		// this capture is a real racing stint, so mark those as moving; others stay at 0 km/h.
+		if row[6] == "true" {
+			frames[len(frames)-1].CarSpeed = 100
+		}
 	}
 	return frames
 }
@@ -69,40 +74,45 @@ func mustInt64(t *testing.T, s string) int64 {
 }
 
 // TestDetector_Golden4Race runs the whole real capture (game start -> 4 races -> quit) through the
-// Detector with default tuning and asserts the ground truth: exactly 4 sessions, race 3 abandoned
-// (quit at lap 1 of 10) and the other three finished. This is the end-to-end validation of the
-// boundary logic against real GT7 telemetry (D-B4/D-B8).
+// Detector with default tuning and asserts the ground truth: 4 races are detected (4 confirmed sessions
+// reach the sinks), race 3 is the quit at lap 1 of 10 and tagged abandoned, the other three finished.
+// Race 3 never completed a timed lap, so it is discarded (DiscardNoCompletedLap) instead of stored:
+// exactly 3 sessions persist. This is the end-to-end validation of the boundary logic against real GT7
+// telemetry (D-B4/D-B8).
 func TestDetector_Golden4Race(t *testing.T) {
 	frames := loadGolden(t)
 	if len(frames) < 30000 {
 		t.Fatalf("golden looks truncated: %d frames", len(frames))
 	}
 
-	sink, store := feed(Config{}, frames...) // default ~0.5s windows
+	var discarded []*Record
+	cfg := Config{OnDiscard: func(r *Record, reason DiscardReason, _ string) {
+		if reason != DiscardNoCompletedLap {
+			t.Errorf("unexpected discard reason %q", reason)
+		}
+		c := *r
+		discarded = append(discarded, &c)
+	}}
+	sink, store := feed(cfg, frames...) // default ~0.5s windows
 	got := store.List()
 
-	if len(got) != 4 {
+	if len(got) != 3 {
 		for i, s := range got {
 			t.Logf("session %d: car=%d laps=%d/%d frames=%d status=%s dur=%s",
 				i, s.CarID, s.CurrentLap, s.TotalLaps, s.FrameCount, s.Status, s.EndTime.Sub(s.StartTime))
 		}
-		t.Fatalf("got %d sessions, want 4", len(got))
+		t.Fatalf("got %d stored sessions, want 3 (races 1, 2, 4; race 3 has no completed lap)", len(got))
 	}
-
-	var abandoned int
 	for _, s := range got {
-		if s.Status == StatusAbandoned {
-			abandoned++
-			if s.TotalLaps != 10 {
-				t.Errorf("abandoned session TotalLaps=%d, want 10 (race 3)", s.TotalLaps)
-			}
-			if s.CurrentLap >= s.TotalLaps {
-				t.Errorf("abandoned session curLap=%d >= total=%d, contradiction", s.CurrentLap, s.TotalLaps)
-			}
+		if s.Status != StatusFinished {
+			t.Errorf("stored session %s status=%s, want finished", s.ID, s.Status)
 		}
 	}
-	if abandoned != 1 {
-		t.Errorf("abandoned sessions = %d, want 1 (race 3 quit)", abandoned)
+	if len(discarded) != 1 {
+		t.Fatalf("discarded = %d sessions, want 1 (race 3)", len(discarded))
+	}
+	if r := discarded[0]; r.Status != StatusAbandoned || r.TotalLaps != 10 || r.CurrentLap != 1 {
+		t.Errorf("race 3 = status %s lap %d/%d, want abandoned at lap 1/10", r.Status, r.CurrentLap, r.TotalLaps)
 	}
 
 	// Sanity: every session confirmed => one OnSessionStart/End each, and none is a sub-second blip.

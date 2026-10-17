@@ -94,7 +94,7 @@ When a frame arrives at the ingest seam it is, in order:
 
 | Domain | Package | Responsibility |
 |---|---|---|
-| **Session management** | `rtps/session` | Group the frame stream into sessions (one contiguous on-track stint), tracking lifecycle and outcome (active / finished / abandoned). |
+| **Session management** | `rtps/session` | Group the frame stream into sessions (one contiguous on-track stint), tracking lifecycle and outcome (active / finished / abandoned). A session needs the car to move, splits on a replay loop or rewind, and is dropped when its laps repeat an already-stored session (an in-game replay). |
 | **Processing** | `rtps/processing` | Segment each session into laps and record per-lap telemetry traces — the source of truth for analysis. |
 | **Analysis** | `rtps/analysis` | Deterministic (no LLM): Personal-Best selection, lap/sector deltas, consistency, predicted best, and explainable recommendations. |
 | **Coaching** | `rtps/coach` | Convert analysis into coaching output. Currently a placeholder passthrough (marked `pending`). |

@@ -38,10 +38,10 @@ const (
 // Record is one detected on-track stint. It is the structured output of Session Management:
 // metadata + counts + the outcome tag, persisted via a Store and handed to a Sink.
 //
-// Lap fields (CurrentLap/TotalLaps/BestLap/LastLap) are snapshotted from the LAST in-race frame, not
-// the frame at close: GT7 resets those fields to -1 in the menu/results frames that arrive right
-// after in_race drops (observed in the capture analysis), so reading them at the raw close instant
-// would capture garbage.
+// Lap fields are snapshotted from on-track frames, not the frame at close: CurrentLap/BestLap/LastLap
+// from the LAST timed-lap frame (current_lap >= 1) and TotalLaps from the last frame reporting a lap
+// target (> 0). After a race GT7 sends menu frames (-1) and on-track results-screen frames with lap 0
+// and/or total_laps 0 (observed in the captures); reading those would capture garbage.
 type Record struct {
 	ID        string    // detector-assigned unique id
 	StartTime time.Time // recv_timestamp of the frame that opened the session

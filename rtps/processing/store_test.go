@@ -1,6 +1,9 @@
 package processing
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestMemLapStore covers save/query/order and the snapshot-on-save decoupling.
 func TestMemLapStore(t *testing.T) {
@@ -48,5 +51,56 @@ func TestMemLapStore_ReadReturnsCopy(t *testing.T) {
 	again := s.BySession("a")
 	if !again[0].Valid || again[0].LapNumber != 1 {
 		t.Errorf("mutating a returned lap changed the store: %+v", again[0])
+	}
+}
+
+// TestMemLapStore_Fingerprint: fingerprints are unique across laps (empty = none, never conflicts),
+// SessionByFingerprint finds the owner, and DeleteSession removes a session's laps and fingerprints.
+func TestMemLapStore_Fingerprint(t *testing.T) {
+	s := NewMemLapStore()
+	if err := s.Save(&Lap{SessionID: "a", LapNumber: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(&Lap{SessionID: "b", LapNumber: 0}); err != nil {
+		t.Fatalf("two empty fingerprints must not conflict: %v", err)
+	}
+	if err := s.Save(&Lap{SessionID: "a", LapNumber: 1, Fingerprint: "fp1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(&Lap{SessionID: "b", LapNumber: 1, Fingerprint: "fp1"}); !errors.Is(err, ErrDuplicateFingerprint) {
+		t.Errorf("duplicate fingerprint save = %v, want ErrDuplicateFingerprint", err)
+	}
+	if id, ok, err := s.SessionByFingerprint("fp1"); err != nil || !ok || id != "a" {
+		t.Errorf("SessionByFingerprint(fp1) = %q,%v want a,true", id, ok)
+	}
+	if _, ok, _ := s.SessionByFingerprint(""); ok {
+		t.Error("empty fingerprint must never match")
+	}
+	if err := s.DeleteSession("a"); err != nil {
+		t.Fatal(err)
+	}
+	if s.BySession("a") != nil {
+		t.Error("laps of deleted session still present")
+	}
+	if _, ok, _ := s.SessionByFingerprint("fp1"); ok {
+		t.Error("deleted session's fingerprint still indexed")
+	}
+	if all := s.List(); len(all) != 1 || all[0].SessionID != "b" {
+		t.Errorf("List after delete = %+v, want only b", all)
+	}
+}
+
+// TestMemTraceStore_DeleteSession removes only that session's samples.
+func TestMemTraceStore_DeleteSession(t *testing.T) {
+	s := NewMemTraceStore()
+	_ = s.SaveBatch([]Sample{{SessionID: "a", LapNumber: 1}, {SessionID: "b", LapNumber: 1}})
+	if err := s.DeleteSession("a"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ByLap("a", 1); len(got) != 0 {
+		t.Errorf("a still has %d samples", len(got))
+	}
+	if got, _ := s.ByLap("b", 1); len(got) != 1 {
+		t.Errorf("b has %d samples, want 1", len(got))
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/rtps/processing"
+	"github.com/arush-sal/garage/backend/rtps/session"
 )
 
 // minRefSamples/minRefDistance gate reference promotion so a degenerate lap (sensor glitch, a lap
@@ -51,7 +52,7 @@ func NewDeltaTracker() *DeltaTracker { return &DeltaTracker{} }
 // state never seeds the tracker. SINGLE-ACTIVE-SESSION assumption: one collector connection at a time
 // (the MVP). Concurrent streams would interleave into this one global tracker — out of scope.
 func (d *DeltaTracker) Publish(f *telemetryv1.TelemetryFrame) {
-	if !f.GetInRace() { // ignore menu/pre-race frames; they carry no meaningful lap distance
+	if !session.OnTrack(f) { // ignore menu frames; they carry no meaningful lap distance
 		return
 	}
 	ts := f.GetRecvTimestamp().AsTime()

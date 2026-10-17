@@ -47,6 +47,28 @@ func TestAPI_ListSessions(t *testing.T) {
 	}
 }
 
+// TestAPI_ListSessionsBestLap: best_lap uses the live frame's protobuf-Duration JSON encoding
+// ("115.583s") and is null when the session has no best lap (never "0s").
+func TestAPI_ListSessionsBestLap(t *testing.T) {
+	srv, store := testServer()
+	_ = store.Save(&session.Record{ID: "s2", BestLap: 115583 * time.Millisecond, Status: session.StatusFinished})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	var got []map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(got))
+	}
+	if b, ok := got[0]["best_lap"]; !ok || string(b) != "null" {
+		t.Errorf("s1 best_lap = %s (present=%v), want null", b, ok)
+	}
+	if b := string(got[1]["best_lap"]); b != `"115.583s"` {
+		t.Errorf("s2 best_lap = %s, want \"115.583s\"", b)
+	}
+}
+
 func TestAPI_SessionCoaching(t *testing.T) {
 	srv, _ := testServer()
 	rr := httptest.NewRecorder()

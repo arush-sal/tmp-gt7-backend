@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"slices"
 	"sync"
 	"time"
 )
@@ -57,6 +58,8 @@ type TraceStore interface {
 	// ByLap returns a lap's samples ordered by seq (for Analysis/dashboard reads). It returns an error
 	// so DB read failures surface rather than looking like "no data".
 	ByLap(sessionID string, lapNumber int32) ([]Sample, error)
+	// DeleteSession removes all of a session's samples (rollback of a dropped duplicate session).
+	DeleteSession(sessionID string) error
 }
 
 // MemTraceStore is a goroutine-safe in-memory TraceStore.
@@ -88,4 +91,12 @@ func (m *MemTraceStore) ByLap(sessionID string, lapNumber int32) ([]Sample, erro
 		}
 	}
 	return out, nil
+}
+
+// DeleteSession removes every sample of sessionID.
+func (m *MemTraceStore) DeleteSession(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.samples = slices.DeleteFunc(m.samples, func(s Sample) bool { return s.SessionID == sessionID })
+	return nil
 }

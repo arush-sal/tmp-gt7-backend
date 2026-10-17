@@ -32,11 +32,27 @@ func dframeGap(x float32, ts time.Time, lap int32) *telemetryv1.TelemetryFrame {
 	return f
 }
 
-// dframeNotInRace is a menu/pre-race frame (InRace=false).
-func dframeNotInRace(x float32, ts time.Time, lap int32) *telemetryv1.TelemetryFrame {
-	f := dframe(x, ts, lap, 0)
+// dframeNotInRace is a menu frame: InRace=false and GT7's menu lap sentinel (-1). The lap argument is
+// ignored (kept for call-site symmetry): a frame with lap >= 0 counts as on track (session.OnTrack).
+func dframeNotInRace(x float32, ts time.Time, _ int32) *telemetryv1.TelemetryFrame {
+	f := dframe(x, ts, -1, 0)
 	f.InRace = false
 	return f
+}
+
+// TestDeltaTracker_LapGateWithoutInRace: newer GT7 builds leave in_race clear while racing; a frame
+// with lap >= 0 must still be tracked.
+func TestDeltaTracker_LapGateWithoutInRace(t *testing.T) {
+	d := NewDeltaTracker()
+	f := dframe(0, time.Unix(1_700_000_000, 0), 1, 0)
+	f.InRace = false
+	d.Publish(f)
+	d.mu.Lock()
+	started := d.started
+	d.mu.Unlock()
+	if !started {
+		t.Fatal("on-track frame (lap >= 0, in_race clear) was ignored")
+	}
 }
 
 func TestDeltaTracker_NoReference(t *testing.T) {

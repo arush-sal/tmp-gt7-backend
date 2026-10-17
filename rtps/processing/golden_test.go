@@ -53,6 +53,11 @@ func loadGoldenFrames(t *testing.T) []*telemetryv1.TelemetryFrame {
 			InRace:        row[6] == "true",
 			Source:        telemetryv1.Source_SOURCE_LIVE,
 		}
+		// The fixture predates the must-move rule and has no speed column; its in-race frames are all
+		// real racing, so mark them moving (others stay at 0 km/h).
+		if fr.InRace {
+			fr.CarSpeed = 100
+		}
 		if ms := atoi(row[8]); ms > 0 {
 			fr.LastLap = durationpb.New(time.Duration(ms) * time.Millisecond)
 		}
@@ -65,8 +70,9 @@ func atoi(s string) int64 { v, _ := strconv.ParseInt(s, 10, 64); return v }
 
 // goldenNewID reproduces the detector's historical monotonic "sess-N" id generator (its pre-UUID
 // default). The production default now mints UUIDs (uuid.NewString), so these golden tests must pin a
-// deterministic generator to keep the expectation maps keyed on sess-1/3/5/6 stable. The gaps
-// (sess-2, sess-4) are the unconfirmed finish-line-flap sessions the detector opens and then drops.
+// deterministic generator to keep the expectation maps keyed on sess-N stable. Races 1-4 are sess-1..4
+// (the finish-line results flap no longer opens sessions: lap-0 frames never split); sess-3, race 3,
+// has no completed timed lap and is discarded.
 func goldenNewID() func() string {
 	n := 0
 	return func() string { n++; return "sess-" + strconv.Itoa(n) }
@@ -87,18 +93,17 @@ func TestSegmenter_Golden4Race(t *testing.T) {
 	d.Close()
 
 	sessions := sessStore.List()
-	if len(sessions) != 4 {
-		t.Fatalf("sessions=%d, want 4", len(sessions))
+	if len(sessions) != 3 {
+		t.Fatalf("sessions=%d, want 3 (race 3 has no completed lap and is discarded)", len(sessions))
 	}
 
 	// Expected per-session (laps, valid) derived from the capture: the two 2-lap races segment to
-	// [0,1,2,3] with laps 1 and 2 valid; the abandoned 10-lap quit stops at [0,1] with none valid; the
-	// 1-lap race is [0,1,2] with lap 1 valid.
+	// [0,1,2,3] with laps 1 and 2 valid; the 1-lap race is [0,1,2] with lap 1 valid. The abandoned
+	// 10-lap quit (sess-3) never completed a timed lap and is discarded, so it is not stored.
 	wantLaps := map[string][2]int{
 		"sess-1": {4, 2},
-		"sess-3": {4, 2},
-		"sess-5": {2, 0}, // abandoned (quit at lap 1) -> no completed timed lap
-		"sess-6": {3, 1},
+		"sess-2": {4, 2},
+		"sess-4": {3, 1},
 	}
 
 	for _, s := range sessions {

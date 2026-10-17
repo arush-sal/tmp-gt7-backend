@@ -30,7 +30,22 @@ type TrackGeom struct {
 	// source (cl > left+right > outline), subsampled by detectionPointStride, followed by all corner
 	// apex_world points (unsampled).
 	Points [][2]float64
+	// LengthM is tracks.length_m (the official lap length, metres); 0 when NULL. The live detector uses
+	// it to decide when roughly a full lap has been driven (its coverage lock).
+	LengthM float64
+	// Apexes is the corner apex_world points in turn order (turn 1..N) - the same points appended to
+	// Points, kept separately because their ORDER carries the layout's direction of travel.
+	Apexes [][2]float64
+	// ApexOrderTrusted is true when every apex comes from a driven lap (corners.source "kinematic", or
+	// "derived-reverse" = a kinematic twin's corners reversed), so turn order really is the direction
+	// of travel. Stored / outline-curvature corners follow an SVG path's arbitrary winding, so their
+	// order says nothing about direction and must not be used to tell forward from reverse.
+	ApexOrderTrusted bool
 }
+
+// trustedApexSources are the corners.source values whose turn order is the layout's real direction of
+// travel (see TrackGeom.ApexOrderTrusted).
+var trustedApexSources = map[string]bool{"kinematic": true, "derived-reverse": true}
 
 // boundarySide is one row of the boundary_points table, scoped to the columns DetectionGeometry needs.
 type boundarySide struct {
@@ -50,7 +65,7 @@ func (s *SQLiteStore) DetectionGeometry(ctx context.Context) ([]TrackGeom, error
 	if err != nil {
 		return nil, err
 	}
-	apexBySlug, err := s.detectionApexes(ctx)
+	apexBySlug, trustedBySlug, err := s.detectionApexes(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +73,9 @@ func (s *SQLiteStore) DetectionGeometry(ctx context.Context) ([]TrackGeom, error
 	out := make([]TrackGeom, 0, len(order))
 	for _, slug := range order {
 		g := geoms[slug]
-		g.Points = append(subsampleBoundary(boundaryBySlug[slug]), apexBySlug[slug]...)
+		g.Apexes = apexBySlug[slug]
+		g.ApexOrderTrusted = len(g.Apexes) > 0 && trustedBySlug[slug]
+		g.Points = append(subsampleBoundary(boundaryBySlug[slug]), g.Apexes...)
 		out = append(out, g)
 	}
 	return out, nil
@@ -68,7 +85,7 @@ func (s *SQLiteStore) DetectionGeometry(ctx context.Context) ([]TrackGeom, error
 // separately so the final assembly loop is deterministic).
 func (s *SQLiteStore) detectionTracks(ctx context.Context) (map[string]TrackGeom, []string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`select slug,base,is_reverse,
+		`select slug,base,is_reverse,length_m,
 		        affine_world_bbox_min_x,affine_world_bbox_min_z,affine_world_bbox_max_x,affine_world_bbox_max_z
 		 from tracks order by slug`)
 	if err != nil {
@@ -82,11 +99,12 @@ func (s *SQLiteStore) detectionTracks(ctx context.Context) (map[string]TrackGeom
 		var slug string
 		var base sql.NullInt64
 		var isReverse sql.NullInt64
+		var length sql.NullFloat64
 		var minX, minZ, maxX, maxZ sql.NullFloat64
-		if err := rows.Scan(&slug, &base, &isReverse, &minX, &minZ, &maxX, &maxZ); err != nil {
+		if err := rows.Scan(&slug, &base, &isReverse, &length, &minX, &minZ, &maxX, &maxZ); err != nil {
 			return nil, nil, fmt.Errorf("rkb: detection tracks scan: %w", err)
 		}
-		g := TrackGeom{Slug: slug, IsReverse: isReverse.Valid && isReverse.Int64 == 1}
+		g := TrackGeom{Slug: slug, IsReverse: isReverse.Valid && isReverse.Int64 == 1, LengthM: length.Float64}
 		if base.Valid {
 			g.Base = int(base.Int64)
 		}
@@ -123,29 +141,38 @@ func (s *SQLiteStore) detectionBoundary(ctx context.Context) (map[string][]bound
 	return bySlug, rows.Err()
 }
 
-// detectionApexes reads every corner's apex_world once and groups it by slug, keeping only apexes
-// where both coordinates are non-null (a bare corner label with no resolved apex contributes nothing
-// to the shape).
-func (s *SQLiteStore) detectionApexes(ctx context.Context) (map[string][][2]float64, error) {
+// detectionApexes reads every corner's apex_world once and groups it by slug in turn order, keeping only
+// apexes where both coordinates are non-null (a bare corner label with no resolved apex contributes
+// nothing to the shape). trusted[slug] reports whether every kept apex has a trustedApexSources source.
+func (s *SQLiteStore) detectionApexes(ctx context.Context) (apexes map[string][][2]float64, trusted map[string]bool, err error) {
 	rows, err := s.db.QueryContext(ctx,
-		`select slug,apex_x,apex_z from corners order by slug,turn`)
+		`select slug,apex_x,apex_z,source from corners order by slug,turn`)
 	if err != nil {
-		return nil, fmt.Errorf("rkb: detection corners: %w", err)
+		return nil, nil, fmt.Errorf("rkb: detection corners: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	bySlug := make(map[string][][2]float64)
+	apexes = make(map[string][][2]float64)
+	trusted = make(map[string]bool)
 	for rows.Next() {
 		var slug string
 		var x, z sql.NullFloat64
-		if err := rows.Scan(&slug, &x, &z); err != nil {
-			return nil, fmt.Errorf("rkb: detection corners scan: %w", err)
+		var source sql.NullString
+		if err := rows.Scan(&slug, &x, &z, &source); err != nil {
+			return nil, nil, fmt.Errorf("rkb: detection corners scan: %w", err)
 		}
-		if x.Valid && z.Valid {
-			bySlug[slug] = append(bySlug[slug], [2]float64{x.Float64, z.Float64})
+		if !x.Valid || !z.Valid {
+			continue
 		}
+		ok := trustedApexSources[source.String]
+		if _, seen := apexes[slug]; !seen {
+			trusted[slug] = ok
+		} else {
+			trusted[slug] = trusted[slug] && ok
+		}
+		apexes[slug] = append(apexes[slug], [2]float64{x.Float64, z.Float64})
 	}
-	return bySlug, rows.Err()
+	return apexes, trusted, rows.Err()
 }
 
 // subsampleBoundary picks the preferred boundary-point source for one track (cl > left+right >

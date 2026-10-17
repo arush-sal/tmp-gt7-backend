@@ -2,10 +2,12 @@ package processing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -22,28 +24,33 @@ func NewPostgresLapStore(pool *pgxpool.Pool) *PostgresLapStore {
 }
 
 // lapUpsertSQL inserts a lap or replaces it on (session_id, lap_number) conflict — idempotent, though
-// the segmenter emits each lap once.
+// the segmenter emits each lap once. An empty fingerprint is stored as NULL so the unique index on
+// laps.fingerprint (migration 00008) only constrains real fingerprints.
 const lapUpsertSQL = `
 INSERT INTO laps
- (session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+ (session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, fingerprint)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''))
  ON CONFLICT (session_id, lap_number) DO UPDATE SET
    start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, duration_ns=EXCLUDED.duration_ns,
    frame_count=EXCLUDED.frame_count, gap_count=EXCLUDED.gap_count, complete=EXCLUDED.complete,
-   timed=EXCLUDED.timed, valid=EXCLUDED.valid`
+   timed=EXCLUDED.timed, valid=EXCLUDED.valid, fingerprint=EXCLUDED.fingerprint`
 
 // Save upserts a lap. Duration stores as nanoseconds; counts widen to bigint (CHECK (>= 0) in the DB).
 func (s *PostgresLapStore) Save(lap *Lap) error {
 	_, err := s.pool.Exec(context.Background(), lapUpsertSQL,
 		lap.SessionID, lap.LapNumber, lap.StartTime, lap.EndTime, lap.Duration.Nanoseconds(),
-		int64(lap.FrameCount), int64(lap.GapCount), lap.Complete, lap.Timed, lap.Valid)
+		int64(lap.FrameCount), int64(lap.GapCount), lap.Complete, lap.Timed, lap.Valid, lap.Fingerprint)
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.ConstraintName == "laps_fingerprint_key" {
+		// The single INSERT failed atomically, so nothing was half-written; let the caller retry.
+		return fmt.Errorf("processing: save lap %s#%d: %w", lap.SessionID, lap.LapNumber, ErrDuplicateFingerprint)
+	}
 	if err != nil {
 		return fmt.Errorf("processing: save lap %s#%d: %w", lap.SessionID, lap.LapNumber, err)
 	}
 	return nil
 }
 
-const lapCols = `session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid`
+const lapCols = `session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, COALESCE(fingerprint, '')`
 
 // BySession returns a session's laps ordered by lap number (nil if none).
 func (s *PostgresLapStore) BySession(sessionID string) []*Lap {
@@ -66,6 +73,31 @@ func (s *PostgresLapStore) List() []*Lap {
 	}
 	defer rows.Close()
 	return scanLaps(rows)
+}
+
+// SessionByFingerprint returns the session owning a lap with fingerprint fp (uses the unique index).
+// No row is not-found; any other error is returned so the caller can tell a failed lookup apart.
+func (s *PostgresLapStore) SessionByFingerprint(fp string) (string, bool, error) {
+	if fp == "" {
+		return "", false, nil
+	}
+	var id string
+	err := s.pool.QueryRow(context.Background(), "SELECT session_id FROM laps WHERE fingerprint=$1", fp).Scan(&id)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("processing: fingerprint lookup: %w", err)
+	}
+	return id, true, nil
+}
+
+// DeleteSession removes a session's laps.
+func (s *PostgresLapStore) DeleteSession(sessionID string) error {
+	if _, err := s.pool.Exec(context.Background(), "DELETE FROM laps WHERE session_id=$1", sessionID); err != nil {
+		return fmt.Errorf("processing: delete laps of %s: %w", sessionID, err)
+	}
+	return nil
 }
 
 // PostgresTraceStore bulk-loads trace samples into the lap_trace hypertable via COPY.
@@ -139,6 +171,14 @@ func (s *PostgresTraceStore) ByLap(sessionID string, lapNumber int32) ([]Sample,
 	return out, nil
 }
 
+// DeleteSession removes a session's trace rows.
+func (s *PostgresTraceStore) DeleteSession(sessionID string) error {
+	if _, err := s.pool.Exec(context.Background(), "DELETE FROM lap_trace WHERE session_id=$1", sessionID); err != nil {
+		return fmt.Errorf("processing: delete trace of %s: %w", sessionID, err)
+	}
+	return nil
+}
+
 // joinCols renders a column list for SELECT (COPY takes the slice form directly).
 func joinCols(cols []string) string {
 	s := ""
@@ -161,7 +201,7 @@ func scanLaps(rows pgx.Rows) []*Lap {
 			durNs, fc, gc int64
 		)
 		if err := rows.Scan(&lap.SessionID, &lap.LapNumber, &lap.StartTime, &lap.EndTime,
-			&durNs, &fc, &gc, &lap.Complete, &lap.Timed, &lap.Valid); err != nil {
+			&durNs, &fc, &gc, &lap.Complete, &lap.Timed, &lap.Valid, &lap.Fingerprint); err != nil {
 			return out
 		}
 		lap.Duration = time.Duration(durNs)

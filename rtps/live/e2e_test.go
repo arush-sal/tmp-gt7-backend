@@ -72,6 +72,11 @@ func loadPosGolden(t *testing.T, path string) []*telemetryv1.TelemetryFrame {
 			PositionZ:     f32(t, row[9]),
 			Source:        telemetryv1.Source_SOURCE_LIVE,
 		}
+		// The CSV predates the detector's must-move rule and has no speed column; its in-race frames
+		// are real racing, so mark them moving (others stay at 0 km/h).
+		if fr.InRace {
+			fr.CarSpeed = 100
+		}
 		if ms := mi64(t, row[6]); ms >= 0 { // negative = GT7 "no lap time" sentinel -> leave nil
 			d := time.Duration(ms) * time.Millisecond
 			fr.LastLap = durationpb.New(d)

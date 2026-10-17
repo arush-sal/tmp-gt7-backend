@@ -17,6 +17,8 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"github.com/arush-sal/garage/backend/web"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // Server serves the read API. It depends on the Coaching domain (for reports), the session store
@@ -37,8 +39,15 @@ type Server struct {
 	traces  processing.TraceStore
 	sectors processing.SectorProvider
 
-	trackRecMu    sync.Mutex                 // guards trackRecCache
+	// Recording is the in-process stream's Record switch (POST /v1/live/recording, and the live
+	// snapshot's enrichment.recording). nil = no switch: the POST answers 409, recording reads true.
+	Recording RecordingSwitch
+
+	trackRecMu    sync.Mutex                 // guards trackRecCache and trackRecMissed
 	trackRecCache map[string]json.RawMessage // slug -> marshalled rkb.Record; records are immutable at runtime, so this never invalidates
+	// trackRecMissed holds slugs already warned about having no RKB record, so a resolved-but-missing slug
+	// warns once per process instead of on every frame wake of every SSE subscriber.
+	trackRecMissed map[string]bool
 }
 
 // NewServer wires the API server. Nil live dependencies are replaced with safe empties (a no-op
@@ -60,11 +69,15 @@ func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *liv
 	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, delta: delta, tracks: tracks, log: log, laps: laps, traces: traces, sectors: sectors}
 }
 
-// liveEnrichment returns the current enrichment snapshot with the live per-frame delta overlaid, when a
-// DeltaTracker is wired. s.enrich.Get() returns a value copy, so setting DeltaToBestNs here mutates only
+// liveEnrichment returns the current enrichment snapshot with the Record switch state and (when a
+// DeltaTracker is wired) the live per-frame delta overlaid. s.enrich.Get() returns a value copy, so setting DeltaToBestNs here mutates only
 // that local copy, never the shared EnrichmentState (see Enrichment's immutability invariant).
 func (s *Server) liveEnrichment() live.Enrichment {
 	en := s.enrich.Get()
+	en.Recording = true
+	if s.Recording != nil {
+		en.Recording, _ = s.Recording.State()
+	}
 	if s.delta != nil {
 		if ns, ok := s.delta.Delta(); ok {
 			en.DeltaToBestNs = &ns
@@ -85,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/reference", s.handleSessionReference)
 	mux.HandleFunc("GET /v1/live", s.handleLive)
 	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
+	mux.HandleFunc("POST /v1/live/recording", s.handleSetRecording)
 	mux.HandleFunc("GET /v1/tracks", s.handleListTracks)
 	// Literal "coverage" beats the "{slug}" wildcard by Go 1.22 mux precedence (most-specific wins).
 	mux.HandleFunc("GET /v1/tracks/coverage", s.handleTracksCoverage)
@@ -107,6 +121,9 @@ type sessionSummary struct {
 	GapCount   uint64    `json:"gap_count"`
 	CurrentLap int32     `json:"current_lap"`
 	TotalLaps  int32     `json:"total_laps"`
+	// BestLap is GT7's best lap of the session in the same protobuf-Duration JSON encoding as the live
+	// frame's best_lap ("115.583s"), so clients parse both alike; null when no timed lap exists.
+	BestLap *string `json:"best_lap"`
 }
 
 func summaryOf(r *session.Record) sessionSummary {
@@ -115,7 +132,25 @@ func summaryOf(r *session.Record) sessionSummary {
 		StartTime: r.StartTime, EndTime: r.EndTime,
 		FrameCount: r.FrameCount, GapCount: r.GapCount,
 		CurrentLap: r.CurrentLap, TotalLaps: r.TotalLaps,
+		BestLap: protoDuration(r.BestLap),
 	}
+}
+
+// protoDuration renders d exactly as protojson renders a google.protobuf.Duration (e.g. "115.583s"),
+// or nil for a non-positive d (GT7 reported no best lap).
+func protoDuration(d time.Duration) *string {
+	if d <= 0 {
+		return nil
+	}
+	b, err := protojson.Marshal(durationpb.New(d))
+	if err != nil {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) != nil {
+		return nil
+	}
+	return &s
 }
 
 // handleListSessions: GET /v1/sessions -> the session summaries in store order.
@@ -187,15 +222,15 @@ func (s *Server) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// lastSlugSent is handler-goroutine-local: it tracks the last slug pushed as a "track" event on
-	// THIS subscriber's connection, so a slug already resolved before connect still replays once
-	// (initial connect below), and a slug that never changes never re-emits.
-	var lastSlugSent *string
+	// lastSent is handler-goroutine-local: it tracks the last slug + confidence pushed as a "track"
+	// event on THIS subscriber's connection, so a slug already resolved before connect still replays
+	// once (initial connect below), and a track that never changes never re-emits.
+	var lastSent trackSent
 
 	// Emit the current snapshot immediately so a fresh client isn't blank until the next frame, and
 	// replay the track event on connect (a client connecting after resolution gets it right away).
 	s.emit(w, flusher)
-	s.emitTrack(ctx, w, flusher, &lastSlugSent)
+	s.emitTrack(ctx, w, flusher, &lastSent)
 
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
@@ -206,13 +241,13 @@ func (s *Server) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		case <-heartbeat.C:
 			_, _ = w.Write([]byte(": ping\n\n")) // comment frame keeps intermediaries open
 			flusher.Flush()
-			s.emitTrack(ctx, w, flusher, &lastSlugSent) // quiet-gap coverage (no frames flowing)
+			s.emitTrack(ctx, w, flusher, &lastSent) // quiet-gap coverage (no frames flowing)
 		case <-sub.C():
 			if sub.Take() == nil {
 				continue
 			}
 			s.emit(w, flusher)
-			s.emitTrack(ctx, w, flusher, &lastSlugSent) // resolution mid-stream rides the next frame wake
+			s.emitTrack(ctx, w, flusher, &lastSent) // resolution mid-stream rides the next frame wake
 		}
 	}
 }
@@ -257,14 +292,18 @@ type trackEventPayload struct {
 	Record     json.RawMessage `json:"record,omitempty"`
 }
 
-// emitTrack pushes a "track" SSE event exactly when the resolved slug differs from *lastSlugSent
-// (nil->slug, slug->slug2, slug->nil all count as a change); otherwise it is a no-op. This is what
-// makes the full record a ONE-TIME push per (subscriber, slug) rather than riding every frame.
-func (s *Server) emitTrack(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, lastSlugSent **string) {
+// trackSent is the slug + confidence last pushed as a "track" event on one subscriber's connection.
+type trackSent struct{ slug, confidence *string }
+
+// emitTrack pushes a "track" SSE event exactly when the resolved slug or its confidence differs from
+// *last (nil->slug, slug->slug2, slug->nil, and provisional->confident on the same slug all count as a
+// change); otherwise it is a no-op. This keeps the full record a push per (subscriber, track state)
+// rather than riding every frame, while a provisional guess that locks is still re-announced.
+func (s *Server) emitTrack(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, last *trackSent) {
 	en := s.enrich.Get()
 	cur := en.Track
 
-	if !slugChanged(*lastSlugSent, cur) {
+	if !slugChanged(last.slug, cur) && !slugChanged(last.confidence, en.TrackConfidence) {
 		return
 	}
 
@@ -276,9 +315,9 @@ func (s *Server) emitTrack(ctx context.Context, w http.ResponseWriter, flusher h
 			payload.Record = raw
 		} else {
 			// Slug resolved but the RKB store has no record for it (or is unavailable): skip this
-			// push rather than emit a track event with no record, and do not update lastSlugSent so
+			// push rather than emit a track event with no record, and do not update last so
 			// a later successful lookup still fires.
-			s.log.Warn("track event skipped: no rkb record for resolved slug")
+			s.warnMissingTrackRecord(slug)
 			return
 		}
 	}
@@ -292,7 +331,23 @@ func (s *Server) emitTrack(ctx context.Context, w http.ResponseWriter, flusher h
 	_, _ = w.Write([]byte("\n\n"))
 	flusher.Flush()
 
-	*lastSlugSent = cur
+	*last = trackSent{slug: cur, confidence: en.TrackConfidence}
+}
+
+// warnMissingTrackRecord logs the missing-record warning at most once per slug.
+func (s *Server) warnMissingTrackRecord(slug string) {
+	s.trackRecMu.Lock()
+	seen := s.trackRecMissed[slug]
+	if !seen {
+		if s.trackRecMissed == nil {
+			s.trackRecMissed = make(map[string]bool)
+		}
+		s.trackRecMissed[slug] = true
+	}
+	s.trackRecMu.Unlock()
+	if !seen {
+		s.log.Warn("track event skipped: no rkb record for resolved slug", zap.String("slug", slug))
+	}
 }
 
 // slugChanged reports whether cur differs from prev, treating nil as its own distinct value (so

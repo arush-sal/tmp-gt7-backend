@@ -68,11 +68,12 @@ func TestTrackDetector_OnFrame_AccumulatesOnlyInRace(t *testing.T) {
 
 	d.OnSessionStart(&session.Record{ID: "s1"})
 	d.OnFrame("s1", posFrame(true, 1, 2, 0, 1))
-	d.OnFrame("s1", posFrame(false, 99, 99, 0, 2)) // not in race: must be ignored
+	d.OnFrame("s1", posFrame(false, 99, 99, -1, 2)) // menu (lap -1, not in race): must be ignored
 	d.OnFrame("s1", posFrame(true, 3, 4, 0, 3))
+	d.OnFrame("s1", posFrame(false, 5, 6, 1, 4)) // in_race clear but lap >= 0: on track (newer GT7)
 
-	if got := d.PointCountForTest("s1"); got != 2 {
-		t.Fatalf("expected 2 accumulated points (in-race only), got %d", got)
+	if got := d.PointCountForTest("s1"); got != 3 {
+		t.Fatalf("expected 3 accumulated points (on-track only), got %d", got)
 	}
 }
 
@@ -97,11 +98,12 @@ func TestTrackDetector_StubMatcher_LeavesTrackNil(t *testing.T) {
 }
 
 // fakeEnricher is a test double for processing.TrackEnricher: it records every SetTrack call (not just
-// the final state), so tests can assert call COUNTS - e.g. that latching stops a second SetTrack from
-// ever happening, not just that the last-observed value looks right.
+// the final state) and counts ClearTrack calls, so tests can assert the whole provisional -> locked
+// sequence - e.g. that a lock stops any further SetTrack, not just that the last value looks right.
 type fakeEnricher struct {
-	mu    sync.Mutex
-	calls []setTrackCall
+	mu     sync.Mutex
+	calls  []setTrackCall
+	clears int
 }
 
 // setTrackCall is one recorded SetTrack invocation, with the pointer args dereferenced for easy
@@ -118,7 +120,11 @@ func (f *fakeEnricher) SetTrack(sessionID string, slug *string, confidence *stri
 	f.calls = append(f.calls, setTrackCall{sessionID: sessionID, slug: *slug, confidence: *confidence})
 }
 
-func (f *fakeEnricher) ClearTrack(string) {}
+func (f *fakeEnricher) ClearTrack(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clears++
+}
 
 // callCount returns the number of recorded SetTrack calls so far.
 func (f *fakeEnricher) callCount() int {
@@ -132,6 +138,17 @@ func (f *fakeEnricher) lastCall() setTrackCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[len(f.calls)-1]
+}
+
+// sequence returns the recorded calls as "slug/confidence" strings, for readable sequence assertions.
+func (f *fakeEnricher) sequence() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.calls))
+	for i, c := range f.calls {
+		out[i] = c.slug + "/" + c.confidence
+	}
+	return out
 }
 
 // circlePoints returns n points evenly spaced around a circle of the given radius centered at (cx, cz):
@@ -168,113 +185,185 @@ func feedFrames(d *processing.TrackDetector, sessionID string, points [][2]float
 	}
 }
 
-// TestTrackDetector_AttemptMatch_ResolvesToDistinctTrack drives a jittered sample of track A's own
-// points against a candidate set of [A, B] where B is a clearly different shape far away: the shape
-// score should land close to A (small mean NN distance) and far from B (huge distance), giving a clear
-// margin, so the match should resolve confidently to A.
-func TestTrackDetector_AttemptMatch_ResolvesToDistinctTrack(t *testing.T) {
-	trackA := circlePoints(0, 0, 500, 60)
-	trackB := circlePoints(100000, 100000, 2000, 20)
+// Synthetic loop used by the matcher tests: a 500 m-radius circle sampled every ~5.2 m (600 points), so
+// consecutive frames are a realistic step apart and travelled distance accumulates like real driving.
+const (
+	loopRadius = 500.0
+	loopN      = 600
+)
 
+var loopLength = 2 * math.Pi * loopRadius // ~3142 m
+
+// lapFraction returns the first frac of a jittered drive around the synthetic loop.
+func lapFraction(frac float64) [][2]float64 {
+	return jitterPoints(circlePoints(0, 0, loopRadius, loopN)[:int(frac*loopN)])
+}
+
+// runSession drives points through a fresh detector over geoms and returns the recorder.
+func runSession(t *testing.T, geoms []rkb.TrackGeom, points [][2]float64) *fakeEnricher {
+	t.Helper()
 	enrich := &fakeEnricher{}
-	geom := &fakeGeomProvider{geoms: []rkb.TrackGeom{
-		{Slug: "track-a", Points: trackA},
-		{Slug: "track-b", Points: trackB},
-	}}
-	d := processing.NewTrackDetector(geom, enrich, nil)
-
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, enrich, nil)
 	rec := &session.Record{ID: "s1"}
 	d.OnSessionStart(rec)
-	feedFrames(d, "s1", jitterPoints(trackA[:45]))
+	feedFrames(d, "s1", points)
 	d.OnSessionEnd(rec)
+	return enrich
+}
 
-	if enrich.callCount() == 0 {
-		t.Fatalf("expected a confident match to be published, got no SetTrack calls")
+// farTrack is a distinct candidate far away from the synthetic loop (pruned by the bbox pre-filter).
+func farTrack() rkb.TrackGeom {
+	return rkb.TrackGeom{Slug: "track-b", Points: circlePoints(100000, 100000, 2000, 20), LengthM: 12566}
+}
+
+// TestTrackDetector_ProvisionalThenLockedOnCoverage: with a same-venue sibling layout still feasible
+// (so the early margin lock cannot fire), the guess is published as provisional while the lap is being
+// driven, and only locks to confident once lockCoverageFraction (0.9) of the lap length is travelled.
+func TestTrackDetector_ProvisionalThenLockedOnCoverage(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	sibling := circlePoints(0, 0, 600, 120) // same venue, bigger loop: bbox-feasible all lap, fits ~100 m off
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Base: 7, Points: loop, LengthM: loopLength},
+		{Slug: "track-a-long", Base: 7, Points: sibling, LengthM: 2 * math.Pi * 600},
+		farTrack(),
 	}
-	got := enrich.lastCall()
-	if got.slug != "track-a" {
-		t.Fatalf("expected match to resolve to track-a, got %q", got.slug)
+
+	half := runSession(t, geoms, lapFraction(0.5))
+	if got := half.sequence(); len(got) != 1 || got[0] != "track-a/provisional" {
+		t.Fatalf("half a lap: want [track-a/provisional], got %v", got)
 	}
-	if got.confidence != "confident" {
-		t.Fatalf("expected confidence %q, got %q", "confident", got.confidence)
+
+	full := runSession(t, geoms, lapFraction(0.95))
+	if got := full.sequence(); len(got) != 2 || got[0] != "track-a/provisional" || got[1] != "track-a/confident" {
+		t.Fatalf("0.95 lap: want [track-a/provisional track-a/confident], got %v", got)
 	}
 }
 
-// TestTrackDetector_AttemptMatch_AmbiguousStaysNil feeds the same jittered sample of track A against a
-// candidate set of [A, C] where C is a near-duplicate (identical point cloud, e.g. a reversed layout
-// that has not been direction-differentiated yet): both candidates score almost identically, so the
-// margin requirement should not be met and no match should be published.
-func TestTrackDetector_AttemptMatch_AmbiguousStaysNil(t *testing.T) {
-	trackA := circlePoints(0, 0, 500, 60)
-	trackC := append([][2]float64(nil), trackA...) // near-duplicate: identical shape
-
-	enrich := &fakeEnricher{}
-	geom := &fakeGeomProvider{geoms: []rkb.TrackGeom{
-		{Slug: "track-a", Points: trackA},
-		{Slug: "track-c", Points: trackC},
-	}}
-	d := processing.NewTrackDetector(geom, enrich, nil)
-
-	rec := &session.Record{ID: "s1"}
-	d.OnSessionStart(rec)
-	feedFrames(d, "s1", jitterPoints(trackA[:45]))
-	d.OnSessionEnd(rec)
-
-	if got := enrich.callCount(); got != 0 {
-		t.Fatalf("expected no confident match between near-duplicate tracks, got %d calls (%+v)", got, enrich.calls)
+// TestTrackDetector_MarginLocksBeforeFullLap: with no sibling layout and the runner-up far behind, the
+// match locks early - after lockMarginMinFraction of the lap, well before full coverage.
+func TestTrackDetector_MarginLocksBeforeFullLap(t *testing.T) {
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		farTrack(),
+	}
+	enrich := runSession(t, geoms, lapFraction(0.45))
+	if enrich.callCount() == 0 || enrich.lastCall() != (setTrackCall{"s1", "track-a", "confident"}) {
+		t.Fatalf("want an early confident lock on track-a, got %v", enrich.sequence())
 	}
 }
 
-// TestTrackDetector_AttemptMatch_PartialCoverageStaysNil feeds fewer points than minCoveragePoints: no
-// match attempt should even be made, so no SetTrack call should ever happen.
-func TestTrackDetector_AttemptMatch_PartialCoverageStaysNil(t *testing.T) {
-	trackA := circlePoints(0, 0, 500, 60)
-
+// TestTrackDetector_LockIsKeptForTheSession: once confident, further driving (even somewhere that
+// would no longer fit) never publishes or clears again.
+func TestTrackDetector_LockIsKeptForTheSession(t *testing.T) {
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		farTrack(),
+	}
 	enrich := &fakeEnricher{}
-	geom := &fakeGeomProvider{geoms: []rkb.TrackGeom{{Slug: "track-a", Points: trackA}}}
-	d := processing.NewTrackDetector(geom, enrich, nil)
-
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, enrich, nil)
 	rec := &session.Record{ID: "s1"}
 	d.OnSessionStart(rec)
-	feedFrames(d, "s1", jitterPoints(trackA[:10])) // well below minCoveragePoints
+	feedFrames(d, "s1", lapFraction(0.95))
+	calls, clears := enrich.callCount(), enrich.clears
+	if enrich.lastCall().confidence != "confident" {
+		t.Fatalf("want a confident lock first, got %v", enrich.sequence())
+	}
+	feedFrames(d, "s1", jitterPoints(circlePoints(5000, 5000, 100, 200))) // drive off somewhere else
 	d.OnSessionEnd(rec)
-
-	if got := enrich.callCount(); got != 0 {
-		t.Fatalf("expected no match below coverage threshold, got %d calls (%+v)", got, enrich.calls)
+	if enrich.callCount() != calls || enrich.clears != clears {
+		t.Fatalf("lock must be kept: calls %d->%d, clears %d->%d", calls, enrich.callCount(), clears, enrich.clears)
 	}
 }
 
-// TestTrackDetector_AttemptMatch_LatchesAfterConfidentMatch confirms that once a confident match is
-// published, further frames (even more of the exact same track's points) never trigger a second
-// SetTrack call - the session is latched and left alone.
-func TestTrackDetector_AttemptMatch_LatchesAfterConfidentMatch(t *testing.T) {
-	trackA := circlePoints(0, 0, 500, 60)
-	trackB := circlePoints(100000, 100000, 2000, 20)
+// TestTrackDetector_SwitchesProvisionalGuess: two layouts of one venue (same Base, so no early margin
+// lock): track X's reference covers only the first quarter of the loop, densely (so it fits the start
+// best); track Y's covers the whole loop, sparsely (~13 m mean fit). The early provisional guess is X;
+// as the rest of the lap is driven X stops fitting, the guess switches to Y, and Y locks on coverage.
+func TestTrackDetector_SwitchesProvisionalGuess(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	arc := append(append([][2]float64(nil), loop[:loopN/4]...), [2]float64{-600, -600}, [2]float64{600, 600})
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-x", Base: 3, Points: arc, LengthM: loopLength},
+		{Slug: "track-y", Base: 3, Points: circlePoints(0, 0, loopRadius, 60), LengthM: loopLength},
+	}
+	got := runSession(t, geoms, lapFraction(0.95)).sequence()
+	want := []string{"track-x/provisional", "track-y/provisional", "track-y/confident"}
+	if len(got) != len(want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+	}
+}
 
+// TestTrackDetector_NoLockWhileOffTheCandidate is the brands-hatch-indy-inside-the-GP case: layout S
+// shares 70% of the driven loop and closes with a short-cut chord the car never takes, and the venue's
+// other layout Y has poor reference geometry. S stays the best guess on cumulative fit, and the car
+// does travel 0.9 of S's length - but by then it is ~200 m off S, so S must not lock.
+func TestTrackDetector_NoLockWhileOffTheCandidate(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	arcEnd := loop[loopN*7/10]
+	short := append([][2]float64(nil), loop[:loopN*7/10]...)
+	for i := 1; i < 100; i++ { // chord from the arc's end back to its start
+		f := float64(i) / 100
+		short = append(short, [2]float64{arcEnd[0] + f*(loop[0][0]-arcEnd[0]), arcEnd[1] + f*(loop[0][1]-arcEnd[1])})
+	}
+	chord := math.Hypot(arcEnd[0]-loop[0][0], arcEnd[1]-loop[0][1])
+	poor := circlePoints(0, 70, loopRadius, 60) // same venue, reference ~45 m off the driven line
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-s", Base: 5, Points: short, LengthM: 0.7*loopLength + chord},
+		{Slug: "track-y", Base: 5, Points: poor, LengthM: loopLength},
+	}
+	for _, c := range runSession(t, geoms, lapFraction(0.9)).sequence() {
+		if c == "track-s/confident" {
+			t.Fatal("track-s locked while the car was far off it")
+		}
+	}
+}
+
+// TestTrackDetector_WithdrawsUnsupportedGuess: a provisional guess is cleared once the car is driven
+// somewhere no candidate fits at all (best mean > sanityCap), rather than left up indefinitely.
+func TestTrackDetector_WithdrawsUnsupportedGuess(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: loop[:loopN/8], LengthM: loopLength}, // no bbox: never pruned
+		farTrack(),
+	}
 	enrich := &fakeEnricher{}
-	geom := &fakeGeomProvider{geoms: []rkb.TrackGeom{
-		{Slug: "track-a", Points: trackA},
-		{Slug: "track-b", Points: trackB},
-	}}
-	d := processing.NewTrackDetector(geom, enrich, nil)
-
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, enrich, nil)
 	rec := &session.Record{ID: "s1"}
 	d.OnSessionStart(rec)
-	feedFrames(d, "s1", jitterPoints(trackA[:45]))
-
-	if got := enrich.callCount(); got != 1 {
-		t.Fatalf("expected exactly one SetTrack call once confident, got %d (%+v)", got, enrich.calls)
+	clearsAtStart := enrich.clears
+	feedFrames(d, "s1", jitterPoints(loop[:loopN/10]))
+	if enrich.callCount() != 1 || enrich.lastCall().confidence != "provisional" {
+		t.Fatalf("want one provisional guess, got %v", enrich.sequence())
 	}
-
-	// Feed more frames after latching: must not re-match or overwrite.
-	feedFrames(d, "s1", jitterPoints(trackA[:20]))
-	d.OnSessionEnd(rec)
-
-	if got := enrich.callCount(); got != 1 {
-		t.Fatalf("expected latch to prevent further SetTrack calls, got %d (%+v)", got, enrich.calls)
+	feedFrames(d, "s1", jitterPoints(loop[loopN/4:])) // the rest of the loop: far from track-a's arc
+	if enrich.clears != clearsAtStart+1 {
+		t.Fatalf("want the unsupported provisional guess withdrawn (1 ClearTrack), got %d", enrich.clears-clearsAtStart)
 	}
-	if got := enrich.lastCall(); got.slug != "track-a" {
-		t.Fatalf("expected latched match to stay track-a, got %q", got.slug)
+}
+
+// TestTrackDetector_AmbiguousStaysNil feeds a lap of track A against [A, C] where C is an identical
+// point cloud with no forward/reverse pairing: the two can never be told apart, so nothing is published.
+func TestTrackDetector_AmbiguousStaysNil(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: loop, LengthM: loopLength},
+		{Slug: "track-c", Points: append([][2]float64(nil), loop...), LengthM: loopLength},
+	}
+	if got := runSession(t, geoms, lapFraction(0.95)).callCount(); got != 0 {
+		t.Fatalf("expected no match between identical tracks, got %d calls", got)
+	}
+}
+
+// TestTrackDetector_PartialCoverageStaysNil feeds fewer frames than minCoveragePoints: no guess at all.
+func TestTrackDetector_PartialCoverageStaysNil(t *testing.T) {
+	geoms := []rkb.TrackGeom{{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength}}
+	if got := runSession(t, geoms, lapFraction(0.03)).callCount(); got != 0 { // 18 frames
+		t.Fatalf("expected no match below the coverage threshold, got %d calls", got)
 	}
 }
 
@@ -305,78 +394,64 @@ func reversePoints(points [][2]float64) [][2]float64 {
 // twinGeoms returns a forward/reverse layout pair sharing Base=1, modeling the REAL RKB shape: each
 // candidate's Points is boundary ++ apexes (see rtps/rkb TrackGeom/DetectionGeometry), where the reverse
 // layout's boundary prefix is a VERBATIM copy of the forward's, but its apex suffix is in REVERSED order
-// (tools/rkb/rkb/reverse.py's _derive_corners reverses the forward's corner list). A flat, order-preserved
-// copy of the whole cloud (boundary+apex together) does NOT model this - it would pass even a naive
-// per-index comparison and so could never catch the per-index-vs-order-insensitive bug this fixture
-// exists to exercise.
-func twinGeoms(boundary, apexes [][2]float64) []rkb.TrackGeom {
+// (tools/rkb/rkb/reverse.py's _derive_corners reverses the forward's corner list). trusted sets
+// ApexOrderTrusted on both (kinematic / derived-reverse corners: turn order = direction of travel).
+func twinGeoms(boundary, apexes [][2]float64, trusted bool) []rkb.TrackGeom {
 	forwardPoints := append(append([][2]float64(nil), boundary...), apexes...)
 	reversedApexes := reversePoints(apexes)
 	reverseLayoutPoints := append(append([][2]float64(nil), boundary...), reversedApexes...)
 	return []rkb.TrackGeom{
-		{Slug: "track-a", Base: 1, IsReverse: false, Points: forwardPoints},
-		{Slug: "track-a-reverse", Base: 1, IsReverse: true, Points: reverseLayoutPoints},
+		{Slug: "track-a", Base: 1, IsReverse: false, Points: forwardPoints, LengthM: loopLength,
+			Apexes: apexes, ApexOrderTrusted: trusted},
+		{Slug: "track-a-reverse", Base: 1, IsReverse: true, Points: reverseLayoutPoints, LengthM: loopLength,
+			Apexes: reversedApexes, ApexOrderTrusted: trusted},
 	}
 }
 
-// TestTrackDetector_AttemptMatch_IdenticalTwinResolvesToBase_ForwardDrivenPath drives track A's own
-// geometry, traced forward, against a [fwd, reverse] twin pair sharing an identical point cloud: the
-// shape score ties the twins exactly, but since they are the SAME physical track (identical geometry,
-// opposite IsReverse) the tie must be resolved rather than rejected as ambiguous, landing on the base
-// (IsReverse=false) slug. Direction of the driven path is irrelevant to this feature now - only the
-// physical track identity matters - so a forward-traced path resolving to the base slug is one of two
-// traversal directions this test (paired with the reverse-driven variant below) exercises.
-func TestTrackDetector_AttemptMatch_IdenticalTwinResolvesToBase_ForwardDrivenPath(t *testing.T) {
-	trackA := circlePoints(0, 0, 500, 60)
-	boundary, apexes := trackA[:50], trackA[50:] // model Points = boundary ++ apexes (see rtps/rkb TrackGeom)
+// loopTwins builds the twin pair over the synthetic loop with 8 evenly spaced apexes.
+func loopTwins(trusted bool) []rkb.TrackGeom {
+	return twinGeoms(circlePoints(0, 0, loopRadius, loopN), circlePoints(0, 0, loopRadius, 8), trusted)
+}
 
-	enrich := &fakeEnricher{}
-	geom := &fakeGeomProvider{geoms: twinGeoms(boundary, apexes)}
-	d := processing.NewTrackDetector(geom, enrich, nil)
-
-	rec := &session.Record{ID: "s1"}
-	d.OnSessionStart(rec)
-	feedFrames(d, "s1", jitterPoints(trackA[:45]))
-	d.OnSessionEnd(rec)
-
-	if got := enrich.callCount(); got != 1 {
-		t.Fatalf("expected exactly one SetTrack call, got %d (%+v)", got, enrich.calls)
+// lastSlug returns the last published slug and confidence, failing if nothing was published.
+func lastSlug(t *testing.T, e *fakeEnricher) (string, string) {
+	t.Helper()
+	if e.callCount() == 0 {
+		t.Fatal("expected a published match, got none")
 	}
-	got := enrich.lastCall()
-	if got.slug != "track-a" {
-		t.Fatalf("expected identical-geometry twin to resolve to base slug track-a, got %q", got.slug)
-	}
-	if got.confidence != "confident" {
-		t.Fatalf("expected confidence %q, got %q", "confident", got.confidence)
+	c := e.lastCall()
+	return c.slug, c.confidence
+}
+
+// TestTrackDetector_DirectionPicksTwin_Forward / _Reverse: an identical-geometry forward/reverse pair
+// whose apex order is trusted is told apart by the direction of travel - driving it forward locks the
+// forward layout, driving it backward locks the reverse layout.
+func TestTrackDetector_DirectionPicksTwin_Forward(t *testing.T) {
+	slug, conf := lastSlug(t, runSession(t, loopTwins(true), lapFraction(0.95)))
+	if slug != "track-a" || conf != "confident" {
+		t.Fatalf("forward drive: want track-a/confident, got %s/%s", slug, conf)
 	}
 }
 
-// TestTrackDetector_AttemptMatch_IdenticalTwinResolvesToBase_ReverseDrivenPath drives the SAME geometry
-// as the forward-driven test above, but traversed in the opposite order (simulating driving the reverse
-// layout). Since direction is no longer this feature's job, this must STILL resolve to the base slug
-// track-a (never track-a-reverse) with full confidence - only the physical track identity is reported.
-func TestTrackDetector_AttemptMatch_IdenticalTwinResolvesToBase_ReverseDrivenPath(t *testing.T) {
-	trackA := circlePoints(0, 0, 500, 60)
-	boundary, apexes := trackA[:50], trackA[50:] // model Points = boundary ++ apexes (see rtps/rkb TrackGeom)
-
-	enrich := &fakeEnricher{}
-	geom := &fakeGeomProvider{geoms: twinGeoms(boundary, apexes)}
-	d := processing.NewTrackDetector(geom, enrich, nil)
-
-	rec := &session.Record{ID: "s1"}
-	d.OnSessionStart(rec)
-	feedFrames(d, "s1", reversePoints(jitterPoints(trackA[:45])))
-	d.OnSessionEnd(rec)
-
-	if got := enrich.callCount(); got != 1 {
-		t.Fatalf("expected exactly one SetTrack call, got %d (%+v)", got, enrich.calls)
+func TestTrackDetector_DirectionPicksTwin_Reverse(t *testing.T) {
+	slug, conf := lastSlug(t, runSession(t, loopTwins(true), reversePoints(lapFraction(0.95))))
+	if slug != "track-a-reverse" || conf != "confident" {
+		t.Fatalf("reverse drive: want track-a-reverse/confident, got %s/%s", slug, conf)
 	}
-	got := enrich.lastCall()
-	if got.slug != "track-a" {
-		t.Fatalf("expected reverse-driven path to still resolve to base slug track-a (direction is irrelevant), got %q", got.slug)
-	}
-	if got.confidence != "confident" {
-		t.Fatalf("expected confidence %q, got %q", "confident", got.confidence)
+}
+
+// TestTrackDetector_UndirectedTwinFallsBackToForward: when the twins' apex order is NOT trusted
+// (stored / outline-curvature corners), direction cannot be read, so the last-resort rule picks the
+// forward layout whichever way it is driven.
+func TestTrackDetector_UndirectedTwinFallsBackToForward(t *testing.T) {
+	for name, pts := range map[string][][2]float64{
+		"forward": lapFraction(0.95),
+		"reverse": reversePoints(lapFraction(0.95)),
+	} {
+		slug, conf := lastSlug(t, runSession(t, loopTwins(false), pts))
+		if slug != "track-a" || conf != "confident" {
+			t.Fatalf("%s drive, untrusted apex order: want track-a/confident, got %s/%s", name, slug, conf)
+		}
 	}
 }
 
@@ -391,33 +466,53 @@ func nudgePoints(points [][2]float64, delta float64) [][2]float64 {
 	return out
 }
 
-// TestTrackDetector_AttemptMatch_NonIdenticalTieStaysAmbiguous drives a jittered sample of track A
-// against a candidate pair that share a tracks.base value and have opposite IsReverse (so a Base-only
-// twin heuristic would wrongly resolve them) but whose point clouds are NOT identical (candidate D is
-// track A's points nudged by a few centimetres - well beyond twinGeometryEpsilon): a genuinely different
-// layout that merely ties on shape score must still be rejected as ambiguous, not resolved as a twin.
-func TestTrackDetector_AttemptMatch_NonIdenticalTieStaysAmbiguous(t *testing.T) {
-	trackA := circlePoints(0, 0, 500, 60)
-	trackD := nudgePoints(trackA, 0.02)
-
-	enrich := &fakeEnricher{}
-	geom := &fakeGeomProvider{geoms: []rkb.TrackGeom{
-		{Slug: "track-a", Base: 1, IsReverse: false, Points: trackA},
-		{Slug: "track-d", Base: 1, IsReverse: true, Points: trackD},
-	}}
-	d := processing.NewTrackDetector(geom, enrich, nil)
-
-	rec := &session.Record{ID: "s1"}
-	d.OnSessionStart(rec)
-	feedFrames(d, "s1", jitterPoints(trackA[:45]))
-	d.OnSessionEnd(rec)
-
-	if got := enrich.callCount(); got != 0 {
-		t.Fatalf("expected non-identical-geometry tie to stay ambiguous, got %d calls (%+v)", got, enrich.calls)
+// TestTrackDetector_NonIdenticalTieStaysAmbiguous: two DIFFERENT layouts (same Base, opposite
+// IsReverse, geometry a few cm apart - not twins) that tie on shape and carry no trusted direction
+// stay ambiguous: nothing is published.
+func TestTrackDetector_NonIdenticalTieStaysAmbiguous(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Base: 1, IsReverse: false, Points: loop, LengthM: loopLength},
+		{Slug: "track-d", Base: 1, IsReverse: true, Points: nudgePoints(loop, 0.02), LengthM: loopLength},
+	}
+	if got := runSession(t, geoms, lapFraction(0.95)).callCount(); got != 0 {
+		t.Fatalf("expected non-identical tie to stay ambiguous, got %d calls", got)
 	}
 }
 
-// TestBboxContains validates the bbox containment pre-filter used in matchDecision: driven bbox must
+// TestTrackDetector_DirectionSeparatesNearIdenticalLayouts is the sardegna-road-a vs a2 case: two
+// different but nearly coincident reference lines for the same road driven in opposite directions
+// (trusted apex order), which shape alone cannot separate. Driving one way must lock that layout.
+func TestTrackDetector_DirectionSeparatesNearIdenticalLayouts(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	apexes := circlePoints(0, 0, loopRadius, 8)
+	geoms := []rkb.TrackGeom{
+		{Slug: "road-a", Base: 1, Points: loop, LengthM: loopLength, Apexes: apexes, ApexOrderTrusted: true},
+		{Slug: "road-a2", Base: 1, IsReverse: true, Points: nudgePoints(loop, 0.5), LengthM: loopLength,
+			Apexes: reversePoints(apexes), ApexOrderTrusted: true},
+	}
+	if slug, conf := lastSlug(t, runSession(t, geoms, reversePoints(lapFraction(0.95)))); slug != "road-a2" || conf != "confident" {
+		t.Fatalf("reverse drive: want road-a2/confident, got %s/%s", slug, conf)
+	}
+	if slug, conf := lastSlug(t, runSession(t, geoms, lapFraction(0.95))); slug != "road-a" || conf != "confident" {
+		t.Fatalf("forward drive: want road-a/confident, got %s/%s", slug, conf)
+	}
+}
+
+// TestTrackDetector_SessionEndKeepsProvisional: a session ending before any lock rule is met leaves the
+// provisional guess as it was (ending early is not evidence for it).
+func TestTrackDetector_SessionEndKeepsProvisional(t *testing.T) {
+	loop := circlePoints(0, 0, loopRadius, loopN)
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Base: 7, Points: loop, LengthM: loopLength},
+		{Slug: "track-a-long", Base: 7, Points: circlePoints(0, 0, 600, 120), LengthM: 2 * math.Pi * 600},
+	}
+	if slug, conf := lastSlug(t, runSession(t, geoms, lapFraction(0.4))); slug != "track-a" || conf != "provisional" {
+		t.Fatalf("want track-a/provisional at session end, got %s/%s", slug, conf)
+	}
+}
+
+// TestBboxContains validates the bbox containment pre-filter used in the detector: driven bbox must
 // be fully contained within candidate bbox (widened by tolerance) for a potential match.
 func TestBboxContains(t *testing.T) {
 	const tol = processing.BboxToleranceForTest // Use the const value via test export
@@ -561,5 +656,86 @@ func TestTrackDetector_ForwardReverseTwin_RealCorpus(t *testing.T) {
 		eastEnd2.Slug, eastEnd2.IsReverse, eastEnd2.Base, eastEnd2.Points,
 	); ok {
 		t.Fatal("expected different same-Base layouts (lago-maggiore-centre vs lago-maggiore-east-end-2) to stay ambiguous, got recognised as a twin")
+	}
+}
+
+// TestTrackDetector_IgnoresPausedAndLoadingFrames: a paused or loading frame is not driving, even
+// though its lap counter says on-track, so it must not count at all.
+func TestTrackDetector_IgnoresPausedAndLoadingFrames(t *testing.T) {
+	d := processing.NewTrackDetector(&fakeGeomProvider{}, &fakeEnricher{}, nil)
+	d.OnSessionStart(&session.Record{ID: "s1"})
+	paused := posFrame(true, 1, 2, 0, 1)
+	paused.IsPaused = true
+	loading := posFrame(true, 3, 4, 0, 2)
+	loading.IsLoading = true
+	d.OnFrame("s1", paused)
+	d.OnFrame("s1", loading)
+	if got := d.PointCountForTest("s1"); got != 0 {
+		t.Fatalf("paused/loading frames must be ignored, got %d counted", got)
+	}
+}
+
+// TestTrackDetector_StationaryFramesAddNoSamples: sitting on the grid or in the pit box for minutes
+// must not flood the score with one repeated point - samples are taken by distance driven.
+func TestTrackDetector_StationaryFramesAddNoSamples(t *testing.T) {
+	d := processing.NewTrackDetector(&fakeGeomProvider{}, &fakeEnricher{}, nil)
+	d.OnSessionStart(&session.Record{ID: "s1"})
+	for i := 0; i < 600; i++ { // 10 s parked
+		d.OnFrame("s1", posFrame(true, 500, 0, 0, uint32(i)))
+	}
+	if got := d.SampleCountForTest("s1"); got > 1 {
+		t.Fatalf("parked frames must add at most one sample, got %d", got)
+	}
+	feedFrames(d, "s1", lapFraction(0.2)) // ~630 m driven
+	if got := d.SampleCountForTest("s1"); got < 50 {
+		t.Fatalf("driving ~630 m should add samples by distance, got %d", got)
+	}
+}
+
+// TestTrackDetector_TeleportFrameDoesNotEliminateTrueTrack: one wild position (a stream glitch or
+// reset) must not stretch the driven bbox past the true track's bbox and rule it out for good.
+func TestTrackDetector_TeleportFrameDoesNotEliminateTrueTrack(t *testing.T) {
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength,
+			HasBbox: true, Bbox: [4]float64{-loopRadius, -loopRadius, loopRadius, loopRadius}},
+		farTrack(),
+	}
+	lap := lapFraction(0.95)
+	pts := append(append(append([][2]float64(nil), lap[:100]...), [2]float64{90000, 90000}), lap[100:]...)
+	if slug, conf := lastSlug(t, runSession(t, geoms, pts)); slug != "track-a" || conf != "confident" {
+		t.Fatalf("want track-a/confident despite a teleport frame, got %s/%s", slug, conf)
+	}
+}
+
+// TestTrackDetector_NonFinitePositionsCannotPanic: NaN/Inf positions are dropped on the ingest
+// goroutine - no panic, no poisoned scores (the lap still locks).
+func TestTrackDetector_NonFinitePositionsCannotPanic(t *testing.T) {
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Base: 1, Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		farTrack(),
+	}
+	nan := float32(math.NaN())
+	enrich := &fakeEnricher{}
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, enrich, nil)
+	rec := &session.Record{ID: "s1"}
+	d.OnSessionStart(rec)
+	for i := 0; i < 100; i++ { // a session that starts with nothing but garbage
+		d.OnFrame("s1", posFrame(true, nan, float32(math.Inf(1)), 0, uint32(i)))
+	}
+	for i, p := range lapFraction(0.95) {
+		d.OnFrame("s1", posFrame(true, float32(p[0]), float32(p[1]), 0, uint32(i)))
+		d.OnFrame("s1", posFrame(true, nan, nan, 0, uint32(i)))
+	}
+	d.OnSessionEnd(rec)
+	if slug, conf := lastSlug(t, enrich); slug != "track-a" || conf != "confident" {
+		t.Fatalf("want track-a/confident with NaN frames interleaved, got %s/%s", slug, conf)
+	}
+}
+
+// TestTrackDetector_DirectedTwinWaitsForDirection: when both twins' apex order is trusted, the
+// prefer-forward fallback is not used - nothing is published until direction picks one.
+func TestTrackDetector_DirectedTwinWaitsForDirection(t *testing.T) {
+	if got := runSession(t, loopTwins(true), reversePoints(lapFraction(0.95))[:loopN/8]).callCount(); got != 0 {
+		t.Fatalf("trusted twins before direction is known: want no guess, got %d calls", got)
 	}
 }

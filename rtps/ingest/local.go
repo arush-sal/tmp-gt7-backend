@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
+	"github.com/arush-sal/garage/backend/rtps/session"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +27,10 @@ type Local struct {
 	// done is closed when Run returns (consumer gone), so a blocked PublishWait can never wait on a
 	// consumer that no longer exists. ch itself is never closed, so a send can never panic.
 	done chan struct{}
+
+	// Recording, if set before Run, is the user's Record switch, applied by this stream's Detector only.
+	// External gRPC collector streams are not affected by it.
+	Recording *session.RecordingControl
 }
 
 // NewLocal returns a Local feeding srv with a bufSize-deep buffer (the live_buffer.size config). A
@@ -80,6 +85,8 @@ func (l *Local) Dropped() uint64 { return l.dropped.Load() }
 func (l *Local) Run(ctx context.Context) uint64 {
 	defer close(l.done)
 	l.srv.log.Info("in-process ingest stream opened")
+	cfg := l.srv.cfg
+	cfg.Recording = l.Recording
 	frames, _ := l.srv.consume(func() (*telemetryv1.TelemetryFrame, error) {
 		select {
 		case f := <-l.ch:
@@ -92,7 +99,7 @@ func (l *Local) Run(ctx context.Context) uint64 {
 				return nil, io.EOF
 			}
 		}
-	})
+	}, cfg)
 	l.srv.log.Info("in-process ingest stream closed", zap.Uint64("frames", frames), zap.Uint64("dropped", l.Dropped()))
 	return frames
 }
