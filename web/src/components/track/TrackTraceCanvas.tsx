@@ -19,27 +19,14 @@ const MIN_EXTENT_M = 50;
 // Values mirror src/index.css :root (light) and [data-theme="dark"] overrides.
 const PALETTE = {
   light: {
-    trackBand: "rgba(74,78,90,0.82)",
-    trackBandEdge: "#5a5e6a",
     sectorLabel: "#c2c2cc",
     startLine: "#2a2d34",
   },
   dark: {
-    trackBand: "rgba(70,74,82,0.85)",
-    trackBandEdge: "#363b42",
     sectorLabel: "#5a616a",
     startLine: "#c8cdd3",
   },
 } as const;
-
-function flatten(pts: ReadonlyArray<[number, number]>, view: View): number[] {
-  const out: number[] = [];
-  for (const [x, z] of pts) {
-    const { sx, sy } = worldToScreen(view, x, z);
-    out.push(sx, sy);
-  }
-  return out;
-}
 
 // A speed peak/valley at a track world position. `index` is the ExtremumDTO.index (shared id with
 // the peaks table for cross-highlight). Symbol colour is by KIND; deltaNs feeds the pinned label.
@@ -156,9 +143,9 @@ export default function TrackTraceCanvas(props: {
   // --- Static geometry layer: drawn UNCACHED. Caching baked the view transform into an
   // offscreen bitmap sized to the content's screen bbox; when zoomed in, that bbox spans
   // a huge pixel area -> Konva allocates a gigantic canvas -> the tab freezes/OOMs. The
-  // band is a single Konva.Line (fast to draw natively each redraw), so caching buys
-  // nothing here. react-konva updates the Line/Text nodes from `view` on re-render; just
-  // nudge a redraw on view/geometry/theme change.
+  // layer holds only sector labels and the start/finish tick (no track surface is drawn:
+  // a mis-detected track must not paint a wrong layout), so caching buys nothing here.
+  // react-konva updates the Line/Text nodes from `view` on re-render; just nudge a redraw on view/geometry/theme change.
   useEffect(() => {
     staticLayerRef.current?.batchDraw();
   }, [geometry, theme, size.w, size.h, view.scale, view.offsetX, view.offsetZ]);
@@ -327,39 +314,6 @@ export default function TrackTraceCanvas(props: {
           onClick={handleStageClick}
         >
           <Layer ref={staticLayerRef} listening={false}>
-            {geometry && geometry.cl.length > 1 && geometry.widthM !== null && geometry.widthM > 0 && (
-              <Line
-                points={flatten(geometry.cl, view)}
-                stroke={PALETTE[theme].trackBand}
-                strokeWidth={Math.max(2, geometry.widthM * view.scale)}
-                lineCap="round"
-                lineJoin="round"
-                listening={false}
-              />
-            )}
-            {geometry && !(geometry.cl.length > 1 && geometry.widthM !== null && geometry.widthM > 0)
-              && geometry.left.length > 1 && geometry.right.length > 1 && (
-              <>
-                <Line
-                  points={[...flatten(geometry.left, view), ...flatten([...geometry.right].reverse(), view)]}
-                  closed
-                  fill={PALETTE[theme].trackBand}
-                  stroke="transparent"
-                />
-                <Line points={flatten(geometry.left, view)} stroke={PALETTE[theme].trackBandEdge} strokeWidth={1.5} />
-                <Line points={flatten(geometry.right, view)} stroke={PALETTE[theme].trackBandEdge} strokeWidth={1.5} />
-              </>
-            )}
-            {geometry && !(geometry.cl.length > 1 && geometry.widthM !== null && geometry.widthM > 0)
-              && (geometry.left.length <= 1 || geometry.right.length <= 1) && geometry.outline.length > 1 && (
-              <Line
-                points={flatten(geometry.outline, view)}
-                closed
-                fill={PALETTE[theme].trackBand}
-                stroke={PALETTE[theme].trackBandEdge}
-                strokeWidth={1.5}
-              />
-            )}
             {geometry?.sectors.map(s => {
               const { sx, sy } = worldToScreen(view, s.x, s.z);
               return <Text key={s.label} x={sx} y={sy} text={s.label} fontSize={12} fill={PALETTE[theme].sectorLabel} />;

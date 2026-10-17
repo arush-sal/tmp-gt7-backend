@@ -269,9 +269,9 @@ describe("Dashboard (live)", () => {
   });
 
   // Task G: the detected/selected track slug is persisted (gt7:track) and seeded back on
-  // mount, so a refresh restores the band/sectors even before (or without) the feed
+  // mount, so a refresh restores the sectors even before (or without) the feed
   // re-detecting the track.
-  it("restores the track band from a persisted slug on refresh, without the feed re-detecting", async () => {
+  it("restores the track from a persisted slug on refresh, without the feed re-detecting", async () => {
     localStorage.setItem("gt7:track", JSON.stringify({ schemaVersion: 1, payload: "test-track" }));
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (String(url).includes("/v1/tracks/")) {

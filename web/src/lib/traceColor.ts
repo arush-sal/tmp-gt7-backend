@@ -2,7 +2,7 @@ export type DriveState = "accel" | "coast" | "brake" | "trail";
 
 // Solid, saturated colours per drive state -- NOT an intensity gradient. An intensity
 // gradient blended toward a grey "floor", so partial throttle rendered as a muddy dark-green;
-// the line now reads categorically (any throttle = green, brake = red, coast = white, trail-
+// the line now reads categorically (any throttle = green, brake = red, coast = white (dark) / grey (light), trail-
 // brake = amber), matching the legend. Precise magnitudes live in the telemetry graphs.
 const GREEN = "46,209,106";  // #2ed16a -- throttle
 const RED = "240,22,14";     // brake
@@ -16,11 +16,13 @@ export function driveState(throttle: number, brake: number): DriveState {
   return "coast";
 }
 
-// theme is accepted for call-site compatibility but no longer affects the colour (the
-// categorical palette reads on both the light and the darkened track band).
-export function traceColor(throttle: number, brake: number, _theme: "light" | "dark", alpha = 1): string {
+// Only "coast" is theme-aware: white vanishes on the light canvas (there is no track band behind
+// the line), so light theme uses a mid-dark neutral grey. The saturated states read on both.
+const COAST = { dark: "255,255,255", light: "92,98,108" } as const; // light = #5c626c
+
+export function traceColor(throttle: number, brake: number, theme: "light" | "dark", alpha = 1): string {
   switch (driveState(throttle, brake)) {
-    case "coast": return `rgba(255,255,255,${alpha})`;
+    case "coast": return `rgba(${COAST[theme]},${alpha})`;
     case "brake": return `rgba(${RED},${alpha})`;
     case "trail": return `rgba(${AMBER},${alpha})`;
     default:      return `rgba(${GREEN},${alpha})`; // accel

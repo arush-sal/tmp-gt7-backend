@@ -20,13 +20,13 @@ function rgbaChannels(css: string): [number, number, number] {
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-test("traceColor: coast is white (theme-independent, not black)", () => {
+test("traceColor: coast is white on dark, a visible grey (not white) on light", () => {
   const dark = traceColor(0, 0, "dark");
   const light = traceColor(0, 0, "light");
   expect(dark).toBe("rgba(255,255,255,1)");
-  expect(light).toBe("rgba(255,255,255,1)");
-  const [r, g, b] = rgbaChannels(dark);
-  expect(r).toBe(255); expect(g).toBe(255); expect(b).toBe(255);
+  expect(light).not.toBe(dark);
+  const [r, g, b] = rgbaChannels(light);
+  expect(Math.max(r, g, b)).toBeLessThan(160); // contrasts with the #ffffff card
 });
 
 test("traceColor: full throttle is green-ish (red at full brake, for reference)", () => {

@@ -20,7 +20,7 @@ test("drawTrace strokes the current lap path", () => {
   expect(calls).toContain("stroke");
 });
 
-test("drawTrace uses a thin racing line so the grey track band reads as the wide surface", () => {
+test("drawTrace uses a thin racing line", () => {
   // record each stroke pass along with the strokeStyle/lineWidth active at stroke() time
   const strokes: Array<{ style: unknown; width: unknown }> = [];
   const state: { strokeStyle: unknown; lineWidth: unknown } = { strokeStyle: undefined, lineWidth: undefined };
