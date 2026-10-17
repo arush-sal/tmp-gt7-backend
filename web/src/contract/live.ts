@@ -78,11 +78,13 @@ export type Analysis = {
 
 export type Enrichment = {
   session_id?: string;              // omitempty -> optional
+  recording?: boolean;              // absent (older backends) => treat as true
+  duplicate_of?: string;            // omitempty; set only when the live stream replays stored session X (session_id is then X too)
   analysis: Analysis | null;        // SessionAnalysis subset; not deep-validated this slice
   car_name: string | null;
   track: string | null;
   delta_to_best_ns: number | null;  // ns; null until a reference lap; -ve = ahead
-  track_confidence?: string | null; // "confident" once trackdetect resolves; null/absent until then
+  track_confidence?: string | null; // "provisional" (best guess, may switch) | "confident" (locked); null/absent until a first guess
 };
 
 export type LiveSnapshot = {

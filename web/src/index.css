@@ -442,6 +442,7 @@ body {
   max-width: 100%;
 }
 .header-cell--wide .track-picker { align-self: center; }
+.header-cell--wide .track-picker-row { align-self: center; align-items: center; }
 
 /* Lap cell: row 1 is "LAP" label + current/total value on one line (space-between);
    row 2 is the lap-selector directly below, kept compact so the header-bar's height
@@ -1218,3 +1219,5 @@ body {
 .btn:hover { background: var(--surface-2); }
 .btn--primary { background: var(--red); color: #fff; border-color: var(--red); }
 .btn--primary:hover { filter: brightness(1.06); background: var(--red); }
+
+.session-picker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

@@ -126,3 +126,18 @@ export type PeaksDTO = {
   reference_reason: string | null; // null when reference_reliable
   points: ExtremumDTO[];
 };
+
+// GET /v1/sessions -> SessionSummaryDTO[] (store order). Verified against rtps/api/server.go sessionSummary.
+export type SessionSummaryDTO = {
+  id: string;
+  car_id: number;
+  car_name: string;
+  status: string;      // "active" while in progress; otherwise finished/abandoned
+  start_time: string;  // RFC3339
+  end_time: string;    // RFC3339; zero time while active
+  frame_count: number;
+  gap_count: number;
+  current_lap: number;
+  total_laps: number;
+  best_lap: string | null; // protobuf Duration ("115.583s"); null = no timed lap / still active
+};

@@ -103,6 +103,12 @@ function validateEnrichment(raw: unknown): Enrichment {
   if ("session_id" in e && typeof e.session_id !== "string") {
     throw new Error("enrichment.session_id: expected a string when present");
   }
+  if ("duplicate_of" in e && typeof e.duplicate_of !== "string") {
+    throw new Error("enrichment.duplicate_of: expected a string when present");
+  }
+  if ("recording" in e && typeof e.recording !== "boolean") {
+    throw new Error("enrichment.recording: expected a boolean when present");
+  }
   // track_confidence: optional string | null; read leniently (drop wrong-typed rather than throw).
   const trackConfidence =
     typeof e.track_confidence === "string" || e.track_confidence === null
@@ -115,6 +121,8 @@ function validateEnrichment(raw: unknown): Enrichment {
   if (e.analysis !== null && (typeof e.analysis !== "object" || Array.isArray(e.analysis))) throw new Error("enrichment.analysis: expected object or null");
   return {
     ...(typeof e.session_id === "string" ? { session_id: e.session_id } : {}),
+    ...(typeof e.recording === "boolean" ? { recording: e.recording } : {}),
+    ...(typeof e.duplicate_of === "string" ? { duplicate_of: e.duplicate_of } : {}),
     analysis: (e.analysis as Enrichment["analysis"]) ?? null,
     car_name: (e.car_name as string | null),
     track: (e.track as string | null),

@@ -57,6 +57,19 @@ describe("validateLive — rejections", () => {
   it("rejects live with null frame", () => { const s = live(); (s as any).frame = null; expect(() => validateLive(s)).toThrow(/live/); });
   it("rejects idle with a frame present", () => { const s = idle(); (s as any).frame = { ...frame }; expect(() => validateLive(s)).toThrow(/idle/); });
   it("rejects missing required enrichment key", () => { const s = live(); delete (s.enrichment as any).delta_to_best_ns; expect(() => validateLive(s)).toThrow(/delta_to_best_ns/); });
+  it("accepts optional duplicate_of present, omits when absent", () => {
+    const s = live(); (s.enrichment as any).duplicate_of = "sess-1";
+    expect(validateLive(s).enrichment.duplicate_of).toBe("sess-1");
+    expect("duplicate_of" in validateLive(live()).enrichment).toBe(false);
+  });
+  it("rejects duplicate_of of wrong type", () => { const s = live(); (s.enrichment as any).duplicate_of = 5; expect(() => validateLive(s)).toThrow(/duplicate_of/); });
+  it("accepts optional recording boolean, omits when absent, rejects wrong type", () => {
+    const s = live(); (s.enrichment as any).recording = false;
+    expect(validateLive(s).enrichment.recording).toBe(false);
+    expect("recording" in validateLive(live()).enrichment).toBe(false);
+    const bad = live(); (bad.enrichment as any).recording = "yes";
+    expect(() => validateLive(bad)).toThrow(/recording/);
+  });
   it("rejects session_id of wrong type", () => { const s = live(); (s.enrichment as any).session_id = 5; expect(() => validateLive(s)).toThrow(/session_id/); });
   it("rejects malformed best_lap", () => { const s = live(); s.frame.best_lap = "77.21"; expect(() => validateLive(s)).toThrow(/best_lap/); });
   it("rejects a wrong-typed frame number", () => { const s = live(); (s.frame as any).car_speed = "fast"; expect(() => validateLive(s)).toThrow(/car_speed/); });
@@ -121,6 +134,15 @@ describe("validateLive — spatial + track_confidence fields (P2)", () => {
     expect(out.frame!.position_y).toBeCloseTo(1.1);
     expect(out.frame!.position_z).toBeCloseTo(-385.0);
     expect(out.enrichment.track_confidence).toBe("confident");
+  });
+
+  it("accepts the provisional track_confidence (best guess, not yet locked)", () => {
+    const s = structuredClone(liveSample) as any;
+    s.enrichment.track = "sardegna-road-a";
+    s.enrichment.track_confidence = "provisional";
+    const out = validateLive(s);
+    expect(out.enrichment.track).toBe("sardegna-road-a");
+    expect(out.enrichment.track_confidence).toBe("provisional");
   });
 
   it("stays lenient when position + track_confidence absent", () => {

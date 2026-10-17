@@ -11,6 +11,7 @@ import { useReference } from "../hooks/useReference";
 import { usePeaks } from "../hooks/usePeaks";
 import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
+import { useSessions } from "../hooks/useSessions";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
@@ -25,6 +26,8 @@ import { clampIndex } from "../lib/trackScrub";
 import { DOCK_WIDTH_DEFAULT, clampDockWidth, dockMaxWidth, DOCK_WIDTH_MIN, loadDockWidth, saveDockWidth } from "../lib/panelGeometry";
 import { loadVersioned, saveVersioned } from "../lib/persistState";
 import SessionHeader from "./SessionHeader";
+import SessionPicker from "./SessionPicker";
+import RecordToggle from "./RecordToggle";
 import { TrackPicker, type TrackListItem } from "./track/TrackPicker";
 import TrackTraceCanvas from "./track/TrackTraceCanvas";
 import { ConfidenceBadges } from "./track/ConfidenceBadges";
@@ -41,7 +44,13 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // stops cooldown frames reaching history, sectors, view, and track alike (see gateAfterRace).
   const gated = useMemo(() => gateAfterRace(source), [source]);
   const { snapshot, error, view, live, newRaceSeq, raceKey } = useSession(undefined, gated);
-  const sessionId = raceKey;
+  const sessionId = raceKey || null; // "" (recording off) is not a session: never fetch/cache under it
+  // Stored-session picker: null = follow the live feed. viewSessionId feeds every session-scoped
+  // fetch/cache; the live history store and race-reset logic keep using raceKey.
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const viewSessionId = selectedSessionId ?? sessionId;
+  const viewing = selectedSessionId !== null;
+  const sessionsList = useSessions(snapshot?.enrichment?.session_id);
   // Independent live subscription (per the plan: fan-out to a single subscription is a
   // later pass) — feeds the graph buffer only, reuses the same gated `source` as
   // useSession so tests (and a future single-subscription refactor) see one seam. On each lap
@@ -53,6 +62,8 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   useEffect(() => { history.setLive(live); }, [history, live]);
   useEffect(() => { if (newRaceSeq > 0) { history.reset(); resetLapCache(); } }, [history, newRaceSeq]);
   useEffect(() => { onLiveChange?.(live); }, [onLiveChange, live]);
+  // A genuine new live race returns the view to live (the old pick would hide the new race).
+  useEffect(() => { if (newRaceSeq > 0) setSelectedSessionId(null); }, [newRaceSeq]);
 
   // Fuel card: used/lap from the most recently completed lap; laps left projects the current tank
   // against that burn rate. Sticky: latch the last known burn rate + tank level in state (updated
@@ -149,6 +160,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
       snapshot?.enrichment?.track ?? null,
       snapshot?.frame?.current_lap ?? 0,
       (snapshot?.frame?.car_speed ?? 0) > 1,
+      snapshot?.enrichment?.track_confidence === "provisional",
     ));
   }, [snapshot]);
 
@@ -184,19 +196,22 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // Authoritative lap list from the backend (survives a page refresh — the live counter above
   // resets to 0 on reload). Revalidated whenever a lap finishes live (completedLapCount trigger),
   // and unioned with the live counter so a just-finished lap appears instantly.
-  const laps = useLaps(sessionId, completedLapCount);
+  const laps = useLaps(viewSessionId, completedLapCount);
   // Only real racing laps are selectable: the backend also serves the formation lap (0) and the
   // cooldown lap (> total_laps) -- exclude both so the dropdown never shows "Lap 0" or a "Lap 11"
   // for a 10-lap race. total_laps <= 0 (time trial) => no upper cap.
-  const totalLaps = snapshot?.frame?.total_laps ?? 0;
+  const viewedSummary = viewing ? sessionsList.sessions.find(s => s.id === selectedSessionId) : undefined;
+  const totalLaps = viewing ? (viewedSummary?.total_laps ?? 0) : (snapshot?.frame?.total_laps ?? 0);
   const backendMaxLap = laps.laps.reduce(
     (m, l) => (l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.lap_number > m ? l.lap_number : m),
     0);
-  const latestLap = Math.max(backendMaxLap, completedLapCount);
+  const latestLap = viewing ? backendMaxLap : Math.max(backendMaxLap, completedLapCount);
   useEffect(() => {
     if (userPickedLap) return;
-    setSelectedLap(live ? "current" : latestLap > 0 ? latestLap : "current");
-  }, [live, latestLap, userPickedLap]);
+    setSelectedLap(live && !viewing ? "current" : latestLap > 0 ? latestLap : "current");
+  }, [live, viewing, latestLap, userPickedLap]);
+  // Switching session (or back to live) restarts lap auto-follow; a stale lap number must not carry over.
+  useEffect(() => { setUserPickedLap(false); setSelectedLap("current"); }, [selectedSessionId]);
   // Lap History list: every completed racing lap with its time, ascending; fastest flagged.
   const lapHistory = useMemo(() => {
     const rows = laps.laps
@@ -207,7 +222,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     return rows.map(r => ({ lap: r.lap, time: r.time, best: r.durationNs === bestNs }));
   }, [laps.laps, totalLaps]);
   // "All laps" overlay: fetch every completed lap's trace (cache-first) only while "all" is selected.
-  const allLapViews = useAllLapTraces(sessionId, selectedLap === "all" ? lapHistory.map(l => l.lap) : []);
+  const allLapViews = useAllLapTraces(viewSessionId, selectedLap === "all" ? lapHistory.map(l => l.lap) : []);
   const overlayLaps = useMemo(() => allLapViews.map(v => v.points), [allLapViews]);
   // New race: drop back to auto-follow AND clear a stale numeric selectedLap (completedLapCount
   // resets to 0 too, but not necessarily in the same tick -- the <select> must never hold a
@@ -216,7 +231,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
 
   // A completed lap's full trace comes from the backend, cache-first (the live lapCache serves
   // in-session laps with no fetch); `laps` (above) supplies its sector splits.
-  const lapTrace = useLapTrace(sessionId, typeof selectedLap === "number" ? selectedLap : null);
+  const lapTrace = useLapTrace(viewSessionId, typeof selectedLap === "number" ? selectedLap : null);
   const lapView = lapTrace.view;
   // Analysis mode: a completed lap is selected -> a scrub cursor can be placed/stepped
   // along that lap's trace, and the telemetry graphs switch to showing that lap's data.
@@ -233,17 +248,21 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     : null;
   // Predicted-best lap: live from enrichment.analysis (in `view`, sticky); once the race is over,
   // fetch it authoritatively from /coaching (survives a refresh, when the sticky value is gone).
-  const coaching = useCoaching(sessionId, !live);
+  const coaching = useCoaching(viewSessionId, !live || viewing);
   // Session-level median + predicted-reference lines, refreshed as laps complete. Feed the graph
   // overlays (Task 4) and the canvas reference drive-line (Task 5); reference also carries the
   // predicted-best used for the per-lap delta (Task 6).
-  const median = useMedian(sessionId, latestLap);
-  const reference = useReference(sessionId, latestLap);
+  const median = useMedian(viewSessionId, latestLap);
+  // The reference (predicted) lap is cut on the backend-detected track's RKB sectors, so refetch when
+  // that track changes (a provisional switch), not only as laps complete. A stored session being
+  // viewed is not live-detected, so only the lap count keys it.
+  const detectedTrack = viewing ? "" : (snapshot?.enrichment?.track ?? "");
+  const reference = useReference(viewSessionId, `${latestLap}:${detectedTrack}`);
   // Reference (ideal) drive-line for the track canvas: the predicted lap's spliced samples.
   const referenceLap = useMemo(
     () => (reference?.samples?.length ? predictedToSamples(reference.samples) : null), [reference]);
   const baseView = view && frame ? { ...view, ...frameToDisplay(frame) } : view;
-  const displayView = baseView && !live && coaching.predicted
+  const displayView = baseView && (!live || viewing) && coaching.predicted
     ? { ...baseView, predicted: coaching.predicted }
     : baseView;
   // Sector splits for a selected lap come straight from its LapDTO (backend-computed); live
@@ -258,16 +277,16 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // Speed peaks & valleys for the selected lap, vs the chosen reference.
   const [peaksRef, setPeaksRef] = useState<"predicted" | number>("predicted");
   useEffect(() => { if (newRaceSeq > 0) setPeaksRef("predicted"); }, [newRaceSeq]);
-  const peaks = usePeaks(sessionId, typeof selectedLap === "number" ? selectedLap : null, peaksRef);
+  const peaks = usePeaks(viewSessionId, typeof selectedLap === "number" ? selectedLap : null, peaksRef);
   // Cross-highlight state shared by the peaks table and the canvas markers (bidirectional): hover
   // previews, click pins. Keyed by ExtremumDTO.index. Cleared when the lap/reference/session changes.
   const [hoveredPeak, setHoveredPeak] = useState<number | null>(null);
   const [pinnedPeak, setPinnedPeak] = useState<number | null>(null);
-  useEffect(() => { setHoveredPeak(null); setPinnedPeak(null); }, [selectedLap, sessionId, peaksRef]);
+  useEffect(() => { setHoveredPeak(null); setPinnedPeak(null); }, [selectedLap, viewSessionId, peaksRef]);
   // Shared graph zoom window (lap-time seconds); drives both the telemetry graphs and the track
   // canvas segment view. Reset to full on a lap/session change.
   const [graphXRange, setGraphXRange] = useState<[number, number] | null>(null);
-  useEffect(() => { setGraphXRange(null); }, [selectedLap, sessionId]);
+  useEffect(() => { setGraphXRange(null); }, [selectedLap, viewSessionId]);
   // Peaks table open/collapsed — lifted so the on-track symbols follow it (collapsed => hidden).
   const [peaksOpen, setPeaksOpen] = useState(false);
   const togglePinnedPeak = (i: number) => setPinnedPeak(prev => (prev === i ? null : i));
@@ -396,10 +415,29 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
           sel.slug ? (
             <TrackPicker
               value={sel.slug}
+              provisional={sel.provisional}
               items={candidates}
               onPick={slug => setSel(s => reduceManual(s, slug))}
             />
           ) : undefined
+        }
+        sessionPicker={
+          <>
+          <SessionPicker
+            sessions={sessionsList.sessions}
+            error={sessionsList.error}
+            selectedId={selectedSessionId}
+            replay={!!snapshot?.enrichment?.duplicate_of}
+            onSelect={setSelectedSessionId}
+            onOpen={sessionsList.refresh}
+          />
+          <RecordToggle
+            available={!viewing && snapshot?.status === "live"}
+            sessionId={snapshot?.enrichment?.session_id ?? ""}
+            duplicate={!!snapshot?.enrichment?.duplicate_of}
+            recording={snapshot?.enrichment?.recording ?? true}
+          />
+          </>
         }
         lapSelector={
           <select

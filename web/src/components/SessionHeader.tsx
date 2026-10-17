@@ -9,9 +9,10 @@ interface Props {
   selectedCorner: CornerAnalysis | null;
   trackPicker?: ReactNode;
   lapSelector?: ReactNode;
+  sessionPicker?: ReactNode;
 }
 
-export default function SessionHeader({ view, selectedCorner, trackPicker, lapSelector }: Props) {
+export default function SessionHeader({ view, selectedCorner, trackPicker, lapSelector, sessionPicker }: Props) {
   const ph = "—";
   const deltaClass =
     view?.deltaTone === "blue" ? "text-blue" : view?.deltaTone === "red" ? "text-red" : "text-muted";
@@ -25,6 +26,13 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
           <span className="label">Position</span>
           <span className="mono header-val">{view ? view.position : ph}</span>
         </div>
+
+        {sessionPicker && (
+          <div className="header-cell header-cell--wide">
+            <span className="label">Session</span>
+            {sessionPicker}
+          </div>
+        )}
 
         <div className="header-cell">
           <div className="lap-cell-row">

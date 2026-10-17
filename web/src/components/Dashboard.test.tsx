@@ -415,4 +415,78 @@ describe("Dashboard (live)", () => {
     for (let i = 0; i < 20; i++) act(() => push({ lap: 4, t: (5 + i) * 1_000_000_000, fuel: 84 - i }));
     expect(traceFetches.n - baseline).toBe(0);
   });
+
+  describe("session picker + replay badge", () => {
+    const stored = { id: "stored-9", car_id: 1, car_name: "Old Car", status: "finished",
+      start_time: "2026-01-01T00:00:00Z", end_time: "2026-01-01T00:10:00Z", frame_count: 1, gap_count: 0,
+      current_lap: 5, total_laps: 5, best_lap: "115.583s" };
+    const urls: string[] = [];
+    beforeEach(() => {
+      urls.length = 0;
+      vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+        urls.push(String(url));
+        return { ok: true, json: async () => (String(url) === "/v1/sessions" ? [stored] : []) };
+      }) as unknown as typeof fetch);
+    });
+    const lapsFor = (id: string) => urls.some(u => u.startsWith(`/v1/sessions/${id}/laps`));
+
+    it("selecting a stored session fetches its laps; Back to live restores the live id", async () => {
+      const { source, push } = fakeSource();
+      render(<Dashboard source={source} />);
+      act(() => push());
+      await waitFor(() => expect(lapsFor("sess-1")).toBe(true));
+      await waitFor(() => expect(screen.getAllByRole("option").some(o => /Old Car/.test(o.textContent ?? ""))).toBe(true));
+      fireEvent.change(screen.getByLabelText("Session"), { target: { value: "stored-9" } });
+      await waitFor(() => expect(lapsFor("stored-9")).toBe(true));
+      expect(screen.getByText("Viewing stored session")).toBeTruthy();
+      urls.length = 0;
+      fireEvent.click(screen.getByText("Back to live"));
+      await waitFor(() => expect(lapsFor("sess-1")).toBe(true));
+      expect(screen.queryByText("Viewing stored session")).toBeNull();
+    });
+
+    it("record toggle reflects enrichment.recording and hides while viewing a stored session", async () => {
+      const subs: LiveHandlers[] = [];
+      const source: LiveSource = (_u, h) => { subs.push(h); return () => {}; };
+      render(<Dashboard source={source} />);
+      const ls = liveSample as { enrichment: object };
+      act(() => subs.forEach(h => h.onSnapshot(validateLive(liveSample))));
+      expect(screen.getByText("● REC")).toBeTruthy(); // absent => recording
+      act(() => subs.forEach(h => h.onSnapshot(validateLive({ ...ls, enrichment: { ...ls.enrichment, recording: false } }))));
+      expect(screen.getByText("○ Not recording")).toBeTruthy();
+      await waitFor(() => expect(screen.getAllByRole("option").some(o => /Old Car/.test(o.textContent ?? ""))).toBe(true));
+      fireEvent.change(screen.getByLabelText("Session"), { target: { value: "stored-9" } });
+      expect(screen.queryByText("○ Not recording")).toBeNull();
+    });
+
+    it("session_id \"\" + recording:false keeps a clickable Not recording toggle and never fetches an empty id", async () => {
+      const subs: LiveHandlers[] = [];
+      const source: LiveSource = (_u, h) => { subs.push(h); return () => {}; };
+      render(<Dashboard source={source} />);
+      const ls = liveSample as { enrichment: object };
+      act(() => subs.forEach(h => h.onSnapshot(validateLive({ ...ls, enrichment: { ...ls.enrichment, session_id: "", recording: false } }))));
+      const b = screen.getByText("○ Not recording") as HTMLButtonElement;
+      expect(b.disabled).toBe(false);
+      expect(urls.some(u => u.includes("/v1/sessions//"))).toBe(false);
+    });
+
+    it("picker label shows best lap", async () => {
+      const { source, push } = fakeSource();
+      render(<Dashboard source={source} />);
+      act(() => push());
+      await waitFor(() => expect(screen.getAllByRole("option").some(o => /1:55\.583/.test(o.textContent ?? ""))).toBe(true));
+    });
+
+    it("replay badge only when enrichment.duplicate_of is set", () => {
+      const subs: LiveHandlers[] = [];
+      const source: LiveSource = (_u, h) => { subs.push(h); return () => {}; };
+      render(<Dashboard source={source} />);
+      act(() => subs.forEach(h => h.onSnapshot(validateLive(liveSample))));
+      expect(screen.queryByText(/REPLAY/)).toBeNull();
+      const ls = liveSample as { enrichment: object };
+      const dup = { ...ls, enrichment: { ...ls.enrichment, duplicate_of: "sess-1" } };
+      act(() => subs.forEach(h => h.onSnapshot(validateLive(dup))));
+      expect(screen.getByText(/REPLAY/)).toBeTruthy();
+    });
+  });
 });
