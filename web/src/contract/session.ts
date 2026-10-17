@@ -28,6 +28,7 @@ export type LapDTO = {
   sectors: LapSectorsDTO;
   track_slug?: string | null;                              // per-lap track (a session can span tracks)
   track_confidence?: "provisional" | "confident" | null;
+  reference_eligible: boolean; // required: the web is embedded in rtps (web/embed.go), so UI and API always ship together. Server-side rule (backend RefEligible, e.g. false for a race's lap 1): can be a stored reference
 };
 
 // GET /v1/sessions/{id}/laps/{n}/trace?decimate=N -> TraceSampleDTO[]. t_ns = ns since lap t0.

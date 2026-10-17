@@ -54,7 +54,7 @@ describe("lapViewFromSamples", () => {
 describe("lapDtoToSectorTimes", () => {
   const lap: LapDTO = {
     lap_number: 3, duration_ns: 90_000_000_000, complete: true, valid: true, timed: true,
-    delta_to_pb_ns: 500_000_000,
+    delta_to_pb_ns: 500_000_000, reference_eligible: true,
     sectors: { reliable: true, reason: null, splits: [
       { index: 0, label: "S1", duration_ns: 30_000_000_000, delta_to_best_ns: 100_000_000, min_speed: 90 },
       { index: 1, label: "S2", duration_ns: 60_000_000_000, delta_to_best_ns: null, min_speed: 120 },

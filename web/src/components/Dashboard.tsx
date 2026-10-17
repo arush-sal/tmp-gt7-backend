@@ -261,7 +261,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
       .sort((a, b) => b.lap_number - a.lap_number)
       .map(l => ({
         lap: l.lap_number, time: nsToClock(l.duration_ns), durationNs: l.duration_ns,
-        canSetRef: l.complete && l.valid && !!confidentSlug(l),
+        canSetRef: l.reference_eligible && l.complete && l.valid && !!confidentSlug(l), // reference_eligible is the server's rule; the rest is a defensive AND
         isRef: selectedRef.stored != null && l.track_slug === refSlug
           && selectedRef.stored.session_id === viewSessionId && selectedRef.stored.lap_number === l.lap_number,
       }));

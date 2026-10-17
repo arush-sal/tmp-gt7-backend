@@ -13,7 +13,7 @@ function stubFetch(payload: unknown, ok = true) {
 afterEach(() => vi.unstubAllGlobals());
 
 const lap = (n: number): LapDTO => ({
-  lap_number: n, duration_ns: 1, complete: true, valid: true, timed: true,
+  lap_number: n, duration_ns: 1, complete: true, valid: true, timed: true, reference_eligible: true,
   delta_to_pb_ns: null, sectors: { reliable: true, reason: null, splits: [] },
 });
 

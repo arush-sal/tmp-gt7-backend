@@ -495,7 +495,7 @@ describe("Dashboard (live)", () => {
 describe("Dashboard reference source", () => {
   const lapRow = (n: number, over: object = {}) => ({
     lap_number: n, duration_ns: 90e9 + n, complete: true, valid: true, timed: true, delta_to_pb_ns: null,
-    sectors: { reliable: true, reason: null, splits: [] }, track_slug: "suzuka", track_confidence: "confident", ...over,
+    sectors: { reliable: true, reason: null, splits: [] }, track_slug: "suzuka", track_confidence: "confident", reference_eligible: true, ...over,
   });
   const setup = async (storedStatus: number, conf: string | null = "confident", laps: object[] = []) => {
     const urls: string[] = [];
@@ -541,12 +541,13 @@ describe("Dashboard reference source", () => {
   it("only valid, complete, confident laps get Set-as-reference, and the PUT goes to the lap's own track", async () => {
     const urls = await setup(200, "confident", [
       lapRow(1), lapRow(2, { valid: false }), lapRow(3, { track_slug: "fuji" }), lapRow(4, { track_confidence: "provisional" }),
-      lapRow(5, { complete: false }),
+      lapRow(5, { complete: false }), lapRow(6, { reference_eligible: false }), // 6: e.g. a race's lap 1
     ]);
     await screen.findByRole("button", { name: "Set lap 1 as reference" });
     expect(screen.queryByRole("button", { name: "Set lap 2 as reference" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Set lap 4 as reference" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Set lap 5 as reference" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set lap 6 as reference" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Set lap 3 as reference" }));
     await waitFor(() => expect(urls.calls.some(c => c.method === "PUT" && c.url === "/v1/tracks/fuji/reference-lap")).toBe(true));
   });
