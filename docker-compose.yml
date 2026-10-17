@@ -1,11 +1,11 @@
 # GARAGE backend stack.
 #
-#   docker compose up --build              # timescaledb + rtps (ingest :50051, API :8080)
-#   docker compose --profile live up        # ...also the collector (needs a real PS5 + host net)
+#   PS5_IP=192.168.1.99 docker compose up --build   # timescaledb + rtps (in-process collector,
+#                                                   # ingest :50051, API + dashboard :8080)
 #
-# The collector is gated behind the `live` profile because it only does anything with a real PS5 on
-# the LAN and it must use host networking (a bridge network can't receive the console's UDP). Set the
-# console IP first, e.g.  PS5_IP=192.168.1.99 docker compose --profile live up --build
+# rtps runs the GT7 UDP collector in-process, so it needs the console IP and host networking (a bridge
+# network can't receive the console's UDP on :33740). Without PS5_IP, rtps exits with the config
+# layer's "one of --ps5.ip or --replay-file is required" error.
 name: garage
 
 services:
@@ -28,46 +28,28 @@ services:
       timeout: 3s
       retries: 10
 
-  # The backend: gRPC telemetry ingest + HTTP read API. Bound to 0.0.0.0 so the published ports are
-  # reachable from the host (and from the host-networked collector via localhost:50051).
+  # rtps: in-process GT7 collector + gRPC telemetry ingest + HTTP read API + dashboard. host networking
+  # is REQUIRED to receive the PS5's UDP on :33740 (compose port maps are ignored under host networking;
+  # the API/ingest listen on the host's 0.0.0.0:8080/:50051 directly). It reaches timescaledb through
+  # the port that service publishes on the host (localhost:5432).
   rtps:
     build:
       context: .
       dockerfile: Dockerfile.rtps
+    # PS5_IP is left empty by default so `docker compose config` etc. don't hard-fail on interpolation;
+    # rtps itself rejects an empty ps5.ip at startup.
     command:
+      - "--ps5.ip=${PS5_IP:-}"
       - "--storage=postgres"
-      - "--db.dsn=postgres://gt7:gt7@timescaledb:5432/gt7?sslmode=disable"
+      - "--db.dsn=postgres://gt7:gt7@localhost:5432/gt7?sslmode=disable"
       - "--api.addr=0.0.0.0:8080"
       - "--ingest.addr=0.0.0.0:50051"
       - "--log.level=info"
-    ports:
-      - "8080:8080"   # HTTP read API
-      - "50051:50051" # telemetry ingest gRPC
+    network_mode: host
     depends_on:
       timescaledb:
         condition: service_healthy
     restart: on-failure
-
-  # The GT7 telemetry collector. host networking is REQUIRED to receive the PS5's UDP on :33740 (and
-  # ignores compose port maps). Reaches rtps at localhost:50051 because rtps publishes that port to the
-  # host. Only starts under `--profile live`.
-  collector:
-    build:
-      context: .
-      dockerfile: Dockerfile.collector
-    # PS5_IP is interpolated for the whole file up front (before profiles apply), so it must not be
-    # hard-required here or it would block the default `docker compose up`. Left empty by default; set
-    # it for the live run — `PS5_IP=192.168.1.99 docker compose --profile live up` — otherwise the
-    # collector exits with the config layer's "ps5.ip required" error.
-    command:
-      - "--ps5.ip=${PS5_IP:-}"
-      - "--rtps.addr=127.0.0.1:50051"
-      - "--log.level=info"
-    network_mode: host
-    depends_on:
-      - rtps
-    restart: on-failure
-    profiles: ["live"]
 
 volumes:
   garage-tsdb:

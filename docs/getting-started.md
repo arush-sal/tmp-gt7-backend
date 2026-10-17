@@ -4,15 +4,14 @@
 
 - **Go 1.26 or newer.**
 - A Gran Turismo 7 console on the same network (for live use). You can build, test, and run
-  everything without one — the collector just won't receive telemetry until a console is streaming.
+  everything without one — replay a recorded capture with `--replay-file` instead.
 - For the track API: the Reference Knowledge Base database at `$HOME/.garage/rkb.db` (see
   [tools/rkb](tools/rkb.md)). The backend requires it at startup.
 
 ## Build
 
 ```bash
-go build -o collector ./cmd/collector   # GT7 telemetry collector
-go build -o rtps      ./cmd/rtps         # backend (ingest + HTTP API)
+go build -o rtps ./cmd/rtps   # the one binary: GT7 collector + backend + dashboard
 ```
 
 Or build everything into `./bin/`:
@@ -21,38 +20,34 @@ Or build everything into `./bin/`:
 make build
 ```
 
-## Run the pieces
+## Run it
 
-### Backend
-
-```bash
-./rtps --api.addr localhost:8080 --ingest.addr localhost:50051 --storage memory
-```
-
-It starts a gRPC ingest server (for the collector) and an HTTP API (for clients). Defaults are
-sensible — see the [configuration reference](configuration.md).
-
-### Collector
+`rtps` runs the GT7 collector in-process, plus the HTTP API, the dashboard, and a gRPC ingest server
+(for external collectors and the replay-client; prefer `--replay-file` for replays, since external streams share the live view with the in-process source). Exactly one telemetry source is required:
 
 ```bash
-./collector --ps5.ip 192.168.1.50 --rtps.addr localhost:50051
+# live: the collector sends a keep-alive to the console, and Gran Turismo 7 streams telemetry back
+./rtps --ps5.ip 192.168.1.50 --storage memory
+
+# replay: play a recorded capture at its original cadence (x --replay.speed), then keep serving
+./rtps --replay-file capture.pcapng --replay.speed 4 --storage memory
 ```
 
-- `--ps5.ip` is **required** — the collector sends a keep-alive to the console at this address, and
-  Gran Turismo 7 streams telemetry back.
-- `--rtps.addr` defaults to `localhost:50051` (the backend's ingest address). If it is unreachable,
-  the collector keeps trying and reconnects automatically.
+Passing neither or both of `--ps5.ip` / `--replay-file` is a configuration error. A replayed session
+is indistinguishable from a live one, so replay into a dedicated (e.g. `--storage memory`) instance.
+Other defaults are sensible — see the [configuration reference](configuration.md).
 
 ## Everything at once
 
 `make deploy-stack` is the one command for a race session. It starts TimescaleDB (compose service
-`timescaledb`, waiting until healthy), builds the web dashboard and the binaries, and runs the
-backend and collector in the background, logging to `bin/rtps.log` and `bin/collector.log`:
+`timescaledb`, waiting until healthy), builds the web dashboard and `rtps`, and runs `rtps` in the
+background, logging to `bin/rtps.log`:
 
 ```bash
 make deploy-stack IP=192.168.1.99
 # options: STORAGE=memory (no database)  DB_DSN='postgres://...'  API_ADDR=host:port
-make stop-stack   # stop them (and timescaledb; its data volume is kept)
+make replay-stack FILE=capture.pcapng SPEED=4 STORAGE=memory   # same, replaying a capture
+make stop-stack   # stop rtps (and timescaledb; its data volume is kept)
 ```
 
 The dashboard is served by the backend at `http://localhost:8080/`.
@@ -61,10 +56,10 @@ Bind the API wide (`API_ADDR=0.0.0.0:8080`) to open the dashboard from another d
 
 ## Verify it's working
 
-Set the collector log level to `debug` to see connection and receive activity:
+Set the log level to `debug` to see receive activity:
 
 ```bash
-./collector --ps5.ip 192.168.1.50 --log.level debug
+./rtps --ps5.ip 192.168.1.50 --log.level debug
 ```
 
 Every few seconds it logs a `telemetry stats` line with counts of published frames and any dropped,
@@ -84,7 +79,7 @@ To capture raw packets to disk for later inspection (and later decoding with
 [pcap2csv](tools/pcap2csv.md)):
 
 ```bash
-./collector --ps5.ip 192.168.1.50 --rawdump.enabled --rawdump.dir ./captures
+./rtps --ps5.ip 192.168.1.50 --rawdump.enabled --rawdump.dir ./captures
 ```
 
 This is a debugging aid and is off by default.
@@ -99,4 +94,4 @@ make vuln    # scan dependencies for known vulnerabilities
 ```
 
 Tests run without a console — the decoder is exercised against captured telemetry fixtures, and the
-full pipeline against an in-process gRPC server and loopback UDP.
+full pipeline against loopback UDP and synthesized captures.

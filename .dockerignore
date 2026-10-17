@@ -10,7 +10,7 @@ web/node_modules
 *.log
 *.md
 # Test fixtures (golden CSVs, pcap-derived data) — not referenced by any //go:embed, so not needed to
-# compile cmd/rtps or cmd/collector.
+# compile cmd/rtps.
 **/testdata
 # Compose + Docker files themselves don't belong inside the image.
 docker-compose*.yml

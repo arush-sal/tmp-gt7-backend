@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# rtps — the backend (gRPC ingest + HTTP read API + the embedded web UI). Multi-stage: a Node stage
+# rtps — the whole platform (in-process GT7 collector + gRPC ingest + HTTP read API + embedded web UI). Multi-stage: a Node stage
 # builds the React SPA (web/dist), then a full Go toolchain embeds it (//go:embed in web) and builds a fully
 # static binary, then we ship it on distroless/static so the runtime image has no shell, no package
 # manager, and a non-root user. The DB migrations are compiled into the binary (//go:embed in
@@ -30,7 +30,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/rtps /rtps
-# 8080 = HTTP read API, 50051 = telemetry ingest gRPC (documentation only; publish via compose).
-EXPOSE 8080 50051
+# 8080 = HTTP read API, 50051 = telemetry ingest gRPC, 33740/udp = GT7 telemetry recv (documentation
+# only; compose runs rtps with host networking so the in-process collector can receive the PS5 UDP).
+EXPOSE 8080 50051 33740/udp
 USER nonroot:nonroot
 ENTRYPOINT ["/rtps"]

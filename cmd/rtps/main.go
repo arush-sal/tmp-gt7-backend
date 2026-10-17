@@ -1,6 +1,6 @@
-// Command rtps is the GARAGE backend: it hosts the telemetry ingest gRPC server that the collector
-// streams into, and (in later slices) the Processing/Analysis/Coaching/API domains. Slice 1 = ingest
-// + session-boundary detection with in-memory storage.
+// Command rtps is the GARAGE platform binary: it runs the GT7 UDP collector in-process (--ps5.ip) or
+// replays a capture (--replay-file), and hosts the ingest gRPC server (for external collectors), the
+// Session/Processing/Analysis/Coaching domains, and the HTTP API + embedded web dashboard.
 package main
 
 import (
@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/arush-sal/garage/backend/internal/app"
 	"github.com/arush-sal/garage/backend/internal/config"
@@ -30,14 +31,15 @@ func main() {
 	}
 	defer func() { _ = log.Sync() }()
 
-	// Ctrl-C / SIGTERM cancels the context, triggering a graceful gRPC shutdown.
+	// Ctrl-C / SIGTERM cancels the context, triggering a graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Config hot-reload: only when a --config file was actually given. viper's WatchConfig with no
 	// configured file still spawns a watcher goroutine and logs a spurious error, so this guard
-	// keeps the flag/env-only path (the common case) free of that. The backend has no live-appliable
-	// key beyond log.level; every other change is logged as restart-required.
+	// keeps the flag/env-only path (the common case) free of that. log.level and heartbeat.interval
+	// apply live; every other change is logged as restart-required.
+	reconfigure := make(chan time.Duration, 1)
 	if cfg.ConfigPath != "" {
 		current := cfg
 		stopWatch, err := config.Watch(cfg.ConfigPath, func() {
@@ -56,6 +58,10 @@ func main() {
 					log.Info("log level changed", zap.String("old", d[0]), zap.String("new", d[1]))
 				}
 			}
+			if d, ok := live["heartbeat.interval"]; ok && cfg.PS5IP != "" { // heartbeat exists only with the collector
+				sendLatestReconfigure(reconfigure, next.HeartbeatInterval)
+				log.Info("heartbeat interval changed", zap.String("old", d[0]), zap.String("new", d[1]))
+			}
 			for key, d := range restart {
 				log.Warn("config change requires restart", zap.String("key", key), zap.String("old", d[0]), zap.String("new", d[1]))
 			}
@@ -65,17 +71,38 @@ func main() {
 			log.Warn("config watch failed to start; hot-reload disabled", zap.Error(err))
 		} else {
 			log.Info("config hot-reload watching "+cfg.ConfigPath+
-				" (log level applies live; other changes need restart; "+
+				" (log level + heartbeat apply live; other changes need restart; "+
 				"note: some editor save patterns can stop the watcher)",
 				zap.String("path", cfg.ConfigPath))
 			defer stopWatch()
 		}
 	}
 
-	if err := app.RunBackend(ctx, cfg, log); err != nil {
+	if err := app.RunBackend(ctx, cfg, log, reconfigure); err != nil {
 		log.Error("rtps backend failed", zap.Error(err))
 		_ = log.Sync()
 		os.Exit(1)
+	}
+}
+
+// sendLatestReconfigure delivers next to reconfigure with latest-wins semantics: reconfigure is a
+// buffered-1 channel drained by the collector's forwarding goroutine (app.RunBackend), and the OnConfigChange callback here
+// is the sole producer. If a reload arrives before the previous one is drained, dropping the NEW
+// value (as a plain non-blocking send with a "channel full" fallback would) means the stale older
+// interval wins — backwards from what an operator expects. Evicting the queued value first, then
+// sending, guarantees the newest interval is always what app.Run reads next. Because there is only
+// one producer, this loop always terminates (at most one eviction is ever needed).
+func sendLatestReconfigure(reconfigure chan time.Duration, next time.Duration) {
+	for {
+		select {
+		case reconfigure <- next:
+			return
+		default:
+			select {
+			case <-reconfigure: // evict the stale queued value
+			default:
+			}
+		}
 	}
 }
 

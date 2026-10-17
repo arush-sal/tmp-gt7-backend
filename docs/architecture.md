@@ -3,23 +3,28 @@
 ## The pipeline, end to end
 
 ```
-+-----------+   UDP telemetry    +---------------------+   gRPC stream    +--------------------+
-| GT7 / PS5 | -----------------> | Telemetry Collector | ---------------> |  Backend (RTPS)    |
-+-----------+   keep-alive "A"   +---------------------+  (game-neutral)  +--------------------+
-                                           |                                 |   |
-                                           v (optional, debug)               |   v HTTP API + SSE
-                                    raw packet recording                     |  +-----------+
-                                                                             |  |   web     |
-                                                                             |  | dashboard |
-                                                                             v  +-----------+
-                                                                        session store
-                                                                       (memory / postgres)
+                    +--------------------------------- rtps ---------------------------------+
++-----------+  UDP  | +---------------------+   in-process    +--------------------+          |
+| GT7 / PS5 | ----> | | Telemetry Collector | --------------> |  Backend (RTPS)    | <-- gRPC  |
++-----------+ <---- | | (or --replay-file)  |  (game-neutral)  +--------------------+  ingest   |
+   keep-alive "A"   | +---------------------+                     |            |   (external |
+                    |            |                                |            |  collectors)|
+                    +------------|--------------------------------|------------|-------------+
+                                 v (optional, debug)              v            v HTTP API + SSE
+                          raw packet recording              session store   +-----------+
+                                                         (memory/postgres)  |    web    |
+                                                                            | dashboard |
+                                                                            +-----------+
 ```
 
-The **collector** is game-specific: it understands Gran Turismo 7's wire format. The **backend
-(RTPS)** is not — it consumes a versioned, game-neutral telemetry contract. Splitting them means a
-different game's collector could feed the same backend by speaking the same contract. The collector
-never exposes GT7-specific types across that boundary.
+Both run in one process, `rtps`. The **collector** is game-specific: it understands Gran Turismo 7's
+wire format. The **backend (RTPS)** is not — it consumes a versioned, game-neutral telemetry
+contract. Instead of the live UDP socket, the collector can replay a recorded capture
+(`--replay-file`) through the identical decode path. External collectors (another game, or the
+replay-client tool) still feed the backend over the gRPC ingest server using the same contract;
+note that an external stream shares the live view with the in-process source, so prefer
+`--replay-file` for replays. The
+collector never exposes GT7-specific types across that boundary.
 
 ## Inside the collector
 
@@ -35,7 +40,7 @@ Each packet flows through a fixed sequence:
    and race data, fuel, temperatures, and status flags.
 7. **Map** — translate the decoded frame into the game-neutral contract, stamping capture metadata
    (receive time, sequence number, a gap marker for lost packets, and the source).
-8. **Publish** — hand the frame to the streaming publisher, which streams it to the backend.
+8. **Publish** — hand the frame to the backend's in-process ingest buffer.
 
 A **keep-alive** is sent to the console on a timer; Gran Turismo 7 stops streaming without it.
 
@@ -45,25 +50,27 @@ The collector uses a small number of goroutines with clear boundaries:
 
 - The **receive loop** runs the decode sequence inline — it is fast and never performs blocking I/O
   or logging, so it can always keep up with the network.
-- The **publisher** owns the gRPC connection on its own goroutine. It reconnects with backoff if the
-  backend is unavailable, and its outbound buffer is bounded and lossy: under back-pressure it drops
-  the oldest frames (keeping the freshest telemetry) rather than stalling reception.
+- The **in-process ingest** consumes frames on its own goroutine. The buffer in front of it is
+  bounded and lossy: under back-pressure it drops the oldest frames (keeping the freshest telemetry)
+  rather than stalling reception.
 - The **raw recorder**, when enabled, writes on its own goroutine behind a bounded buffer, so slow
   disk I/O never blocks reception either.
 
-Shutdown is orderly: on SIGINT/SIGTERM the receiver stops first (no new packets enter), then the
-publisher winds down and the raw recording is flushed and closed.
+Shutdown is orderly: on SIGINT/SIGTERM the receiver stops first (no new packets enter), the raw
+recording is flushed and closed, then the ingest stream drains and ends (finalizing the session), and
+finally the servers stop.
 
 ## The telemetry contract
 
-The contract between the collector and the backend is a versioned Protocol Buffers schema
-(`gt7.telemetry.v1`). The collector calls one client-streaming RPC:
+The contract between collectors and the backend is a versioned Protocol Buffers schema
+(`gt7.telemetry.v1`). The in-process collector hands frames over directly; an external collector
+calls one client-streaming RPC:
 
 ```
 rpc Ingest(stream TelemetryFrame) returns (Ack);
 ```
 
-The collector dials the backend, streams `TelemetryFrame`s, and receives a single `Ack`
+An external collector dials the backend, streams `TelemetryFrame`s, and receives a single `Ack`
 (frames received) when the stream closes. Each frame carries the telemetry values plus capture
 metadata (receive time, sequence, gap marker, source `LIVE`/`REPLAY`, schema version) so the backend
 can segment laps and reason about timing without ever seeing the GT7 wire format.
@@ -72,8 +79,8 @@ can segment laps and reason about timing without ever seeing the GT7 wire format
 
 The backend hosts several logical domains behind two network servers:
 
-- a **gRPC ingest server** (`--ingest.addr`, default `localhost:50051`) that accepts the collector's
-  stream, and
+- a **gRPC ingest server** (`--ingest.addr`, default `localhost:50051`) that accepts external
+  collectors' streams (the in-process collector feeds the same ingest logic directly), and
 - an **HTTP API server** (`--api.addr`, default `localhost:8080`) that serves reads and a live
   stream — see the [API reference](api.md).
 
@@ -110,13 +117,15 @@ startup.
 ### Lifecycle
 
 On startup the backend selects storage (migrating Postgres if configured), opens the RKB, wires the
-ingest sinks, and runs the gRPC and HTTP servers each on their own goroutine. On SIGINT/SIGTERM both
-servers stop concurrently, each bounded by a short grace period (gRPC drains gracefully then hard-
+ingest sinks, starts the telemetry source (UDP collector or replay; a failure such as a busy UDP
+port fails startup), and runs the gRPC and HTTP servers each on their own goroutine. A replay that
+reaches the end of its capture finalizes its session and leaves the servers running. On SIGINT/SIGTERM
+the source stops, the in-process stream is finalized, and both servers stop concurrently, each bounded by a short grace period (gRPC drains gracefully then hard-
 stops; HTTP shuts down with a deadline).
 
 ## Observability
 
-The collector emits structured, levelled logs; its receive path only updates counters, which are
+The collector logs through `rtps`'s structured, levelled logger; its receive path only updates counters, which are
 logged periodically off the hot path so logging never interferes with reception. The backend logs
 JSON at the configured level and supports live reload of the log level when started with a config
-file (every other key requires a restart).
+file, and the collector's heartbeat interval likewise (every other key requires a restart).

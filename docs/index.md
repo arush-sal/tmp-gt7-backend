@@ -9,13 +9,14 @@ visualizes results is built into the backend and served at `/`.
 
 ## The system
 
-The backend runs as two cooperating processes that talk over a **versioned, game-neutral telemetry
-contract**. A collector is game-specific (this one speaks Gran Turismo 7); the processing system is
-not, so other games could feed the same pipeline through their own collectors.
+The backend is one binary, `rtps`, whose parts talk over a **versioned, game-neutral telemetry
+contract**. The collector is game-specific (this one speaks Gran Turismo 7) and runs in-process; the
+processing system is not, so other games could feed the same pipeline through their own collectors
+over the gRPC ingest server.
 
 | Component | Role | Status |
 |---|---|---|
-| **Telemetry Collector** (`collector`) | Receives GT7 UDP telemetry, decodes it, streams it onward over gRPC. | Implemented |
+| **Telemetry Collector** (in `rtps`) | Receives GT7 UDP telemetry (or replays a capture), decodes it, hands it to ingest in-process. | Implemented |
 | **Real-Time Processing System** (`rtps`) | Session detection, lap segmentation, analysis, live egress, and a read HTTP API. | Implemented (analysis/coaching evolving) |
 | **Web dashboard** (`web/`) | React UI embedded into `rtps` and served at `/`. | Implemented |
 
@@ -26,12 +27,11 @@ not, so other games could feed the same pipeline through their own collectors.
 
 ## Binaries
 
-- `cmd/collector` — the GT7 telemetry collector.
-- `cmd/rtps` — the backend (gRPC ingest + HTTP API).
+- `cmd/rtps` — the whole platform: GT7 collector (or capture replay), gRPC ingest, HTTP API, dashboard.
 
 ## Pages
 
-- [Getting started](getting-started.md) — install, build, and run the collector and backend.
+- [Getting started](getting-started.md) — install, build, and run `rtps`.
 - [Configuration](configuration.md) — every option, with defaults and precedence.
 - [Architecture](architecture.md) — how telemetry flows end to end.
 - [HTTP API reference](api.md) — the backend's read endpoints and live stream.

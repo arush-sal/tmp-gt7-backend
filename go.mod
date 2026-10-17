@@ -6,6 +6,7 @@ ignore ./web/node_modules
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/google/gopacket v1.1.19
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pressly/goose/v3 v3.27.2

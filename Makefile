@@ -1,4 +1,4 @@
-# GARAGE backend — build & test tasks (collector, rtps, and the embedded web UI in web/).
+# GARAGE backend — build & test tasks (rtps, with the in-process collector and the embedded web UI in web/).
 # Run `make hooks` once after cloning to enable the pre-commit gate.
 
 GO      ?= go
@@ -9,13 +9,16 @@ IP       ?=
 STORAGE  ?= postgres
 DB_DSN   ?= postgres://gt7:gt7@localhost:5432/gt7?sslmode=disable
 API_ADDR ?= localhost:8080
+# `make replay-stack` knobs: capture to replay in-process, and the pacing multiplier.
+FILE     ?=
+SPEED    ?= 1
 # The host has the standalone docker-compose binary, not the `docker compose` plugin.
 COMPOSE  ?= docker-compose
 
 # `make web-up` / `make web-preview`: backend the Vite dev proxy forwards /v1 to (host:port or URL)
 RTPS     ?= localhost:8080
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean deploy-stack stop-stack web-install web-up web-build web-preview web-test
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean deploy-stack replay-stack stop-stack web-install web-up web-build web-preview web-test
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
@@ -75,31 +78,36 @@ hooks:
 	@echo "git hooks path set to .githooks"
 
 ## deploy-stack: the one command for a race session. Starts timescaledb (compose, waits for healthy),
-## builds the web UI + binaries, and runs rtps (API + embedded dashboard) and the collector in the
-## background against a PS5, logging to bin/. Re-run to restart; `make stop-stack` to stop.
+## builds the web UI + rtps, and runs rtps (in-process GT7 collector + API + embedded dashboard) in the
+## background against a PS5, logging to bin/rtps.log. Re-run to restart; `make stop-stack` to stop.
 ## Bind the API wide (API_ADDR=0.0.0.0:8080) to open the dashboard from another device.
 ##   make deploy-stack IP=192.168.1.99 [STORAGE=memory | DB_DSN='postgres://...'] [API_ADDR=host:port]
-deploy-stack: web-build
-	@test -n "$(IP)" || { echo "usage: make deploy-stack IP=<ps5-ip> [STORAGE=memory | DB_DSN=...] [API_ADDR=host:port]"; exit 2; }
+## replay-stack: same, but rtps replays a recorded capture instead of a live PS5 (keeps serving at EOF).
+##   make replay-stack FILE=capture.pcapng [SPEED=1] [STORAGE=postgres DB_DSN=...] [API_ADDR=host:port]
+##   (replay-stack defaults to STORAGE=memory)
+deploy-stack: SOURCE = --ps5.ip=$(IP)
+deploy-stack: NEED = $(IP)
+replay-stack: SOURCE = --replay-file="$(FILE)" --replay.speed=$(SPEED)
+replay-stack: NEED = $(FILE)
+# Replays default to memory: re-running a capture into postgres would store the same session again
+# (no session dedup yet). `make replay-stack STORAGE=postgres ...` still opts in (command line wins).
+replay-stack: STORAGE = memory
+deploy-stack replay-stack: web-build
+	@test -n "$(NEED)" || { echo "usage: make deploy-stack IP=<ps5-ip> | make replay-stack FILE=<capture> [SPEED=1]  [STORAGE=memory | DB_DSN=...] [API_ADDR=host:port]"; exit 2; }
 	@if [ "$(STORAGE)" = postgres ]; then $(COMPOSE) up -d --wait timescaledb; fi
 	@mkdir -p bin
 	$(GO) build -o bin/rtps ./cmd/rtps
-	$(GO) build -o bin/collector ./cmd/collector
-	@bash -c 'pkill -x rtps 2>/dev/null; pkill -x collector 2>/dev/null; sleep 2; \
-		nohup ./bin/rtps --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=$(API_ADDR) --ingest.addr=localhost:50051 --log.level=info >bin/rtps.log 2>&1 & disown; \
-		sleep 2; \
-		nohup ./bin/collector --ps5.ip=$(IP) --rtps.addr=localhost:50051 --log.level=info >bin/collector.log 2>&1 & disown'
+	@bash -c 'pkill -x rtps 2>/dev/null; sleep 2; \
+		nohup ./bin/rtps $(SOURCE) --storage=$(STORAGE) --db.dsn="$(DB_DSN)" --api.addr=$(API_ADDR) --ingest.addr=localhost:50051 --log.level=info >bin/rtps.log 2>&1 & disown'
 	@sleep 2; \
 		curl -sf -o /dev/null http://$(API_ADDR)/v1/live && echo "rtps       ok    http://$(API_ADDR)/v1/live" || echo "rtps       DOWN  (bin/rtps.log)"; \
 		curl -sf -o /dev/null http://$(API_ADDR)/ && echo "dashboard  ok    http://$(API_ADDR)/" || echo "dashboard  DOWN  (bin/rtps.log)"; \
-		pgrep -x collector >/dev/null && echo "collector  ok    PS5 $(IP)" || echo "collector  DOWN  (bin/collector.log)"; \
 		echo "stop: make stop-stack"
 
-## stop-stack: stop a running deploy-stack (rtps + collector, and timescaledb when STORAGE=postgres;
+## stop-stack: stop a running deploy-stack/replay-stack (rtps, and timescaledb when STORAGE=postgres;
 ## the DB volume is kept).
 stop-stack:
-	@bash -c 'pkill -x rtps && echo "stopped rtps" || echo "rtps not running"; \
-		pkill -x collector && echo "stopped collector" || echo "collector not running"'
+	@bash -c 'pkill -x rtps && echo "stopped rtps" || echo "rtps not running"'
 	@if [ "$(STORAGE)" = postgres ]; then $(COMPOSE) stop timescaledb; fi
 
 ## web-install: install the web UI dependencies (npm ci)
@@ -131,5 +139,5 @@ web-test: web/node_modules
 
 ## clean: remove build and coverage artifacts
 clean:
-	rm -f coverage.out cmd/collector/collector
+	rm -f coverage.out
 	rm -rf bin

@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"go.uber.org/zap/zapcore"
 )
@@ -42,5 +43,43 @@ func TestNewLogger_InvalidLevel(t *testing.T) {
 	}
 	if log != nil {
 		t.Error("newLogger error path should return a nil logger")
+	}
+}
+
+// TestSendLatestReconfigure_LatestWins checks that two back-to-back sends into an undrained,
+// buffered-1 reconfigure channel deliver the LATEST value, not the stale first one. A plain
+// non-blocking send with a "channel full" drop (the pre-fix behavior) would leave the first, now
+// stale, interval in the channel — exactly backwards from what an operator reloading config expects.
+func TestSendLatestReconfigure_LatestWins(t *testing.T) {
+	reconfigure := make(chan time.Duration, 1)
+
+	sendLatestReconfigure(reconfigure, 1*time.Second)
+	sendLatestReconfigure(reconfigure, 5*time.Second)
+
+	select {
+	case got := <-reconfigure:
+		if got != 5*time.Second {
+			t.Fatalf("delivered = %v, want 5s (latest); stale value won", got)
+		}
+	default:
+		t.Fatal("reconfigure channel unexpectedly empty")
+	}
+
+	// The channel must be left empty (not still holding a second, undelivered value).
+	select {
+	case extra := <-reconfigure:
+		t.Fatalf("unexpected extra value in channel: %v", extra)
+	default:
+	}
+}
+
+// TestSendLatestReconfigure_DrainedChannel checks the common case (receiver already drained the
+// channel) still delivers correctly with no eviction needed.
+func TestSendLatestReconfigure_DrainedChannel(t *testing.T) {
+	reconfigure := make(chan time.Duration, 1)
+
+	sendLatestReconfigure(reconfigure, 2*time.Second)
+	if got := <-reconfigure; got != 2*time.Second {
+		t.Fatalf("delivered = %v, want 2s", got)
 	}
 }

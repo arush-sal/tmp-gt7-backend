@@ -51,21 +51,28 @@ func NewServer(store session.Store, sink session.Sink, cfg session.Config, log *
 // the Detector is still closed (so an in-progress session is force-finalized, not lost) and the error
 // is returned to gRPC. Logging is per-stream only — never per frame (hot-path discipline).
 func (s *Server) Ingest(stream telemetryv1.Telemetry_IngestServer) error {
-	d := session.NewDetector(s.sink, s.store, s.cfg)
 	s.log.Info("ingest stream opened")
+	frames, err := s.consume(stream.Recv)
+	if errors.Is(err, io.EOF) {
+		s.log.Info("ingest stream closed", zap.Uint64("frames", frames))
+		return stream.SendAndClose(&telemetryv1.Ack{FramesReceived: frames})
+	}
+	s.log.Warn("ingest stream error; force-closed session", zap.Uint64("frames", frames), zap.Error(err))
+	return err
+}
 
+// consume is the per-stream loop shared by the gRPC Ingest stream and the in-process Local publisher:
+// a fresh Detector per stream, each frame published first (live egress) then observed, until recv
+// returns an error. io.EOF is the clean end of stream; any error (clean or not) closes the Detector, so
+// an in-progress session is always finalized, never lost. It returns the frame count and recv's error.
+func (s *Server) consume(recv func() (*telemetryv1.TelemetryFrame, error)) (uint64, error) {
+	d := session.NewDetector(s.sink, s.store, s.cfg)
+	defer d.Close()
 	var frames uint64
 	for {
-		f, err := stream.Recv()
-		switch {
-		case errors.Is(err, io.EOF):
-			d.Close()
-			s.log.Info("ingest stream closed", zap.Uint64("frames", frames))
-			return stream.SendAndClose(&telemetryv1.Ack{FramesReceived: frames})
-		case err != nil:
-			d.Close()
-			s.log.Warn("ingest stream error; force-closed session", zap.Uint64("frames", frames), zap.Error(err))
-			return err
+		f, err := recv()
+		if err != nil {
+			return frames, err
 		}
 		if s.Publisher != nil {
 			s.Publisher.Publish(f) // egress first: consumers get the frame before any processing

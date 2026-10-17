@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	cingest "github.com/arush-sal/garage/backend/collector/ingest"
+	"github.com/arush-sal/garage/backend/collector/replay"
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
 	"github.com/arush-sal/garage/backend/internal/config"
 	"github.com/arush-sal/garage/backend/internal/db"
@@ -27,10 +29,13 @@ import (
 	"google.golang.org/grpc"
 )
 
-// RunBackend starts the backend (RTPS) process: the ingest gRPC server (Session Management ->
-// Processing) and the HTTP read API (Analysis -> Coaching -> Presentation). It serves until ctx is
-// cancelled (SIGINT/SIGTERM), then stops both gracefully. Stores are in-memory or Postgres per config.
-func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) error {
+// RunBackend starts the rtps process: the in-process telemetry source (the GT7 UDP collector when
+// ps5.ip is set, or a capture replay when replay-file is set), the ingest gRPC server for external
+// collectors (Session Management -> Processing), and the HTTP read API (Analysis -> Coaching ->
+// Presentation). It serves until ctx is cancelled (SIGINT/SIGTERM) — including after a replay ends —
+// then stops everything gracefully. Stores are in-memory or Postgres per config. reconfigure is an
+// optional (nil-safe) channel of live heartbeat-interval updates for the collector.
+func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, reconfigure <-chan time.Duration) error {
 	if log == nil { // defensive: match ingest.NewServer / NewLoggingSink nil-logger handling
 		log = zap.NewNop()
 	}
@@ -159,8 +164,36 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 		return fmt.Errorf("listen %s: %w", cfg.IngestAddr, err)
 	}
 
-	// Both servers run on their own goroutine; the first error (or shutdown signal) tears down both.
-	serveErr := make(chan error, 2)
+	// In-process telemetry: the collector (or a replay) publishes straight into local, which feeds the
+	// same per-stream ingest loop as a gRPC stream. The gRPC listener above stays for external
+	// collectors and the replay-client. External streams get their own Detector but share the live
+	// Hub/DeltaTracker with this in-process source.
+	local := ingest.NewLocal(ingestSrv, cfg.LiveBufferSize)
+	source, err := newSource(cfg, log, local, reconfigure)
+	if err != nil {
+		_ = lis.Close()
+		return err
+	}
+
+	// local runs on its own context, NOT ctx: it must outlive the source so it can drain the tail and
+	// finalize the session only after the source has stopped publishing (see stopLocal).
+	localCtx, cancelLocal := context.WithCancel(context.Background())
+	localDone := make(chan struct{})
+	go func() { local.Run(localCtx); close(localDone) }()
+	var stopLocalOnce sync.Once
+	stopLocal := func() { stopLocalOnce.Do(func() { cancelLocal(); <-localDone }) }
+
+	// The servers and a live collector run on their own goroutines; the first error (or shutdown
+	// signal) tears everything down.
+	serveErr := make(chan error, 3)
+	srcCtx, cancelSrc := context.WithCancel(ctx)
+	srcDone := make(chan struct{})
+	go func() {
+		defer close(srcDone)
+		if err := source(srcCtx, stopLocal); err != nil {
+			serveErr <- err
+		}
+	}()
 	go func() {
 		log.Info("ingest gRPC server listening", zap.String("addr", cfg.IngestAddr))
 		serveErr <- gs.Serve(lis)
@@ -174,19 +207,90 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger) 
 		serveErr <- nil
 	}()
 
+	// Shutdown order: stop the source (no new frames) -> stop local (drain + finalize the session) ->
+	// stop the servers.
+	shutdown := func() {
+		cancelSrc()
+		<-srcDone
+		stopLocal()
+		stopServers(gs, httpSrv)
+	}
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received; stopping servers")
-		stopServers(gs, httpSrv)
+		shutdown()
 		return nil
 	case err := <-serveErr:
-		stopServers(gs, httpSrv) // one server exited; bring the other down gracefully too
+		shutdown() // one component exited; bring the rest down gracefully too
 		if err != nil {
 			return fmt.Errorf("serve: %w", err)
 		}
 		return nil
 	}
 }
+
+// newSource builds the in-process telemetry source selected by cfg and returns its run function. All
+// startup failures (UDP bind, unreadable capture) surface here so rtps fails fast. The run function
+// blocks until ctx is cancelled or the source ends; stopLocal ends the in-process stream (finalizing
+// the session) and is called by a replay at EOF. A non-nil return is fatal to serving (only a live
+// collector's receive failure); a replay's read error is logged and rtps keeps serving. With neither
+// source configured (config validation forbids it; tests rely on it) the source just waits for ctx.
+func newSource(cfg config.BackendConfig, log *zap.Logger, local *ingest.Local, reconfigure <-chan time.Duration) (func(ctx context.Context, stopLocal func()) error, error) {
+	switch {
+	case cfg.PS5IP != "":
+		col, err := newCollector(cfg, log, local)
+		if err != nil {
+			return nil, fmt.Errorf("collector: %w", err)
+		}
+		return func(ctx context.Context, _ func()) error {
+			if err := col.run(ctx, reconfigure); err != nil {
+				return fmt.Errorf("collector: %w", err)
+			}
+			return nil
+		}, nil
+	case cfg.ReplayFile != "":
+		src, err := replay.Open(cfg.ReplayFile)
+		if err != nil {
+			return nil, fmt.Errorf("replay %s: %w", cfg.ReplayFile, err)
+		}
+		return func(ctx context.Context, stopLocal func()) error {
+			defer func() { _ = src.Close() }()
+			// Replay reuses the collector's exact decode path (no raw dump), so results match a live run.
+			// Lossless, unlike the live path: replay has no kernel UDP buffer to protect, so it blocks on
+			// a full buffer (fidelity > latency) rather than evicting frames and diverging from the
+			// original run.
+			pipeline := cingest.NewPipeline(nil, waitPublisher{ctx: ctx, l: local})
+			log.Info("replay starting", zap.String("file", cfg.ReplayFile), zap.Float64("speed", cfg.ReplaySpeed))
+			err := src.Play(ctx, uint16(cfg.RecvPort), cfg.ReplaySpeed, pipeline.Handle)
+			switch {
+			case err == nil:
+				stopLocal() // EOF: end the stream so the detector finalizes the session; keep serving
+				logCounters(log, "replay finished", pipeline, local)
+			case ctx.Err() != nil:
+				logCounters(log, "replay stopped", pipeline, local)
+			default:
+				stopLocal()
+				log.Error("replay failed; still serving", zap.String("file", cfg.ReplayFile), zap.Error(err))
+				logCounters(log, "replay stopped", pipeline, local)
+			}
+			return nil
+		}, nil
+	default:
+		return func(ctx context.Context, _ func()) error { <-ctx.Done(); return nil }, nil
+	}
+}
+
+// waitPublisher adapts Local.PublishWait to collector/ingest.Publisher for the replay source. A
+// publish error means ctx was cancelled or the local stream stopped; either way replay is ending
+// (Play observes ctx itself), so the frame is simply not delivered.
+type waitPublisher struct {
+	ctx context.Context
+	l   *ingest.Local
+}
+
+// Publish blocks until the frame is queued on the local ingest stream (lossless replay), dropping it
+// only when replay is already ending (see the type comment).
+func (p waitPublisher) Publish(f *telemetryv1.TelemetryFrame) { _ = p.l.PublishWait(p.ctx, f) }
 
 // stopServers shuts the gRPC and HTTP servers down CONCURRENTLY, each bounded by a timeout so a
 // long-lived ingest stream (which GracefulStop would otherwise wait on) can't stall the HTTP

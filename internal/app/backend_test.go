@@ -3,13 +3,19 @@ package app
 import (
 	"context"
 	"database/sql"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/arush-sal/garage/backend/internal/config"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcapgo"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	_ "modernc.org/sqlite"
 )
 
@@ -69,7 +75,7 @@ func TestRunBackend_GracefulStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- RunBackend(ctx, config.BackendConfig{IngestAddr: "127.0.0.1:0", APIAddr: "127.0.0.1:0", LogLevel: "error"}, zap.NewNop())
+		done <- RunBackend(ctx, config.BackendConfig{IngestAddr: "127.0.0.1:0", APIAddr: "127.0.0.1:0", LogLevel: "error"}, zap.NewNop(), nil)
 	}()
 
 	time.Sleep(100 * time.Millisecond) // let it bind + start serving
@@ -89,8 +95,120 @@ func TestRunBackend_GracefulStop(t *testing.T) {
 // passes a nil logger to exercise the nil-logger guard (must not panic).
 func TestRunBackend_BindError(t *testing.T) {
 	withHermeticRKB(t)
-	err := RunBackend(context.Background(), config.BackendConfig{IngestAddr: "not-an-address:99999999", APIAddr: "127.0.0.1:0", LogLevel: "error"}, nil)
+	err := RunBackend(context.Background(), config.BackendConfig{IngestAddr: "not-an-address:99999999", APIAddr: "127.0.0.1:0", LogLevel: "error"}, nil, nil)
 	if err == nil {
 		t.Fatal("want bind error for invalid address, got nil")
+	}
+}
+
+// TestRunBackend_CollectorBindFails: with --ps5.ip set, a busy UDP recv port fails rtps startup with a
+// clear error rather than serving without telemetry.
+func TestRunBackend_CollectorBindFails(t *testing.T) {
+	withHermeticRKB(t)
+	busy, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = busy.Close() }()
+	cfg := collectorCfg(t)
+	cfg.RecvPort = busy.LocalAddr().(*net.UDPAddr).Port
+	cfg.IngestAddr, cfg.APIAddr = "127.0.0.1:0", "127.0.0.1:0"
+
+	errc := make(chan error, 1)
+	go func() { errc <- RunBackend(context.Background(), cfg, zap.NewNop(), nil) }()
+	select {
+	case err := <-errc:
+		if err == nil || !strings.Contains(err.Error(), "collector") {
+			t.Fatalf("RunBackend err = %v, want a collector startup error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunBackend kept running despite the collector failing to bind")
+	}
+}
+
+// TestRunBackend_ReplayOpenFails: an unreadable --replay-file fails startup.
+func TestRunBackend_ReplayOpenFails(t *testing.T) {
+	withHermeticRKB(t)
+	cfg := config.BackendConfig{
+		IngestAddr: "127.0.0.1:0", APIAddr: "127.0.0.1:0", LogLevel: "error", LiveBufferSize: 8,
+		ReplayFile: filepath.Join(t.TempDir(), "missing.pcapng"), ReplaySpeed: 1, RecvPort: 33740,
+	}
+	if err := RunBackend(context.Background(), cfg, zap.NewNop(), nil); err == nil {
+		t.Fatal("RunBackend with a missing replay file: want error, got nil")
+	}
+}
+
+// writeFixtureCapture writes the GT7 fixture packets as UDP datagrams to dstPort into a pcapng.
+func writeFixtureCapture(t *testing.T, path string, dstPort int) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	w, err := pcapgo.NewNgWriter(f, layers.LinkTypeEthernet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, n := range []string{"packet_00.bin", "packet_01.bin", "packet_02.bin"} {
+		ip := &layers.IPv4{Version: 4, IHL: 5, TTL: 64, Protocol: layers.IPProtocolUDP, SrcIP: net.IP{10, 0, 0, 1}, DstIP: net.IP{10, 0, 0, 2}}
+		udp := &layers.UDP{SrcPort: 40000, DstPort: layers.UDPPort(dstPort)}
+		if err := udp.SetNetworkLayerForChecksum(ip); err != nil {
+			t.Fatal(err)
+		}
+		eth := &layers.Ethernet{SrcMAC: net.HardwareAddr{1, 1, 1, 1, 1, 1}, DstMAC: net.HardwareAddr{2, 2, 2, 2, 2, 2}, EthernetType: layers.EthernetTypeIPv4}
+		buf := gopacket.NewSerializeBuffer()
+		if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}, eth, ip, udp, gopacket.Payload(readFixture(t, n))); err != nil {
+			t.Fatal(err)
+		}
+		ci := gopacket.CaptureInfo{Timestamp: time.Unix(1_700_000_000, 0).Add(time.Duration(i) * 16 * time.Millisecond), CaptureLength: len(buf.Bytes()), Length: len(buf.Bytes())}
+		if err := w.WritePacket(ci, buf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRunBackend_ReplayFinishesAndKeepsServing: a replay runs to EOF, its stream is finalized (the
+// in-process ingest closes with every published frame), and rtps keeps serving until cancelled.
+func TestRunBackend_ReplayFinishesAndKeepsServing(t *testing.T) {
+	withHermeticRKB(t)
+	path := filepath.Join(t.TempDir(), "fx.pcapng")
+	writeFixtureCapture(t, path, 33740)
+	cfg := config.BackendConfig{
+		IngestAddr: "127.0.0.1:0", APIAddr: "127.0.0.1:0", LogLevel: "info", LiveBufferSize: 64,
+		ReplayFile: path, ReplaySpeed: 1, RecvPort: 33740,
+	}
+	core, logs := observer.New(zap.InfoLevel)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- RunBackend(ctx, cfg, zap.New(core), nil) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for logs.FilterMessage("replay finished").Len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("replay never finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	closed := logs.FilterMessage("in-process ingest stream closed").All()
+	if len(closed) != 1 || closed[0].ContextMap()["frames"] != uint64(3) {
+		t.Fatalf("in-process stream close logs = %v, want one with frames=3", closed)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("RunBackend returned after replay EOF (%v); it must keep serving", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunBackend returned error on graceful stop: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunBackend did not stop after cancel")
 	}
 }

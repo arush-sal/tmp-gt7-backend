@@ -47,7 +47,6 @@ CLAUDE.md
 
 # Build output
 /bin/
-/cmd/collector/collector
 
 # Local runtime
 *.local.yaml

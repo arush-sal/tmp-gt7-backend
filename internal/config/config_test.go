@@ -7,87 +7,12 @@ import (
 	"time"
 )
 
-// TestConfigDefaults checks the built-in defaults resolve when only the required ps5.ip is given.
-func TestConfigDefaults(t *testing.T) {
-	c, err := Load([]string{"--ps5.ip=1.2.3.4"})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.PS5IP != "1.2.3.4" || c.RecvPort != 33740 || c.SendPort != 33739 {
-		t.Errorf("defaults wrong: %+v", c)
-	}
-	if c.HeartbeatInterval != time.Second || c.LogLevel != "info" || c.LiveBufferSize != 1024 {
-		t.Errorf("defaults wrong: %+v", c)
-	}
-}
-
-// TestConfigRequiresPS5IP checks Load errors when the required console IP is absent.
-func TestConfigRequiresPS5IP(t *testing.T) {
-	if _, err := Load(nil); err == nil {
-		t.Error("Load with no ps5.ip should error")
-	}
-}
-
-// TestConfigValidation checks Load rejects runtime-unsafe values (which would otherwise panic or
-// spin) and accepts a fully valid set.
-func TestConfigValidation(t *testing.T) {
-	tests := []struct {
-		name    string
-		args    []string
-		wantErr bool
-	}{
-		{"valid", []string{"--ps5.ip=1.2.3.4"}, false},
-		{"zero heartbeat", []string{"--ps5.ip=x", "--heartbeat.interval=0"}, true},
-		{"negative heartbeat", []string{"--ps5.ip=x", "--heartbeat.interval=-1s"}, true},
-		{"zero live buffer", []string{"--ps5.ip=x", "--live_buffer.size=0"}, true},
-		{"zero raw buffer", []string{"--ps5.ip=x", "--raw_buffer.size=0"}, true},
-		{"recv port zero", []string{"--ps5.ip=x", "--udp.recv_port=0"}, true},
-		{"recv port too high", []string{"--ps5.ip=x", "--udp.recv_port=70000"}, true},
-		{"send port zero", []string{"--ps5.ip=x", "--udp.send_port=0"}, true},
-		{"empty rtps addr", []string{"--ps5.ip=x", "--rtps.addr="}, true},
-		{"bad log level", []string{"--ps5.ip=x", "--log.level=trace"}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Load(tt.args)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Load(%v) err = %v, wantErr %v", tt.args, err, tt.wantErr)
-			}
-		})
-	}
-}
-
-// TestConfigPrecedence checks the flag > env > file > default ladder for one representative key.
-func TestConfigPrecedence(t *testing.T) {
-	// default (no override)
-	if c, _ := Load([]string{"--ps5.ip=x"}); c.RecvPort != 33740 {
-		t.Errorf("default: RecvPort = %d, want 33740", c.RecvPort)
-	}
-
-	// file beats default
-	path := filepath.Join(t.TempDir(), "cfg.yaml")
-	if err := os.WriteFile(path, []byte("udp:\n  recv_port: 43000\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if c, _ := Load([]string{"--ps5.ip=x", "--config=" + path}); c.RecvPort != 43000 {
-		t.Errorf("file: RecvPort = %d, want 43000", c.RecvPort)
-	}
-
-	// env beats file
-	t.Setenv("GT7_UDP_RECV_PORT", "44000")
-	if c, _ := Load([]string{"--ps5.ip=x", "--config=" + path}); c.RecvPort != 44000 {
-		t.Errorf("env-over-file: RecvPort = %d, want 44000", c.RecvPort)
-	}
-
-	// flag beats env
-	if c, _ := Load([]string{"--ps5.ip=x", "--config=" + path, "--udp.recv_port=42000"}); c.RecvPort != 42000 {
-		t.Errorf("flag-over-env: RecvPort = %d, want 42000", c.RecvPort)
-	}
-}
+// src is the minimal valid source selection (exactly one of ps5.ip / replay-file is required).
+var src = []string{"--ps5.ip=1.2.3.4"}
 
 // TestLoadBackend_Defaults checks the backend binary's zero-flag defaults.
 func TestLoadBackend_Defaults(t *testing.T) {
-	c, err := LoadBackend(nil)
+	c, err := LoadBackend(src)
 	if err != nil {
 		t.Fatalf("LoadBackend: %v", err)
 	}
@@ -102,20 +27,20 @@ func TestLoadBackend_Defaults(t *testing.T) {
 // TestLoadBackend_Overrides checks flag and env precedence for ingest.addr (flag > env).
 func TestLoadBackend_Overrides(t *testing.T) {
 	t.Setenv("GT7_INGEST_ADDR", "0.0.0.0:6000")
-	if c, _ := LoadBackend(nil); c.IngestAddr != "0.0.0.0:6000" {
+	if c, _ := LoadBackend(src); c.IngestAddr != "0.0.0.0:6000" {
 		t.Errorf("env: IngestAddr = %q, want 0.0.0.0:6000", c.IngestAddr)
 	}
-	if c, _ := LoadBackend([]string{"--ingest.addr=127.0.0.1:7000"}); c.IngestAddr != "127.0.0.1:7000" {
+	if c, _ := LoadBackend([]string{"--ps5.ip=1.2.3.4", "--ingest.addr=127.0.0.1:7000"}); c.IngestAddr != "127.0.0.1:7000" {
 		t.Errorf("flag-over-env: IngestAddr = %q, want 127.0.0.1:7000", c.IngestAddr)
 	}
 }
 
 // TestLoadBackend_Validation rejects an empty address and an unknown log level.
 func TestLoadBackend_Validation(t *testing.T) {
-	if _, err := LoadBackend([]string{"--ingest.addr="}); err == nil {
+	if _, err := LoadBackend([]string{"--ps5.ip=1.2.3.4", "--ingest.addr="}); err == nil {
 		t.Error("empty ingest.addr: want error, got nil")
 	}
-	if _, err := LoadBackend([]string{"--log.level=trace"}); err == nil {
+	if _, err := LoadBackend([]string{"--ps5.ip=1.2.3.4", "--log.level=trace"}); err == nil {
 		t.Error("bad log.level: want error, got nil")
 	}
 }
@@ -123,29 +48,29 @@ func TestLoadBackend_Validation(t *testing.T) {
 // TestLoadBackend_Storage checks the storage selector + its DSN requirement.
 func TestLoadBackend_Storage(t *testing.T) {
 	// default is memory, no DSN needed
-	if c, err := LoadBackend(nil); err != nil || c.Storage != "memory" {
+	if c, err := LoadBackend(src); err != nil || c.Storage != "memory" {
 		t.Fatalf("default storage: c=%+v err=%v, want memory/nil", c, err)
 	}
 	// postgres without a DSN is rejected
-	if _, err := LoadBackend([]string{"--storage=postgres"}); err == nil {
+	if _, err := LoadBackend([]string{"--ps5.ip=1.2.3.4", "--storage=postgres"}); err == nil {
 		t.Error("storage=postgres without db.dsn: want error, got nil")
 	}
 	// postgres with a DSN is accepted
-	if c, err := LoadBackend([]string{"--storage=postgres", "--db.dsn=postgres://x"}); err != nil || c.DBDSN != "postgres://x" {
+	if c, err := LoadBackend([]string{"--ps5.ip=1.2.3.4", "--storage=postgres", "--db.dsn=postgres://x"}); err != nil || c.DBDSN != "postgres://x" {
 		t.Errorf("storage=postgres with dsn: c=%+v err=%v", c, err)
 	}
 	// unknown backing is rejected
-	if _, err := LoadBackend([]string{"--storage=redis"}); err == nil {
+	if _, err := LoadBackend([]string{"--ps5.ip=1.2.3.4", "--storage=redis"}); err == nil {
 		t.Error("storage=redis: want error, got nil")
 	}
 }
 
 // TestLoadBackend_APIAddr checks the api.addr default + required validation.
 func TestLoadBackend_APIAddr(t *testing.T) {
-	if c, err := LoadBackend(nil); err != nil || c.APIAddr != "localhost:8080" {
+	if c, err := LoadBackend(src); err != nil || c.APIAddr != "localhost:8080" {
 		t.Fatalf("default api.addr: c=%+v err=%v, want localhost:8080", c, err)
 	}
-	if _, err := LoadBackend([]string{"--api.addr="}); err == nil {
+	if _, err := LoadBackend([]string{"--ps5.ip=1.2.3.4", "--api.addr="}); err == nil {
 		t.Error("empty api.addr: want error, got nil")
 	}
 }
@@ -194,52 +119,6 @@ func TestConfig_ReloadDiffClassification_BackendAllRestartFields(t *testing.T) {
 	}
 }
 
-// TestConfig_ReloadDiffClassification_Collector checks the collector's heartbeat.interval is
-// live-appliable while everything else (including log.level, which is live too) is bucketed
-// correctly, and unrelated changes land in restart.
-func TestConfig_ReloadDiffClassification_Collector(t *testing.T) {
-	old := Config{PS5IP: "1.1.1.1", RecvPort: 33740, LogLevel: "info", HeartbeatInterval: time.Second}
-	next := Config{PS5IP: "1.1.1.1", RecvPort: 33741, LogLevel: "debug", HeartbeatInterval: 2 * time.Second}
-	live, restart := ClassifyCollectorReload(old, next)
-	if _, ok := live["log.level"]; !ok {
-		t.Error("log.level should be live-appliable")
-	}
-	if _, ok := live["heartbeat.interval"]; !ok {
-		t.Error("heartbeat.interval should be live-appliable for the collector")
-	}
-	if _, ok := restart["udp.recv_port"]; !ok {
-		t.Error("udp.recv_port change should be restart-required")
-	}
-	if len(live) != 2 {
-		t.Errorf("live = %v, want exactly log.level + heartbeat.interval", live)
-	}
-	if len(restart) != 1 {
-		t.Errorf("restart = %v, want exactly udp.recv_port", restart)
-	}
-}
-
-// TestConfig_ReloadDiffClassification_CollectorAllRestartFields checks every restart-required
-// collector Config field is bucketed correctly when changed.
-func TestConfig_ReloadDiffClassification_CollectorAllRestartFields(t *testing.T) {
-	old := Config{
-		PS5IP: "1.1.1.1", RecvPort: 1, SendPort: 1, RTPSAddr: "a",
-		RawDumpEnabled: false, RawDumpDir: "a", LiveBufferSize: 1, RawBufferSize: 1,
-	}
-	next := Config{
-		PS5IP: "2.2.2.2", RecvPort: 2, SendPort: 2, RTPSAddr: "b",
-		RawDumpEnabled: true, RawDumpDir: "b", LiveBufferSize: 2, RawBufferSize: 2,
-	}
-	_, restart := ClassifyCollectorReload(old, next)
-	for _, key := range []string{
-		"ps5.ip", "udp.recv_port", "udp.send_port", "rtps.addr",
-		"rawdump.enabled", "rawdump.dir", "live_buffer.size", "raw_buffer.size",
-	} {
-		if _, ok := restart[key]; !ok {
-			t.Errorf("restart missing key %q: %v", key, restart)
-		}
-	}
-}
-
 // TestWatch_InvokesOnChangeOnFileWrite checks that Watch fires onChange when the watched config
 // file is rewritten. It polls with a timeout because fsnotify delivery is asynchronous.
 func TestWatch_InvokesOnChangeOnFileWrite(t *testing.T) {
@@ -270,5 +149,130 @@ func TestWatch_InvokesOnChangeOnFileWrite(t *testing.T) {
 	case <-fired:
 	case <-time.After(3 * time.Second):
 		t.Fatal("onChange was not invoked after config file write")
+	}
+}
+
+// TestLoadBackend_CollectorDefaults checks the in-process collector keys keep their old names and
+// defaults.
+func TestLoadBackend_CollectorDefaults(t *testing.T) {
+	c, err := LoadBackend(src)
+	if err != nil {
+		t.Fatalf("LoadBackend: %v", err)
+	}
+	if c.PS5IP != "1.2.3.4" || c.RecvPort != 33740 || c.SendPort != 33739 {
+		t.Errorf("defaults wrong: %+v", c)
+	}
+	if c.HeartbeatInterval != time.Second || c.LiveBufferSize != 1024 || c.RawBufferSize != 1024 {
+		t.Errorf("defaults wrong: %+v", c)
+	}
+	if c.RawDumpEnabled || c.RawDumpDir != "rawdump" || c.ReplaySpeed != 1.0 || c.ReplayFile != "" {
+		t.Errorf("defaults wrong: %+v", c)
+	}
+}
+
+// TestLoadBackend_SourceSelection: exactly one of ps5.ip / replay-file is required — neither leaves
+// rtps with no telemetry source, and both would mix a replay into live PB/session state.
+func TestLoadBackend_SourceSelection(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr bool
+	}{
+		{"neither", nil, true},
+		{"both", []string{"--ps5.ip=1.2.3.4", "--replay-file=x.pcapng"}, true},
+		{"ps5 only", []string{"--ps5.ip=1.2.3.4"}, false},
+		{"replay only", []string{"--replay-file=x.pcapng"}, false},
+		{"replay speed", []string{"--replay-file=x.pcapng", "--replay.speed=16"}, false},
+		{"replay speed zero", []string{"--replay-file=x.pcapng", "--replay.speed=0"}, true},
+		{"replay speed negative", []string{"--replay-file=x.pcapng", "--replay.speed=-1"}, true},
+		{"replay speed NaN", []string{"--replay-file=x.pcapng", "--replay.speed=NaN"}, true},
+		{"replay speed Inf", []string{"--replay-file=x.pcapng", "--replay.speed=+Inf"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadBackend(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("LoadBackend(%v) err = %v, wantErr %v", tt.args, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoadBackend_ReplayKeys: --replay-file is the flag; replay.file is its file/env key.
+func TestLoadBackend_ReplayKeys(t *testing.T) {
+	c, err := LoadBackend([]string{"--replay-file=a.pcapng", "--replay.speed=4"})
+	if err != nil || c.ReplayFile != "a.pcapng" || c.ReplaySpeed != 4 {
+		t.Fatalf("flags: c=%+v err=%v", c, err)
+	}
+	t.Setenv("GT7_REPLAY_FILE", "env.pcapng")
+	if c, err := LoadBackend(nil); err != nil || c.ReplayFile != "env.pcapng" {
+		t.Errorf("env: c=%+v err=%v", c, err)
+	}
+	t.Setenv("GT7_REPLAY_FILE", "")
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(path, []byte("replay:\n  file: file.pcapng\n  speed: 8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := LoadBackend([]string{"--config=" + path}); err != nil || c.ReplayFile != "file.pcapng" || c.ReplaySpeed != 8 {
+		t.Errorf("file: c=%+v err=%v", c, err)
+	}
+}
+
+// TestLoadBackend_CollectorValidation rejects runtime-unsafe collector values (which would otherwise
+// panic or spin).
+func TestLoadBackend_CollectorValidation(t *testing.T) {
+	for _, arg := range []string{
+		"--heartbeat.interval=0", "--heartbeat.interval=-1s", "--live_buffer.size=0", "--raw_buffer.size=0",
+		"--udp.recv_port=0", "--udp.recv_port=70000", "--udp.send_port=0",
+	} {
+		if _, err := LoadBackend([]string{"--ps5.ip=1.2.3.4", arg}); err == nil {
+			t.Errorf("LoadBackend(%s): want error, got nil", arg)
+		}
+	}
+}
+
+// TestLoadBackend_Precedence checks the flag > env > file > default ladder for one collector key.
+func TestLoadBackend_Precedence(t *testing.T) {
+	if c, _ := LoadBackend(src); c.RecvPort != 33740 {
+		t.Errorf("default: RecvPort = %d, want 33740", c.RecvPort)
+	}
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(path, []byte("udp:\n  recv_port: 43000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := LoadBackend(append(src, "--config="+path)); c.RecvPort != 43000 {
+		t.Errorf("file: RecvPort = %d, want 43000", c.RecvPort)
+	}
+	t.Setenv("GT7_UDP_RECV_PORT", "44000")
+	if c, _ := LoadBackend(append(src, "--config="+path)); c.RecvPort != 44000 {
+		t.Errorf("env-over-file: RecvPort = %d, want 44000", c.RecvPort)
+	}
+	if c, _ := LoadBackend(append(src, "--config="+path, "--udp.recv_port=42000")); c.RecvPort != 42000 {
+		t.Errorf("flag-over-env: RecvPort = %d, want 42000", c.RecvPort)
+	}
+}
+
+// TestConfig_ReloadDiffClassification_Collector: heartbeat.interval is live-appliable; every other
+// collector/replay key needs a restart.
+func TestConfig_ReloadDiffClassification_Collector(t *testing.T) {
+	old := BackendConfig{
+		PS5IP: "1.1.1.1", RecvPort: 1, SendPort: 1, HeartbeatInterval: time.Second, RawDumpDir: "a",
+		LiveBufferSize: 1, RawBufferSize: 1, ReplayFile: "a", ReplaySpeed: 1,
+	}
+	next := BackendConfig{
+		PS5IP: "2.2.2.2", RecvPort: 2, SendPort: 2, HeartbeatInterval: 2 * time.Second, RawDumpEnabled: true,
+		RawDumpDir: "b", LiveBufferSize: 2, RawBufferSize: 2, ReplayFile: "b", ReplaySpeed: 2,
+	}
+	live, restart := ClassifyBackendReload(old, next)
+	if _, ok := live["heartbeat.interval"]; !ok || len(live) != 1 {
+		t.Errorf("live = %v, want exactly heartbeat.interval", live)
+	}
+	for _, key := range []string{
+		"ps5.ip", "udp.recv_port", "udp.send_port", "rawdump.enabled", "rawdump.dir",
+		"live_buffer.size", "raw_buffer.size", "replay.file", "replay.speed",
+	} {
+		if _, ok := restart[key]; !ok {
+			t.Errorf("restart missing key %q: %v", key, restart)
+		}
 	}
 }

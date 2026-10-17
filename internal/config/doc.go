@@ -1,2 +1,2 @@
-// Package config loads collector configuration via viper.
+// Package config loads the rtps configuration (backend + in-process collector/replay) via viper.
 package config

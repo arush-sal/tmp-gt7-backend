@@ -7,16 +7,17 @@ This repository holds the **backend**: the parts that run behind the scenes, tur
 telemetry into structured data for analysis and coaching. Gran Turismo 7 is the first supported
 game; the web dashboard lives in `web/`.
 
-The backend is made of two cooperating processes plus the web dashboard:
+Everything ships as one binary, `rtps` (`cmd/rtps`):
 
-- **Telemetry Collector** (`cmd/collector`) — receives GT7's UDP telemetry, decodes it, and streams
-  it to the backend over gRPC.
-- **Backend / RTPS** (`cmd/rtps`) — session detection, lap segmentation, analysis, live egress, and
-  a read HTTP API. Consumes the collector's stream.
+- **Telemetry Collector** (in-process) — receives GT7's UDP telemetry (or replays a recorded
+  capture), decodes it, and hands it straight to the backend.
+- **Backend / RTPS** — session detection, lap segmentation, analysis, live egress, and a read HTTP
+  API.
 - **Web dashboard** (`web/`) — React UI embedded into `rtps` and served at `/`.
 
-The collector and backend communicate over a versioned, game-neutral telemetry contract, so any
-game-specific collector that speaks the contract can feed the same backend.
+The collector and backend communicate over a versioned, game-neutral telemetry contract; `rtps` also
+keeps a gRPC ingest server, so any external game-specific collector that speaks the contract can feed
+the same backend.
 
 ## Status
 
@@ -33,13 +34,13 @@ natural-language coaching as work-in-progress.
 - Receives Gran Turismo 7 UDP telemetry (~60 Hz), decrypts and validates each packet.
 - De-duplicates packets, tolerant of session restarts and out-of-order delivery.
 - Decodes the full telemetry frame (position, speed, RPM, gear, tyres, lap data, and more).
-- Maps it to a versioned, game-neutral schema and streams it to the backend over gRPC, reconnecting
-  automatically if the backend is unavailable.
+- Maps it to a versioned, game-neutral schema and hands it to the backend in-process.
+- Can replay a recorded `.pcap`/`.pcapng` capture through the identical decode path (`--replay-file`).
 - Sends the keep-alive the game requires, optionally records raw packets, and emits structured logs.
 
 **Backend (RTPS)**
 
-- Accepts the collector's stream on a gRPC ingest server.
+- Ingests the in-process collector's frames, plus external collectors' streams on a gRPC ingest server.
 - Detects sessions, segments laps, records per-lap traces, detects the track, and analyzes for
   Personal Best, deltas, consistency, and recommendations.
 - Serves a read HTTP API and a live Server-Sent-Events stream.
@@ -51,24 +52,23 @@ natural-language coaching as work-in-progress.
 Requires **Go 1.26+**.
 
 ```bash
-# build all three binaries into ./bin/
+# build into ./bin/
 make build
 
-# run the backend (gRPC ingest + HTTP API)
-./bin/rtps --api.addr localhost:8080 --ingest.addr localhost:50051
+# live: point it at your console
+./bin/rtps --ps5.ip 192.168.1.50
 
-# run the collector (point it at your console and the backend)
-./bin/collector --ps5.ip 192.168.1.50 --rtps.addr localhost:50051
+# or replay a recorded capture (keeps serving after it ends)
+./bin/rtps --replay-file capture.pcapng --replay.speed 4
 ```
 
-Or bring up the whole stack (TimescaleDB, backend with the embedded dashboard, collector) in one
-command:
+Or bring up the whole stack (TimescaleDB, rtps with the embedded dashboard) in one command:
 
 ```bash
 make deploy-stack IP=192.168.1.99   # dashboard at http://localhost:8080/; stop with make stop-stack
 ```
 
-The console IP is required for live capture. Everything else has sensible defaults. See
+Exactly one of `--ps5.ip` / `--replay-file` is required. Everything else has sensible defaults. See
 [configuration](docs/configuration.md) for all options.
 
 > The backend's track API requires the RKB database at `$HOME/.garage/rkb.db`, built by the
