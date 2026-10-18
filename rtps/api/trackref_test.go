@@ -260,8 +260,13 @@ func raceLap1Server(t *testing.T) *Server {
 	srv, sessions, laps, _ := trackRefServer(t)
 	_ = sessions.Save(&session.Record{ID: "s9", CarID: 7, TotalLaps: 10, Status: session.StatusFinished})
 	base := time.Unix(1_700_100_000, 0).UTC()
-	for n, d := range map[int32]time.Duration{1: 60 * time.Second, 2: 97 * time.Second} {
-		_ = laps.Save(&processing.Lap{SessionID: "s9", LapNumber: n, StartTime: base.Add(time.Duration(n) * 3 * time.Minute), Duration: d,
+	// Saved in lap order, as the segmenter does: the memory store keeps insertion order, and a map
+	// here would randomise it (Go map iteration), flaking the session-laps row-order assertion.
+	for _, l := range []struct {
+		n int32
+		d time.Duration
+	}{{1, 60 * time.Second}, {2, 97 * time.Second}} {
+		_ = laps.Save(&processing.Lap{SessionID: "s9", LapNumber: l.n, StartTime: base.Add(time.Duration(l.n) * 3 * time.Minute), Duration: l.d,
 			Timed: true, Complete: true, Valid: true, TrackSlug: "suzuka", TrackConfidence: "confident"})
 	}
 	return srv
