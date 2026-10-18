@@ -2,7 +2,8 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import type { HistoryStore } from "../../lib/historyStore";
 import type { LapView } from "../../lib/lapView";
 import type { MedianDTO, ReferenceDTO } from "../../contract/session";
-import { overlayColumns, type Overlay } from "../../lib/lapOverlays";
+import { overlayColumns, referenceValues, type Overlay } from "../../lib/lapOverlays";
+import { createLiveRefAligner, type LiveRefAligner } from "../../lib/liveReference";
 import { getCard, type CardDef } from "./cardCatalog";
 import { loadCardConfig, saveCardConfig, defaultCardConfig, newCardState, TELEMETRY_CARDS_KEY, type PanelConfig, type CardState } from "../../lib/panelConfig";
 import TelemetryGraph, { type HoverReadout } from "./TelemetryGraph";
@@ -48,11 +49,11 @@ export function reorder(order: string[], activeKey: string, overKey: string): st
 
 function TelemetryCard({
   card, store, state, onToggleCollapse, onToggleSeries, onRemove,
-  analysisLap, analysisScrubIndex, overlay, xRange, onXRange,
+  analysisLap, analysisScrubIndex, overlay, liveRef, xRange, onXRange,
 }: {
   card: CardDef; store: HistoryStore; state: CardState;
   onToggleCollapse: () => void; onToggleSeries: (k: string) => void; onRemove: () => void;
-  analysisLap?: LapView | null; analysisScrubIndex?: number | null; overlay: Overlay;
+  analysisLap?: LapView | null; analysisScrubIndex?: number | null; overlay: Overlay; liveRef: LiveRefAligner | null;
   xRange: [number, number] | null; onXRange: (r: [number, number] | null) => void;
 }) {
   const isMulti = card.kind === "multi";
@@ -94,7 +95,7 @@ function TelemetryCard({
             // Re-key ONLY the graph (not the whole card) on overlay presence: TelemetryGraph fixes
             // its series count at mount, so uPlot must remount when median/reference availability
             // flips — but the card keeps its collapse/DnD/focus state.
-            key={`${card.key}:${overlay.median != null}:${overlay.reference != null}`}
+            key={`${card.key}:${overlay.median != null}:${overlay.reference != null || liveRef != null}`}
             store={store}
             channels={card.channels}
             label={card.title}
@@ -105,6 +106,7 @@ function TelemetryCard({
             analysisScrubIndex={analysisScrubIndex}
             medianCol={overlay.median}
             referenceCol={overlay.reference}
+            liveRef={liveRef}
             xRange={xRange}
             onXRange={onXRange}
             onHover={setHover}
@@ -115,7 +117,7 @@ function TelemetryCard({
             channels={card.channels}
             hidden={state.hidden}
             medianAvailable={overlay.median != null}
-            referenceAvailable={overlay.reference != null}
+            referenceAvailable={overlay.reference != null || liveRef != null}
             onToggle={onToggleSeries}
           />
         </>
@@ -200,6 +202,12 @@ export default function TelemetryPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg.order, analysisLap, median, reference]);
 
+  // Live current lap (no analysis lap): the reference still shows, aligned by position as the lap
+  // grows. One aligner per reference, shared by every card (it caches the projection once per sample).
+  const liveAligner = useMemo(
+    () => (!analysisLap && reference?.samples?.length ? createLiveRefAligner(reference) : null),
+    [analysisLap, reference]);
+
   return (
     <div className="telemetry-panel">
       <div className="telemetry-panel__header">
@@ -222,6 +230,7 @@ export default function TelemetryPanel({
                   analysisLap={analysisLap}
                   analysisScrubIndex={analysisScrubIndex}
                   overlay={overlay}
+                  liveRef={card.kind === "single" && liveAligner && referenceValues(reference, card.channels[0]) ? liveAligner : null}
                   xRange={xRange}
                   onXRange={applyXRange}
                 />

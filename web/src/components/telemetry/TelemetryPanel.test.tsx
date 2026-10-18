@@ -2,6 +2,7 @@
 import { render, screen, within, fireEvent } from "@testing-library/react";
 import TelemetryPanel from "./TelemetryPanel";
 import { createHistoryStore } from "../../lib/historyStore";
+import { storedRef } from "../../mock/storedRef";
 
 // uPlot needs layout; jsdom gives 0x0, so the ResizeObserver never builds a chart — that's fine,
 // we assert the card scaffolding (titles, legends), not canvas pixels.
@@ -99,5 +100,29 @@ describe("TelemetryPanel", () => {
     const saved = JSON.parse(localStorage.getItem(KEY)!);
     expect(saved.order[0]).toBe("brake"); // throttle moved down past brake
     expect(saved.order[1]).toBe("throttle");
+  });
+});
+
+describe("TelemetryPanel live reference", () => {
+  const liveStore = () => {
+    const store = createHistoryStore();
+    store.push({
+      served_at: "x", status: "live", frame: { current_lap: 1, total_laps: 3, position_x: 0.5, position_z: 0 } as never,
+      derived: { current_lap_time_ns: 1e9, fuel_pct: 50, source: "x" },
+      enrichment: { analysis: null, car_name: null, track: "t", delta_to_best_ns: null },
+    });
+    return store;
+  };
+  it("enables the reference legend chip during the live current lap (no analysis lap)", () => {
+    localStorage.clear();
+    render(<TelemetryPanel store={liveStore()} reference={storedRef()} />);
+    const speed = screen.getByText(/^Speed$/).closest(".accordion-item") as HTMLElement;
+    expect(within(speed).getByRole("button", { name: /reference/i })).not.toBeDisabled();
+  });
+  it("has no reference chip enabled when no reference is stored", () => {
+    localStorage.clear();
+    render(<TelemetryPanel store={liveStore()} />);
+    const speed = screen.getByText(/^Speed$/).closest(".accordion-item") as HTMLElement;
+    expect(within(speed).getByRole("button", { name: /reference/i })).toBeDisabled();
   });
 });

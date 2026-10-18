@@ -87,6 +87,19 @@ describe("validateLive — rejections", () => {
   it("rejects missing analysis key", () => { const s = live(); delete (s.enrichment as any).analysis; expect(() => validateLive(s)).toThrow(/analysis/); });
 });
 
+describe("validateLive - track_source / pending_track_slug", () => {
+  it("passes both through when valid, omits when absent, drops wrong types", () => {
+    const s = live(); Object.assign(s.enrichment, { track_source: "user", pending_track_slug: "spa" });
+    expect(validateLive(s).enrichment).toMatchObject({ track_source: "user", pending_track_slug: "spa" });
+    const n = live(); Object.assign(n.enrichment, { track_source: null, pending_track_slug: null });
+    expect(validateLive(n).enrichment).toMatchObject({ track_source: null, pending_track_slug: null });
+    expect("track_source" in validateLive(live()).enrichment).toBe(false);
+    const bad = live(); Object.assign(bad.enrichment, { track_source: 5, pending_track_slug: 7 });
+    expect("track_source" in validateLive(bad).enrichment).toBe(false);
+    expect("pending_track_slug" in validateLive(bad).enrichment).toBe(false);
+  });
+});
+
 describe("validateLive — format-C frame fields", () => {
   it("exposes format-C fields when the source provides them", () => {
     const s = live();

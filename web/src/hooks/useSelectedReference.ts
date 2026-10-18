@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReferenceDTO, StoredReferenceDTO } from "../contract/session";
 import { fetchStoredReference } from "../lib/referenceApi";
+import { parseDuration } from "../lib/format";
 import type { RefSource } from "../lib/referenceSource";
 
 const REFRESH_DEBOUNCE_MS = 300;
 
 export type SelectedReference = {
   reference: ReferenceDTO | null;  // the ONE reference every consumer reads
-  effective: RefSource;            // what is actually in use (stored falls back to predicted)
+  effective: "stored" | "predicted"; // what is actually in use (auto resolves to one of these)
   stored: StoredReferenceDTO | null;
   noStored: boolean;               // fetch resolved 404: no stored lap for this track
   error: boolean;                  // fetch failed (not 404): surfaced, never silently falling back
@@ -42,11 +43,17 @@ export function useSelectedReference(
   // across a pin change (same slug) keep the old value until the refetch lands, to avoid a flicker.
   const stored = slug && state && state.slug === slug ? state.stored : null;
   const error = !!slug && state?.slug === slug && state.error;
-  const useStored = source === "stored" && stored != null;
-  // A failed load is not "no stored lap": show NO reference rather than quietly using the predicted one.
+  // auto: whichever is available and faster. Predicted counts only once it has samples; a stored
+  // load error just drops stored out of the race (only an explicit "stored" shows nothing).
+  const predictedOk = sessionReference != null && (sessionReference.samples?.length ?? 0) > 0;
+  const storedOk = stored != null;
+  const autoStored = storedOk && (!predictedOk || parseDuration(stored.lap_time) <= sessionReference!.predicted_best_ns);
+  const useStored = source === "stored" ? storedOk : source === "auto" && autoStored;
+  // A failed load is not "no stored lap": explicit "stored" shows NO reference rather than quietly using the predicted one.
   const failed = source === "stored" && error;
+  const none = source === "auto" && !storedOk && !predictedOk;
   return {
-    reference: failed ? null : useStored ? stored : sessionReference,
+    reference: failed || none ? null : useStored ? stored : sessionReference,
     effective: useStored || failed ? "stored" : "predicted",
     stored,
     error,

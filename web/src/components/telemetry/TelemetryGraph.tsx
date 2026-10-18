@@ -5,6 +5,7 @@ import type { Channel, HistoryStore } from "../../lib/historyStore";
 import type { LapView } from "../../lib/lapView";
 import { CHANNEL_COLOR, MEDIAN_COLOR, REFERENCE_COLOR } from "./graphColors";
 import { clampIndex } from "../../lib/trackScrub";
+import type { LiveRefAligner } from "../../lib/liveReference";
 
 // Shared cursor-sync group: every telemetry chart joins it (same key) and syncs on the x scale
 // only, so hovering one card lines up the crosshair + value readout at the same lap-time x on all
@@ -42,6 +43,9 @@ interface Props {
   // Series count is fixed at mount, so the card must be re-keyed when either presence flips.
   medianCol?: number[] | null;
   referenceCol?: number[] | null;
+  // Live mode (no analysisLap): reference aligned incrementally to the growing current lap by position
+  // (see lib/liveReference). Mutually exclusive with referenceCol; same remount-on-presence rule.
+  liveRef?: LiveRefAligner | null;
   // Grafana-style shared zoom (analysis mode only). xRange is the [min,max] lap-time window applied
   // to every graph; null = full lap. A drag-select here calls onXRange with the (5s-min-clamped) window.
   xRange?: [number, number] | null;
@@ -65,7 +69,7 @@ export type HoverReadout = { x: string; values: Record<string, string> };
  *  - cleanup always runs: cancelAnimationFrame -> ro.disconnect -> u.destroy.
  */
 export default function TelemetryGraph({
-  store, channels, label, unit, id, hidden, analysisLap, analysisScrubIndex, medianCol, referenceCol,
+  store, channels, label, unit, id, hidden, analysisLap, analysisScrubIndex, medianCol, referenceCol, liveRef,
   xRange = null, onXRange, onHover,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -90,6 +94,8 @@ export default function TelemetryGraph({
   medianColRef.current = medianCol ?? null;
   const referenceColRef = useRef(referenceCol ?? null);
   referenceColRef.current = referenceCol ?? null;
+  const liveRefRef = useRef(liveRef ?? null);
+  liveRefRef.current = liveRef ?? null;
   const onXRangeRef = useRef(onXRange);
   onXRangeRef.current = onXRange;
   const onHoverRef = useRef(onHover);
@@ -100,7 +106,7 @@ export default function TelemetryGraph({
   // then the channel(s)/current line on top. Presence is fixed at mount (the card is re-keyed if it
   // flips), so seriesSpec(), dataCols() and the hidden-toggle effect all read this one ordering.
   const orderedSeriesKeys = (): string[] => [
-    ...(referenceColRef.current ? ["reference"] : []),
+    ...(referenceColRef.current || liveRefRef.current ? ["reference"] : []),
     ...(medianColRef.current ? ["median"] : []),
     ...channelsRef.current,
   ];
@@ -115,7 +121,13 @@ export default function TelemetryGraph({
   const dataCols = () => {
     const chs = channelsRef.current;
     const lap = analysisLapRef.current;
-    if (!lap) return storeRef.current.columns(chs); // live: [xs, ...actuals], no overlays
+    if (!lap) {
+      const live = storeRef.current.columns(chs); // live: [xs, ...actuals]
+      const lr = liveRefRef.current;
+      if (!lr) return live;
+      const ref = lr.column(chs[0], storeRef.current.trace().current) ?? live[0].map(() => NaN);
+      return [live[0], ref, ...live.slice(1)]; // reference drawn first (base), as in analysis mode
+    }
     // Analysis mode: static lap columns + pre-resampled overlays, emitted in orderedSeriesKeys order
     // (reference, median, then channels) so the draw order is reference-base -> median -> current-top.
     const base = lap.columns(chs); // [xs, ...perChannel(chs order)]

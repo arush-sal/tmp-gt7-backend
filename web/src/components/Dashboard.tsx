@@ -32,6 +32,7 @@ import { loadVersioned, saveVersioned } from "../lib/persistState";
 import SessionHeader from "./SessionHeader";
 import SessionPicker from "./SessionPicker";
 import RecordToggle from "./RecordToggle";
+import { setLiveTrack, clearLiveTrack, trackErrorText } from "../lib/liveApi";
 import { TrackPicker, type TrackListItem } from "./track/TrackPicker";
 import ReferenceMenu from "./track/ReferenceMenu";
 import TrackTraceCanvas from "./track/TrackTraceCanvas";
@@ -170,6 +171,21 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
       snapshot?.enrichment?.track_confidence === "provisional",
     ));
   }, [snapshot]);
+
+  // A user-confirmed track (this tab or another) is authoritative: follow the server state.
+  const userTrack = snapshot?.enrichment?.track_source === "user" ? snapshot.enrichment.track ?? null : null;
+  useEffect(() => { if (userTrack) setSel(s => (s.slug === userTrack && s.manual ? s : reduceManual(s, userTrack))); }, [userTrack]);
+  const pendingTrack = snapshot?.enrichment?.pending_track_slug ?? null;
+  const [pickError, setPickError] = useState<string | null>(null);
+  // Live pick: POST and let the snapshot reflect the server state; a "current" pick is also applied at
+  // once so the select does not lag a snapshot. Auto-detect: DELETE, then re-open local detection.
+  const pickLive = async (slug: string | null) => {
+    setPickError(null);
+    try {
+      if (slug === null) { await clearLiveTrack(); setSel(initialSel); }
+      else if ((await setLiveTrack(slug)).applies_to === "current") setSel(s => reduceManual(s, slug));
+    } catch (e) { setPickError(trackErrorText(e)); }
+  };
 
   const track = useTrack(sel.slug);
   const geometry = useMemo(() => (track.record ? toDrawGeometry(track.record) : null), [track.record]);
@@ -464,14 +480,20 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
         trackPicker={
           // No selected/detected track (e.g. right after a refresh, before auto-detect
           // re-locks) -> render nothing rather than an empty "select track" dropdown.
-          sel.slug || refSlug ? (
+          // Live (not viewing a stored session) the picker is always offered so the user can confirm
+          // the track before detection (or pick for the next session from the menus).
+          !viewing || sel.slug || refSlug ? (
             <div className="track-cell-row">
-              {sel.slug && (
+              {(!viewing || sel.slug) && (
                 <TrackPicker
-                  value={sel.slug}
-                  provisional={sel.provisional}
-                  items={candidates}
-                  onPick={slug => setSel(s => reduceManual(s, slug))}
+                  value={viewing ? sel.slug : pendingTrack ?? sel.slug}
+                  provisional={sel.provisional && !userTrack}
+                  items={viewing ? candidates : trackList}
+                  onPick={viewing ? slug => setSel(s => reduceManual(s, slug)) : slug => void pickLive(slug)}
+                  onAuto={viewing ? undefined : () => void pickLive(null)}
+                  source={viewing ? null : snapshot?.enrichment?.track_source ?? null}
+                  pending={!viewing && pendingTrack !== null}
+                  error={viewing ? null : pickError}
                 />
               )}
               {/* key = the shown track (not refSlug) so a provisional -> confident flip on the same
@@ -601,6 +623,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
                 <>
                   <select aria-label="Reference source" className="header-select" value={refSource}
                     onChange={e => setRefSource(e.target.value as RefSource)}>
+                    <option value="auto">Auto (fastest available)</option>
                     <option value="stored">Stored lap</option>
                     <option value="predicted">Predicted (this session)</option>
                   </select>

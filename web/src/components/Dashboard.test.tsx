@@ -107,7 +107,7 @@ describe("Dashboard (live)", () => {
     expect(screen.getByText(/start a session in GT7/i)).toBeTruthy();
   });
 
-  it("renders the trace canvas (no mock TrackMap) and hides the picker until a track is detected", async () => {
+  it("renders the trace canvas (no mock TrackMap) and offers the picker (Auto-detect) before a track is detected", async () => {
     function sourceOnce(): LiveSource {
       return (_url, h) => {
         const s = structuredClone(liveSample) as { frame: Record<string, unknown>; enrichment: Record<string, unknown> };
@@ -122,8 +122,9 @@ describe("Dashboard (live)", () => {
     // Canvas always renders; the old mock TrackMap is gone.
     await waitFor(() => expect(screen.getByText("Track Trace")).toBeInTheDocument());
     expect(screen.queryByText("click any corner to inspect →")).not.toBeInTheDocument();
-    // With no detected/selected track, the "select track" dropdown is not shown.
-    expect(screen.queryByLabelText("Track")).not.toBeInTheDocument();
+    // Live with no track yet: the picker is still offered (so the user can confirm the track first),
+    // resting on "Auto-detect".
+    expect(screen.getByLabelText<HTMLSelectElement>("Track").value).toBe("");
   });
 
   // Regression for the reviewed blocker: `geometry` used to be recomputed fresh on every
@@ -548,12 +549,14 @@ describe("Dashboard reference source", () => {
   });
 
   it("falls back to the predicted delta with a muted note when the track has no stored lap", async () => {
+    localStorage.setItem("gt7:ref-source", "stored"); // these notes belong to the explicit "stored" choice
     await setup(404);
     await waitFor(() => expect(screen.getByText("no stored lap for this track")).toBeTruthy());
     expect(screen.getByText(/2\.500s/)).toBeTruthy();
   });
 
   it("provisional track: no stored-reference fetch, note says the track is not confirmed", async () => {
+    localStorage.setItem("gt7:ref-source", "stored"); // these notes belong to the explicit "stored" choice
     const urls = await setup(200, "provisional");
     await waitFor(() => expect(screen.getByText("track not confirmed yet")).toBeTruthy());
     expect(urls.some(u => u.includes("/reference-lap"))).toBe(false);
@@ -574,6 +577,7 @@ describe("Dashboard reference source", () => {
   });
 
   it("a failed stored-reference load shows an error chip, not the predicted fallback or the no-stored note", async () => {
+    localStorage.setItem("gt7:ref-source", "stored"); // these notes belong to the explicit "stored" choice
     await setup(500);
     expect((await screen.findByText("Couldn't load stored lap")).getAttribute("role")).toBe("alert");
     expect(screen.queryByText("no stored lap for this track")).toBeNull();
@@ -609,5 +613,104 @@ describe("Dashboard reference source", () => {
     await screen.findByText("No stored ref");
     fireEvent.click(screen.getByRole("button", { name: /No stored ref/ }));
     expect(screen.getByText("Change…")).toBeTruthy();
+  });
+});
+
+describe("user-confirmed track (live picker)", () => {
+  const stored = { id: "stored-9", car_id: 1, car_name: "Old Car", status: "finished",
+    start_time: "2026-01-01T00:00:00Z", end_time: "2026-01-01T00:10:00Z", frame_count: 1, gap_count: 0,
+    current_lap: 5, total_laps: 5, best_lap: "115.583s" };
+  const calls: { url: string; method: string; body?: string }[] = [];
+  let trackResp: { status: number; body: unknown } = { status: 200, body: { track_slug: "spa", applies_to: "current", session_id: "sess-1" } };
+  beforeEach(() => {
+    calls.length = 0;
+    trackResp = { status: 200, body: { track_slug: "spa", applies_to: "current", session_id: "sess-1" } };
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url), method = init?.method ?? "GET";
+      calls.push({ url: u, method, body: init?.body as string | undefined });
+      if (u === "/v1/live/track") return { ok: trackResp.status < 300, status: trackResp.status, json: async () => trackResp.body };
+      if (u === "/v1/tracks") return { ok: true, status: 200, json: async () => [{ slug: "suzuka", name: "Suzuka" }, { slug: "spa", name: "Spa", coordinate_usability: "generated-reliable" }] };
+      if (u === "/v1/sessions") return { ok: true, status: 200, json: async () => [stored] };
+      if (u.includes("/reference-lap")) return { ok: false, status: 404, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => [] };
+    }) as unknown as typeof fetch);
+  });
+  const trackCalls = () => calls.filter(c => c.url === "/v1/live/track");
+  const snap = (enr: Record<string, unknown>) => {
+    const subs: LiveHandlers[] = [];
+    const ls = liveSample as { enrichment: object };
+    render(<Dashboard source={(_u, h) => { subs.push(h); return () => {}; }} />);
+    const push = (e: Record<string, unknown>) => act(() => subs.forEach(h => h.onSnapshot(validateLive(
+      { ...ls, enrichment: { ...ls.enrichment, ...e } }))));
+    push(enr);
+    return push;
+  };
+  const waitSpa = () => waitFor(() => expect(screen.getByRole("option", { name: "Spa" })).toBeInTheDocument());
+
+  it("picking a track POSTs /v1/live/track", async () => {
+    snap({ track: "suzuka", track_confidence: "confident", track_source: "detected" });
+    await waitSpa();
+    fireEvent.change(screen.getByLabelText("Track"), { target: { value: "spa" } });
+    await waitFor(() => expect(trackCalls()).toHaveLength(1));
+    expect(trackCalls()[0]).toMatchObject({ method: "POST", body: '{"track_slug":"spa"}' });
+  });
+
+  it("Auto-detect sends DELETE", async () => {
+    snap({ track: "suzuka", track_confidence: "confident", track_source: "user" });
+    await waitSpa();
+    fireEvent.change(screen.getByLabelText("Track"), { target: { value: "" } });
+    await waitFor(() => expect(trackCalls()).toHaveLength(1));
+    expect(trackCalls()[0].method).toBe("DELETE");
+  });
+
+  it("shows 'confirmed by you' for track_source user and the pending chip + pending track with no session", async () => {
+    const push = snap({ track: "suzuka", track_confidence: "confident", track_source: "user" });
+    await screen.findByText("confirmed by you");
+    push({ track: null, track_confidence: null, track_source: null, pending_track_slug: "spa" });
+    await screen.findByText("applies to next session");
+    await waitSpa();
+    expect(screen.getByLabelText<HTMLSelectElement>("Track").value).toBe("spa");
+    expect(screen.queryByText("confirmed by you")).toBeNull();
+  });
+
+  it("shows an inline error chip when the pick is rejected", async () => {
+    trackResp = { status: 404, body: { error: "unknown track" } };
+    snap({ track: "suzuka", track_confidence: "confident", track_source: "detected" });
+    await waitSpa();
+    fireEvent.change(screen.getByLabelText("Track"), { target: { value: "spa" } });
+    expect(await screen.findByText("Unknown track")).toBeInTheDocument();
+  });
+
+  it("shows an error chip on a network failure", async () => {
+    snap({ track: "suzuka", track_confidence: "confident", track_source: "detected" });
+    await waitSpa();
+    const f = globalThis.fetch as unknown as { getMockImplementation(): (u: string, i?: RequestInit) => Promise<unknown>; mockImplementation(fn: unknown): void };
+    const prev = f.getMockImplementation();
+    f.mockImplementation(async (u: string, i?: RequestInit) => { if (u === "/v1/live/track") throw new TypeError("net"); return prev(u, i); });
+    fireEvent.change(screen.getByLabelText("Track"), { target: { value: "spa" } });
+    expect(await screen.findByText("Couldn't confirm track")).toBeInTheDocument();
+  });
+
+  it("does not POST while viewing a stored session", async () => {
+    localStorage.setItem("gt7:track", JSON.stringify({ schemaVersion: 1, payload: "suzuka" }));
+    snap({ track: "suzuka", track_confidence: "confident", track_source: "user" });
+    await waitFor(() => expect(screen.getAllByRole("option").some(o => /Old Car/.test(o.textContent ?? ""))).toBe(true));
+    fireEvent.change(screen.getByLabelText("Session"), { target: { value: "stored-9" } });
+    await screen.findByText("Viewing stored session");
+    await waitSpa();
+    fireEvent.change(screen.getByLabelText("Track"), { target: { value: "spa" } });
+    expect(trackCalls()).toHaveLength(0);
+  });
+
+  it("Ref chip is interactive right after a user-confirmed track (Change... reachable)", async () => {
+    snap({ track: "suzuka", track_confidence: "confident", track_source: "user" });
+    const chip = await screen.findByRole("button", { name: /No stored ref/ });
+    fireEvent.click(chip);
+    expect(screen.getByText("Change…")).toBeTruthy();
+  });
+
+  it("shows the picker before any track exists (so the user can confirm first)", async () => {
+    snap({ track: null, track_confidence: null });
+    expect(await screen.findByLabelText("Track")).toBeInTheDocument();
   });
 });

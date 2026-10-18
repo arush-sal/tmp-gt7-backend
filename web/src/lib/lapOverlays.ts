@@ -16,6 +16,15 @@ const REF_FIELD: Partial<Record<Channel, keyof PredictedSampleDTO>> = {
   steering: "steering",
 };
 
+/** Reference values for one channel (steering in degrees), in sample order; null when the reference
+ *  does not carry the channel (tyres) or has no samples. */
+export function referenceValues(reference: ReferenceDTO | null, channel: Channel): number[] | null {
+  const field = REF_FIELD[channel];
+  if (!field || !reference?.samples?.length) return null;
+  // The wire carries steering in radians; the graph (and the lap column it overlays) is in degrees.
+  return reference.samples.map(s => field === "steering" ? radToDeg(s.steering) : Number(s[field]));
+}
+
 export type Overlay = { median: number[] | null; reference: number[] | null };
 
 /** Build resampled median/reference columns for one channel against a selected lap. Either side is
@@ -40,13 +49,8 @@ export function overlayColumns(
   }
 
   let refCol: number[] | null = null;
-  const field = REF_FIELD[channel];
-  if (field && reference?.samples?.length) {
-    const grid = reference.samples.map(s => s.fraction);
-    // The wire carries steering in radians; the graph (and the lap column it overlays) is in degrees.
-    const values = reference.samples.map(s => field === "steering" ? radToDeg(s.steering) : Number(s[field]));
-    refCol = resampleByFraction(grid, values, targets);
-  }
+  const values = referenceValues(reference, channel);
+  if (values && reference) refCol = resampleByFraction(reference.samples.map(s => s.fraction), values, targets);
 
   return { median: medianCol, reference: refCol };
 }

@@ -114,6 +114,10 @@ function validateEnrichment(raw: unknown): Enrichment {
     typeof e.track_confidence === "string" || e.track_confidence === null
       ? (e.track_confidence as string | null)
       : undefined;
+  const trackSource = e.track_source === "user" || e.track_source === "detected" || e.track_source === null
+    ? (e.track_source as "user" | "detected" | null) : undefined;
+  const pendingSlug = typeof e.pending_track_slug === "string" || e.pending_track_slug === null
+    ? (e.pending_track_slug as string | null) : undefined;
   if (e.car_name !== null && typeof e.car_name !== "string") throw new Error("enrichment.car_name: expected string or null");
   if (e.track !== null && typeof e.track !== "string") throw new Error("enrichment.track: expected string or null");
   const delta = e.delta_to_best_ns === null ? null : safeIntNs(e.delta_to_best_ns, "enrichment.delta_to_best_ns");
@@ -130,6 +134,8 @@ function validateEnrichment(raw: unknown): Enrichment {
     // optional; read leniently (older backends omit it)
     ...(typeof e.delta_to_stored_ref_ns === "number" || e.delta_to_stored_ref_ns === null
       ? { delta_to_stored_ref_ns: e.delta_to_stored_ref_ns as number | null } : {}),
+    ...(trackSource !== undefined ? { track_source: trackSource } : {}),
+    ...(pendingSlug !== undefined ? { pending_track_slug: pendingSlug } : {}),
     ...(trackConfidence !== undefined ? { track_confidence: trackConfidence } : {}),
   };
 }

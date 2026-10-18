@@ -89,4 +89,48 @@ describe("useSelectedReference", () => {
     await waitFor(() => expect(result.current.error).toBe(true));
     expect(result.current.reference).toBe(predicted);
   });
+
+  describe("auto (fastest available)", () => {
+    const pred = (ns: number, n = 3) => ({ ...predicted, predicted_best_ns: ns, samples: predicted.samples.slice(0, n) });
+    it("only stored (predicted empty) -> stored", async () => {
+      stub(200, storedRef());
+      const { result } = renderHook(() => useSelectedReference("suzuka", "auto", pred(0, 0)));
+      await waitFor(() => expect(result.current.effective).toBe("stored"));
+      expect(result.current.reference).toBe(result.current.stored);
+    });
+    it("only predicted (no stored lap) -> predicted", async () => {
+      stub(404);
+      const p = pred(95e9);
+      const { result } = renderHook(() => useSelectedReference("suzuka", "auto", p));
+      await waitFor(() => expect(result.current.noStored).toBe(true));
+      expect(result.current.reference).toBe(p);
+      expect(result.current.effective).toBe("predicted");
+    });
+    it("both -> shorter lap time wins", async () => {
+      stub(200, storedRef({ lap_time: "90.685s" }));
+      const fast = pred(89e9);
+      const a = renderHook(() => useSelectedReference("suzuka", "auto", fast));
+      await waitFor(() => expect(a.result.current.stored).not.toBeNull());
+      expect(a.result.current.effective).toBe("predicted");
+      expect(a.result.current.reference).toBe(fast);
+      const slow = pred(95e9);
+      const b = renderHook(() => useSelectedReference("suzuka", "auto", slow));
+      await waitFor(() => expect(b.result.current.stored).not.toBeNull());
+      expect(b.result.current.effective).toBe("stored");
+    });
+    it("neither -> null", async () => {
+      stub(404);
+      const { result } = renderHook(() => useSelectedReference("suzuka", "auto", pred(0, 0)));
+      await waitFor(() => expect(result.current.noStored).toBe(true));
+      expect(result.current.reference).toBeNull();
+    });
+    it("stored load error falls back to predicted", async () => {
+      stub(500);
+      const p = pred(95e9);
+      const { result } = renderHook(() => useSelectedReference("suzuka", "auto", p));
+      await waitFor(() => expect(result.current.error).toBe(true));
+      expect(result.current.reference).toBe(p);
+      expect(result.current.effective).toBe("predicted");
+    });
+  });
 });

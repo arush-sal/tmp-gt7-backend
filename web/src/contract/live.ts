@@ -85,6 +85,8 @@ export type Enrichment = {
   track: string | null;
   delta_to_best_ns: number | null;  // ns; null until a reference lap; -ve = ahead
   delta_to_stored_ref_ns?: number | null; // ns vs the track's stored reference lap; null/absent when none
+  track_source?: "user" | "detected" | null; // who set `track`: the user's confirmation always wins over detection
+  pending_track_slug?: string | null; // user pick made with no session open; applies when the next session starts
   track_confidence?: string | null; // "provisional" (best guess, may switch) | "confident" (locked); null/absent until a first guess
 };
 
