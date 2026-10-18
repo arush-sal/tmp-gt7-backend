@@ -472,9 +472,11 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
                   onPick={slug => setSel(s => reduceManual(s, slug))}
                 />
               )}
-              {refSlug && (
-                <ReferenceMenu key={refSlug} slug={refSlug} stored={selectedRef.stored} onChanged={() => setPinVersion(v => v + 1)} />
-              )}
+              {/* key = the shown track (not refSlug) so a provisional -> confident flip on the same
+                  track keeps the chip mounted, while a track change resets its menu state. */}
+              <ReferenceMenu key={refSlug ?? sel.slug} slug={refSlug} stored={selectedRef.stored}
+                waitingTip={viewing ? "This session's laps have no confirmed track" : "The stored reference lap loads once the track is confirmed"}
+                onChanged={() => setPinVersion(v => v + 1)} />
             </>
           ) : undefined
         }

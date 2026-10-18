@@ -305,7 +305,8 @@ describe("Dashboard (live)", () => {
     await waitFor(() => expect(screen.getByLabelText("Track")).toBeInTheDocument());
     // Assert the RESTORED slug specifically (not just that the picker rendered): the seed came from
     // storage, since the pushed frame's enrichment.track was null (feed not detecting).
-    expect(screen.getByLabelText<HTMLSelectElement>("Track").value).toBe("test-track");
+    // waitFor: the option list arrives from an async fetch, so the value settles a tick after the picker mounts.
+    await waitFor(() => expect(screen.getByLabelText<HTMLSelectElement>("Track").value).toBe("test-track"));
   });
 
   // Lap dropdown: keeps a "Current lap" entry and defaults to it while live (header/right-panel
@@ -454,6 +455,17 @@ describe("Dashboard (live)", () => {
       expect(screen.queryByText("Viewing stored session")).toBeNull();
     });
 
+    it("viewing a stored session with no confirmed track: dim chip says the laps have no confirmed track", async () => {
+      localStorage.setItem("gt7:track", JSON.stringify({ schemaVersion: 1, payload: "test-track" })); // a track is shown
+      const { source, push } = fakeSource();
+      render(<Dashboard source={source} />);
+      act(() => push());
+      await waitFor(() => expect(screen.getAllByRole("option").some(o => /Old Car/.test(o.textContent ?? ""))).toBe(true));
+      fireEvent.change(screen.getByLabelText("Session"), { target: { value: "stored-9" } });
+      const chip = await screen.findByText("Ref · waiting for track confirmation");
+      expect(chip.getAttribute("title")).toBe("This session's laps have no confirmed track");
+    });
+
     it("record toggle reflects enrichment.recording and hides while viewing a stored session", async () => {
       const subs: LiveHandlers[] = [];
       const source: LiveSource = (_u, h) => { subs.push(h); return () => {}; };
@@ -566,5 +578,35 @@ describe("Dashboard reference source", () => {
     expect((await screen.findByText("Couldn't load stored lap")).getAttribute("role")).toBe("alert");
     expect(screen.queryByText("no stored lap for this track")).toBeNull();
     expect((screen.getByLabelText("Reference source") as HTMLSelectElement).value).toBe("stored");
+  });
+
+  it("reference chip is in the TRACK cell as a dim waiting chip while provisional", async () => {
+    await setup(200, "provisional");
+    const waiting = await screen.findByText("Ref · waiting for track confirmation");
+    expect(waiting.getAttribute("title")).toBe("The stored reference lap loads once the track is confirmed");
+    expect(screen.queryByText("Change…")).toBeNull();
+    expect(waiting.closest(".ref-menu")).toBeTruthy();
+  });
+
+  it("chip root stays mounted when the same slug goes provisional -> confident", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true, status: 200, json: async () => (url.includes("/reference-lap") ? storedRef() : []),
+    })) as unknown as typeof fetch);
+    const subs: LiveHandlers[] = [];
+    render(<Dashboard source={(_u, h) => { subs.push(h); return () => {}; }} />);
+    const ls = liveSample as { enrichment: object };
+    const push = (conf: string) => act(() => subs.forEach(h => h.onSnapshot(validateLive(
+      { ...ls, enrichment: { ...ls.enrichment, track: "suzuka", track_confidence: conf } }))));
+    push("provisional");
+    const root = (await screen.findByText("Ref · waiting for track confirmation")).closest(".ref-menu");
+    push("confident");
+    await screen.findByText(/Ref 1:30\.685/);
+    expect(document.querySelector(".ref-menu")).toBe(root);
+  });
+
+  it("confirmed track with no stored reference still offers Change…", async () => {
+    await setup(404);
+    await screen.findByText("No stored ref");
+    expect(screen.getByText("Change…")).toBeTruthy();
   });
 });
