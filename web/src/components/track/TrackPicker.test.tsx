@@ -17,3 +17,8 @@ test("TrackPicker shows a provisional chip only while the auto-detected track is
   rerender(<TrackPicker value="suzuka" onPick={() => {}} items={items} />);
   expect(screen.queryByText("provisional")).toBeNull();
 });
+
+test("TrackPicker select carries the full track name as its title", () => {
+  render(<TrackPicker value="w" onPick={() => {}} items={[{ slug: "w", name: "Willow Springs International Raceway: Big Willow" }]} />);
+  expect(screen.getByRole("combobox").getAttribute("title")).toBe("Willow Springs International Raceway: Big Willow");
+});

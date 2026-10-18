@@ -28,7 +28,7 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
         </div>
 
         {sessionPicker && (
-          <div className="header-cell header-cell--wide">
+          <div className="header-cell header-cell--picker">
             <span className="label">Session</span>
             {sessionPicker}
           </div>
@@ -42,7 +42,7 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
           {lapSelector}
         </div>
 
-        <div className="header-cell header-cell--wide">
+        <div className="header-cell header-cell--picker header-cell--track">
           <span className="label">Track / Layout</span>
           {trackPicker ?? <span className="header-val text-muted">{ph}</span>}
         </div>

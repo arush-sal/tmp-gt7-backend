@@ -323,6 +323,7 @@ body {
   box-shadow: var(--shadow);
   padding: 8px 4px;
   overflow: hidden;
+  flex-wrap: wrap; /* narrow widths: cells wrap to a second row instead of being clipped */
 }
 
 .header-cell {
@@ -335,6 +336,32 @@ body {
 }
 .header-cell:last-child { border-right: none; }
 .header-cell--wide { flex: 1; align-items: center; text-align: center; }
+/* Session / track cells: sized by content, selects capped (ellipsis), no growing to fill the bar. */
+.header-cell--picker { align-items: center; text-align: center; min-width: 0; }
+/* `.header-cell.header-cell--picker` (3 classes) so the cap beats `.header-cell .track-picker`'s
+   max-width:100%; a <select>'s intrinsic width is its LONGEST option, so it must be capped. */
+.header-cell--picker select,
+.header-cell.header-cell--picker .track-picker { max-width: 280px; text-overflow: ellipsis; }
+.header-cell--picker .session-picker { justify-content: center; }
+/* The track cell absorbs the bar's free width (contents centred, select still capped above), so
+   position/session/lap stay left and delta/predicted/best stay right instead of everything packing
+   to the left. */
+.header-cell--track { flex: 1; min-width: 0; }
+/* In the track row the SELECT gives up width first (280 -> 150 px, ellipsis) so the provisional and Ref
+   chips stay on the same line; the row only wraps once even the narrowed select can't fit. */
+/* Track row sizing, in priority order (verified at 1920/1440/1280/1024 px):
+   1. chips never shrink (their text would overlap the select);
+   2. the select shrinks 280 -> 150 px (ellipsis);
+   3. only when even the 150 px select + chips can't fit does the Ref chip wrap to a second line.
+   (2) before (3) needs the picker group's flex-basis at 0: a flex line breaks on each item's
+   hypothetical size, which is then its MIN-content (150 px select + chip), not its 280 px max.
+   max-width: the cell is a centred COLUMN flexbox, so the row would otherwise take its max-content
+   width and overflow instead of shrinking. */
+.track-cell-row > .track-picker-row { flex: 1 1 0; min-width: min-content; flex-wrap: nowrap; justify-content: center; }
+.track-cell-row .chip, .track-cell-row > .ref-menu { flex: 0 0 auto; }
+/* State-independent: TrackPicker wraps the select in .track-picker-row only while provisional. */
+.header-cell--track .track-picker { flex: 0 1 280px; min-width: 150px; }
+.track-cell-row { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .header-cell--corner {
   background: rgba(225,6,0,.04);
   border-radius: 8px;
@@ -1227,11 +1254,11 @@ body {
 .session-picker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 /* Stored-reference menu (track header) */
-.ref-menu { position: relative; display: inline-block; margin-left: 6px; }
-.ref-menu summary { cursor: pointer; list-style: none; }
-.ref-menu summary::-webkit-details-marker { display: none; }
+.ref-menu { display: inline-block; }
+.ref-menu > button.chip { cursor: pointer; font: inherit; font-size: 11px; }
+/* Portalled to <body> and placed from the chip's rect (ReferenceMenu.tsx), above the header (tooltips are 1000). */
 .ref-menu__pop {
-  position: absolute; z-index: 20; top: 100%; left: 0; min-width: 260px; padding: 8px;
+  position: fixed; z-index: 900; min-width: 260px; max-width: calc(100vw - 16px); padding: 8px; box-shadow: var(--shadow);
   display: flex; flex-wrap: wrap; gap: 6px;
   background: var(--surface, var(--bg, #fff)); color: inherit; border: 1px solid var(--border, rgba(128,128,128,.4));
 }
@@ -1239,3 +1266,18 @@ body {
 .ref-menu__list .chip { width: 100%; text-align: left; }
 .lap-ref-btn { background: none; border: 0; cursor: pointer; color: inherit; padding: 0 4px; font-size: 12px; }
 .lap-ref-btn:hover { color: var(--blue, #1f6feb); }
+
+/* Mid widths: the provisional chip + Ref chip need ~50 px more than a 280 px track select leaves, which
+   made the header jump a line on every new session; 220 px keeps it on one row while provisional. */
+@media (max-width: 1440px) {
+  .header-cell--picker select { max-width: 220px; }
+  .header-cell.header-cell--picker.header-cell--track .track-picker { flex-basis: 220px; max-width: 220px; }
+}
+
+/* Narrow screens: a <select> never reports a min-content width below its intrinsic (longest-option)
+   width, so flex can't shrink it - cap both header selects explicitly instead. The Ref chip may wrap
+   under the track select here; nothing overlaps the neighbouring LAP / LAP DELTA cells. */
+@media (max-width: 1100px) {
+  .header-cell--picker select { max-width: 200px; }
+  .header-cell.header-cell--picker.header-cell--track .track-picker { flex-basis: 160px; max-width: 160px; min-width: 120px; }
+}

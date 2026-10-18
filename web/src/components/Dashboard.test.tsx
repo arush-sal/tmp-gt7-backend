@@ -462,7 +462,7 @@ describe("Dashboard (live)", () => {
       act(() => push());
       await waitFor(() => expect(screen.getAllByRole("option").some(o => /Old Car/.test(o.textContent ?? ""))).toBe(true));
       fireEvent.change(screen.getByLabelText("Session"), { target: { value: "stored-9" } });
-      const chip = await screen.findByText("Ref · waiting for track confirmation");
+      const chip = await screen.findByText("Ref · confirming track…");
       expect(chip.getAttribute("title")).toBe("This session's laps have no confirmed track");
     });
 
@@ -582,7 +582,7 @@ describe("Dashboard reference source", () => {
 
   it("reference chip is in the TRACK cell as a dim waiting chip while provisional", async () => {
     await setup(200, "provisional");
-    const waiting = await screen.findByText("Ref · waiting for track confirmation");
+    const waiting = await screen.findByText("Ref · confirming track…");
     expect(waiting.getAttribute("title")).toBe("The stored reference lap loads once the track is confirmed");
     expect(screen.queryByText("Change…")).toBeNull();
     expect(waiting.closest(".ref-menu")).toBeTruthy();
@@ -598,7 +598,7 @@ describe("Dashboard reference source", () => {
     const push = (conf: string) => act(() => subs.forEach(h => h.onSnapshot(validateLive(
       { ...ls, enrichment: { ...ls.enrichment, track: "suzuka", track_confidence: conf } }))));
     push("provisional");
-    const root = (await screen.findByText("Ref · waiting for track confirmation")).closest(".ref-menu");
+    const root = (await screen.findByText("Ref · confirming track…")).closest(".ref-menu");
     push("confident");
     await screen.findByText(/Ref 1:30\.685/);
     expect(document.querySelector(".ref-menu")).toBe(root);
@@ -607,6 +607,7 @@ describe("Dashboard reference source", () => {
   it("confirmed track with no stored reference still offers Change…", async () => {
     await setup(404);
     await screen.findByText("No stored ref");
+    fireEvent.click(screen.getByRole("button", { name: /No stored ref/ }));
     expect(screen.getByText("Change…")).toBeTruthy();
   });
 });

@@ -152,6 +152,8 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     return () => { active = false; ctrl.abort(); };
   }, []);
 
+  const trackNames = useMemo(() => Object.fromEntries(trackList.map(t => [t.slug, t.name])), [trackList]);
+
   // Track selection: auto-detect within the first observed lap, else stay pickable manually.
   const [sel, setSel] = useState(() => {
     const saved = loadVersioned<string>("gt7:track");
@@ -463,7 +465,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
           // No selected/detected track (e.g. right after a refresh, before auto-detect
           // re-locks) -> render nothing rather than an empty "select track" dropdown.
           sel.slug || refSlug ? (
-            <>
+            <div className="track-cell-row">
               {sel.slug && (
                 <TrackPicker
                   value={sel.slug}
@@ -477,13 +479,14 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               <ReferenceMenu key={refSlug ?? sel.slug} slug={refSlug} stored={selectedRef.stored}
                 waitingTip={viewing ? "This session's laps have no confirmed track" : "The stored reference lap loads once the track is confirmed"}
                 onChanged={() => setPinVersion(v => v + 1)} />
-            </>
+            </div>
           ) : undefined
         }
         sessionPicker={
           <>
           <SessionPicker
             sessions={sessionsList.sessions}
+            trackNames={trackNames}
             error={sessionsList.error}
             selectedId={selectedSessionId}
             replay={!!snapshot?.enrichment?.duplicate_of}

@@ -143,6 +143,7 @@ export type SessionSummaryDTO = {
   current_lap: number;
   total_laps: number;
   best_lap: string | null; // protobuf Duration ("115.583s"); null = no timed lap / still active
+  track_slug: string | null; // dominant CONFIRMED track (most common confident lap track); null = none
 };
 
 // Stored reference lap per track. Contract: GET/PUT/DELETE /v1/tracks/{slug}/reference-lap.

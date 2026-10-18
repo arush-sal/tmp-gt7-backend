@@ -6,7 +6,8 @@ export function TrackPicker({ value, items, onPick, provisional = false }: {
   value: string | null; items: TrackListItem[]; onPick: (slug: string) => void; provisional?: boolean;
 }) {
   const select = (
-    <select className="track-picker" value={value ?? ""} onChange={e => onPick(e.target.value)} aria-label="Track">
+    <select className="track-picker" value={value ?? ""} onChange={e => onPick(e.target.value)} aria-label="Track"
+      title={items.find(it => it.slug === value)?.name}>
       <option value="" disabled>Select track...</option>
       {items.map(it => <option key={it.slug} value={it.slug}>{it.name}</option>)}
     </select>
