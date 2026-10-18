@@ -30,7 +30,8 @@ type Lap struct {
 	Fallback bool // Duration came from the wall-clock span (GT7 last_lap was unavailable), not an authoritative lap time
 
 	// Fingerprint identifies this completed timed lap across sessions (session.LapFingerprint of the
-	// rollover frame). Empty for the formation lap, partial laps and pre-migration rows. Unique across
+	// rollover frame). Empty for the formation lap, the partial final lap and pre-migration rows (a first
+	// lap the session joined mid-way is not stored at all, see LapSegmenter). Unique across
 	// stored laps: a replayed copy of a stored lap is how a duplicate session is recognised.
 	Fingerprint string
 

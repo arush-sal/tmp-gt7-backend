@@ -12,7 +12,8 @@ import (
 
 // LapSegmenter turns a session's frame stream into Laps. It implements session.Sink, so Session
 // Management drives it: OnSessionStart resets per-session state, OnFrame advances the current lap and
-// emits a lap on each lap-counter increment, OnSessionEnd flushes the final (partial) lap.
+// emits a lap on each lap-counter increment, OnSessionEnd flushes the final (partial) lap. A first lap
+// the session joined mid-way is never stored (see lapState.partial).
 //
 // It keeps state per session id (a shared segmenter may serve concurrent streams), guarded by a mutex
 // since Sink methods are called on each stream's goroutine.
@@ -46,8 +47,10 @@ type lapState struct {
 	gapCount   uint64
 	// partial: the session's first frame was already on a timed lap (lap >= 1), i.e. it joined that lap
 	// mid-way (Record back on, a replay loop start, a reconnect). That lap's trace is partial even though
-	// GT7's last_lap at its rollover is a full lap time, so it is stored incomplete, invalid and
-	// unfingerprinted. Mirrors the Detector's partialLap, which likewise does not count it for rule B.
+	// GT7's last_lap at its rollover is a full lap time, so it is discarded: no lap is emitted for it,
+	// neither at its rollover nor at session end (TraceRecorder likewise stores none of its samples).
+	// Mirrors the Detector's partialLap, which likewise does not count it for rule B, so a session that
+	// ends on it is dropped anyway.
 	partial bool
 	// completed: a completed timed lap was already emitted. The first one is the lap the Detector's
 	// dedup decides on, so a taken fingerprint there means a missed duplicate (see emit).
@@ -94,8 +97,7 @@ func (s *LapSegmenter) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) 
 		// just-completed lap's last_lap. current_lap is monotonic within a session; a decrease is
 		// anomalous and ignored (the frame is attributed to the current lap, no split).
 		if st.partial {
-			st.partial = false
-			s.emit(sessionID, st, false, 0, "") // joined mid-lap: incomplete, no fingerprint
+			st.partial = false // joined mid-lap: discard the lap, nothing is stored for it
 		} else {
 			var fp string
 			if st.lapNumber >= 1 { // a completed timed lap (not the formation lap): fingerprint it
@@ -116,11 +118,12 @@ func (s *LapSegmenter) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) 
 	st.lastTime = ts
 }
 
-// OnSessionEnd flushes the final, still-open lap as incomplete (the session ended mid-lap).
+// OnSessionEnd flushes the final, still-open lap as incomplete (the session ended mid-lap), unless it
+// is the joined-mid-lap first lap (see lapState.partial), which is never stored.
 func (s *LapSegmenter) OnSessionEnd(rec *session.Record) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st := s.state[rec.ID]; st != nil && st.open {
+	if st := s.state[rec.ID]; st != nil && st.open && !st.partial {
 		s.emit(rec.ID, st, false, 0, "")
 	}
 	delete(s.state, rec.ID)

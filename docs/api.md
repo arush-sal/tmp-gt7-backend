@@ -182,7 +182,8 @@ boundary), corners, sectors, track width, a confidence gate, and provenance.
 ### `GET /v1/sessions/{id}/laps`
 
 Returns the session's laps in lap order: `lap_number`, `duration_ns`, `complete`, `valid`, `timed`,
-`delta_to_pb_ns`, a `sectors` block, and:
+`delta_to_pb_ns`, a `sectors` block, and the fields below. A lap the session joined part-way through
+(recording started mid-lap) is not stored, so the first `lap_number` can be above 1.
 
 - `track_slug`: the track this lap was driven on, or `null` when the track detector had no guess. A
   session can contain laps on several tracks, so the track belongs to the lap, not the session.

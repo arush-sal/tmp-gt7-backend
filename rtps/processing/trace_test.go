@@ -36,7 +36,8 @@ func record(store TraceStore, frames ...*telemetryv1.TelemetryFrame) *TraceRecor
 func TestTraceRecorder_DistancePerLap(t *testing.T) {
 	store := NewMemTraceStore()
 	record(store,
-		mkTraceFrame(0, 1, 1, 0, 0),     // first frame: distance 0
+		mkTraceFrame(0, 0, 0, 0, 0),     // formation lap, so lap 1 is recorded (not joined mid-lap)
+		mkTraceFrame(0, 1, 1, 0, 0),     // lap 1 first frame: distance 0
 		mkTraceFrame(100, 1, 2, 3, 0),   // +3
 		mkTraceFrame(200, 1, 3, 3, 4),   // +4 -> 7
 		mkTraceFrame(300, 2, 4, 10, 10), // new lap: distance resets to 0
@@ -59,6 +60,25 @@ func TestTraceRecorder_DistancePerLap(t *testing.T) {
 	}
 }
 
+// TestTraceRecorder_PartialFirstLapDiscarded: a session whose first frame is already on a timed lap
+// joined it mid-way; that lap's samples are never stored (the segmenter stores no lap for it either).
+// The next lap is recorded from its first frame with distance starting at 0.
+func TestTraceRecorder_PartialFirstLapDiscarded(t *testing.T) {
+	spy := &batchSpy{}
+	record(spy,
+		mkTraceFrame(0, 2, 1, 0, 0), // joined mid lap 2
+		mkTraceFrame(100, 2, 2, 5, 0),
+		mkTraceFrame(200, 3, 3, 10, 0), // lap 3 starts
+		mkTraceFrame(300, 3, 4, 13, 4), // +5
+	)
+	if len(spy.all) != 2 {
+		t.Fatalf("persisted %d samples, want 2 (lap 3 only)", len(spy.all))
+	}
+	if a, b := spy.all[0], spy.all[1]; a.LapNumber != 3 || b.LapNumber != 3 || a.Distance != 0 || b.Distance != 5 {
+		t.Errorf("samples = %+v, want lap 3 at distances 0, 5", spy.all)
+	}
+}
+
 // batchSpy records every SaveBatch call so tests can assert flush behavior.
 type batchSpy struct {
 	batches int
@@ -78,7 +98,7 @@ func TestTraceRecorder_BatchFlush(t *testing.T) {
 	rec := &session.Record{ID: "s1"}
 	r.OnSessionStart(rec)
 	for i := 0; i < 5; i++ {
-		r.OnFrame("s1", mkTraceFrame(i*100, 1, uint64(i+1), float32(i), 0))
+		r.OnFrame("s1", mkTraceFrame(i*100, 0, uint64(i+1), float32(i), 0))
 	}
 	r.OnSessionEnd(rec)
 
@@ -93,7 +113,7 @@ func TestTraceRecorder_BatchFlush(t *testing.T) {
 // mkChannelFrame builds a frame carrying the extra telemetry channels (fuel/tyre temps/clutch/boost)
 // P2-1 threads into the trace, on top of the position/lap/seq the recorder always needs.
 func mkChannelFrame() *telemetryv1.TelemetryFrame {
-	f := mkTraceFrame(0, 1, 1, 0, 0)
+	f := mkTraceFrame(0, 0, 1, 0, 0)
 	f.FuelCapacity = 100
 	f.CurrentFuel = 50 // -> 50%
 	f.TyreTempFl = 80
@@ -117,7 +137,7 @@ func TestTraceRecorder_Channels(t *testing.T) {
 	r.OnFrame("s1", mkChannelFrame())
 	r.OnSessionEnd(rec)
 
-	got, _ := store.ByLap("s1", 1)
+	got, _ := store.ByLap("s1", 0)
 	if len(got) != 1 {
 		t.Fatalf("samples = %d, want 1", len(got))
 	}
@@ -143,12 +163,12 @@ func TestTraceRecorder_FuelZeroCapacity(t *testing.T) {
 	r := NewTraceRecorder(store)
 	rec := &session.Record{ID: "s1"}
 	r.OnSessionStart(rec)
-	f := mkTraceFrame(0, 1, 1, 0, 0)
+	f := mkTraceFrame(0, 0, 1, 0, 0)
 	f.CurrentFuel = 10 // capacity 0 -> guard returns 0
 	r.OnFrame("s1", f)
 	r.OnSessionEnd(rec)
 
-	got, _ := store.ByLap("s1", 1)
+	got, _ := store.ByLap("s1", 0)
 	if len(got) != 1 || got[0].Fuel != 0 {
 		t.Errorf("Fuel = %v, want 0 (capacity<=0)", got)
 	}
@@ -173,10 +193,10 @@ func TestTraceRecorder_DeltaFn(t *testing.T) {
 			r.DeltaFn = tc.fn
 			rec := &session.Record{ID: "s1"}
 			r.OnSessionStart(rec)
-			r.OnFrame("s1", mkTraceFrame(0, 1, 1, 0, 0))
+			r.OnFrame("s1", mkTraceFrame(0, 0, 1, 0, 0))
 			r.OnSessionEnd(rec)
 
-			got, _ := store.ByLap("s1", 1)
+			got, _ := store.ByLap("s1", 0)
 			if len(got) != 1 {
 				t.Fatalf("samples = %d, want 1", len(got))
 			}
@@ -198,18 +218,18 @@ func ptr[T any](v T) *T { return &v }
 func TestTraceRecorder_DropsStrayFrames(t *testing.T) {
 	store := NewMemTraceStore()
 	r := NewTraceRecorder(store)
-	r.OnFrame("ghost", mkTraceFrame(0, 1, 1, 0, 0)) // before any start
+	r.OnFrame("ghost", mkTraceFrame(0, 0, 1, 0, 0)) // before any start
 	rec := &session.Record{ID: "s1"}
 	r.OnSessionStart(rec)
-	r.OnFrame("s1", mkTraceFrame(0, 1, 1, 0, 0))
+	r.OnFrame("s1", mkTraceFrame(0, 0, 1, 0, 0))
 	r.OnSessionEnd(rec)
-	r.OnFrame("s1", mkTraceFrame(100, 1, 2, 1, 0)) // after end
+	r.OnFrame("s1", mkTraceFrame(100, 0, 2, 1, 0)) // after end
 
-	s1, _ := store.ByLap("s1", 1)
+	s1, _ := store.ByLap("s1", 0)
 	if len(s1) != 1 {
-		t.Errorf("s1 lap1 samples = %d, want 1 (stray frames dropped)", len(s1))
+		t.Errorf("s1 lap0 samples = %d, want 1 (stray frames dropped)", len(s1))
 	}
-	ghost, _ := store.ByLap("ghost", 1)
+	ghost, _ := store.ByLap("ghost", 0)
 	if len(ghost) != 0 {
 		t.Errorf("ghost samples = %d, want 0", len(ghost))
 	}

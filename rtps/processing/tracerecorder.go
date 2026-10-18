@@ -16,7 +16,8 @@ const defaultTraceBatch = 1200
 // TraceRecorder captures each lap's canonical-frame trace. It implements session.Sink: it buffers
 // samples per session, computes cumulative in-lap distance from position deltas at ingest, and
 // bulk-flushes to a TraceStore on the lap boundary / buffer cap / session end — never per frame, so
-// the gRPC hot path is not blocked by a DB write on every frame.
+// the gRPC hot path is not blocked by a DB write on every frame. Like LapSegmenter, it stores nothing
+// for a first lap the session joined mid-way (see traceState.skip).
 type TraceRecorder struct {
 	store TraceStore
 	batch int
@@ -35,11 +36,15 @@ type TraceRecorder struct {
 type traceState struct {
 	started   bool
 	lapNumber int32
-	distance  float64 // cumulative metres within the current lap (reset at each lap boundary)
-	havePrev  bool
-	prevX     float32
-	prevZ     float32
-	buf       []Sample
+	// skip: the session's first frame was already on a timed lap (lap >= 1), so it joined that lap
+	// mid-way; its samples are dropped until the next lap starts, mirroring LapSegmenter's partial
+	// first lap (no lap row is stored for it, so its trace would be orphaned).
+	skip     bool
+	distance float64 // cumulative metres within the current lap (reset at each lap boundary)
+	havePrev bool
+	prevX    float32
+	prevZ    float32
+	buf      []Sample
 }
 
 // fuelPct returns current fuel as a percentage of tank capacity, or 0 when capacity is unknown/zero
@@ -89,11 +94,16 @@ func (r *TraceRecorder) appendLocked(sessionID string, f *telemetryv1.TelemetryF
 	if !st.started {
 		st.started = true
 		st.lapNumber = lap
+		st.skip = lap >= 1
 	} else if lap > st.lapNumber { // lap boundary (monotonic; a decrease is ignored)
 		batch = st.detach()
 		st.lapNumber = lap
 		st.distance = 0
 		st.havePrev = false
+		st.skip = false
+	}
+	if st.skip {
+		return batch // nil: the skipped lap buffered nothing
 	}
 
 	x, z := f.GetPositionX(), f.GetPositionZ()

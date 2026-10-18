@@ -103,17 +103,21 @@ func TestSegmenter_GapInvalidatesLap(t *testing.T) {
 // the new lap, not the closed one).
 func TestSegmenter_FrameCount(t *testing.T) {
 	laps := runSeg(
+		mkFrame(0, 0, 0, false), // formation lap: lap 1 is not joined mid-way (it would not be stored)
 		mkFrame(0, 1, 0, false),
 		mkFrame(100, 1, 0, false),
 		mkFrame(200, 1, 0, false), // lap 1 = 3 frames
 		mkFrame(300, 2, 60_000, false),
 		mkFrame(400, 2, 0, false), // lap 2 = 2 frames (so far)
 	)
-	if laps[0].FrameCount != 3 {
-		t.Errorf("lap1 FrameCount = %d, want 3", laps[0].FrameCount)
+	if len(laps) != 3 {
+		t.Fatalf("got %d laps, want 3", len(laps))
 	}
-	if laps[1].FrameCount != 2 {
-		t.Errorf("lap2 FrameCount = %d, want 2", laps[1].FrameCount)
+	if laps[1].FrameCount != 3 {
+		t.Errorf("lap1 FrameCount = %d, want 3", laps[1].FrameCount)
+	}
+	if laps[2].FrameCount != 2 {
+		t.Errorf("lap2 FrameCount = %d, want 2", laps[2].FrameCount)
 	}
 }
 
@@ -128,17 +132,18 @@ func TestSegmenter_NoFramesNoLaps(t *testing.T) {
 // duplicate/out-of-order lap number — only an increase is a boundary.
 func TestSegmenter_DecreasingLapIgnored(t *testing.T) {
 	laps := runSeg(
+		mkFrame(0, 0, 0, false), // formation lap, so lap 1 is a regular (stored) lap
 		mkFrame(0, 1, 0, false),
 		mkFrame(100, 1, 0, false),
 		mkFrame(200, 2, 60_000, false), // 1->2 boundary (the only real one)
 		mkFrame(300, 1, 0, false),      // glitch: current_lap drops — must be ignored
 		mkFrame(400, 2, 0, false),
 	)
-	if len(laps) != 2 {
-		t.Fatalf("got %d laps %v, want 2 (decrease must not split)", len(laps), lapNums(laps))
+	if len(laps) != 3 {
+		t.Fatalf("got %d laps %v, want 3 (decrease must not split)", len(laps), lapNums(laps))
 	}
-	if laps[0].LapNumber != 1 || laps[1].LapNumber != 2 {
-		t.Errorf("lap numbers = %v, want [1 2]", lapNums(laps))
+	if laps[0].LapNumber != 0 || laps[1].LapNumber != 1 || laps[2].LapNumber != 2 {
+		t.Errorf("lap numbers = %v, want [0 1 2]", lapNums(laps))
 	}
 }
 
@@ -149,10 +154,10 @@ func TestSegmenter_FrameAfterEndDropped(t *testing.T) {
 	seg := NewLapSegmenter(store)
 	rec := &session.Record{ID: "s1"}
 	seg.OnSessionStart(rec)
-	seg.OnFrame("s1", mkFrame(0, 1, 0, false))
-	seg.OnFrame("s1", mkFrame(100, 1, 0, false))
-	seg.OnSessionEnd(rec)                        // flushes lap 1
-	seg.OnFrame("s1", mkFrame(200, 2, 0, false)) // stray post-end frame
+	seg.OnFrame("s1", mkFrame(0, 0, 0, false))
+	seg.OnFrame("s1", mkFrame(100, 0, 0, false))
+	seg.OnSessionEnd(rec)                        // flushes lap 0
+	seg.OnFrame("s1", mkFrame(200, 1, 0, false)) // stray post-end frame
 
 	if laps := store.BySession("s1"); len(laps) != 1 {
 		t.Errorf("got %d laps, want 1 (post-end frame must be dropped)", len(laps))
@@ -246,25 +251,47 @@ func TestSegmenter_Fingerprint(t *testing.T) {
 	}
 }
 
-// TestSegmenter_PartialFirstLap (M3): a session whose first frame is already on a timed lap (joined
-// mid-lap) stores that first lap as incomplete and invalid with no fingerprint, even though the
-// rollover frame carries GT7's full last_lap. The next lap is a normal fingerprinted lap.
+// TestSegmenter_PartialFirstLap: a session whose first frame is already on a timed lap (joined
+// mid-lap) does not store that first lap at all, even though the rollover frame carries GT7's full
+// last_lap. The next lap is a normal fingerprinted lap and the final lap is still flushed incomplete.
 func TestSegmenter_PartialFirstLap(t *testing.T) {
-	laps := runSeg(
+	store := NewMemLapStore()
+	seg := NewLapSegmenter(store)
+	var saved []int32
+	seg.OnSaved = func(l Lap) { saved = append(saved, l.LapNumber) }
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	for _, f := range []*telemetryv1.TelemetryFrame{
 		mkFrame(0, 2, 0, false), // joined mid lap 2
 		mkFrame(100, 2, 0, false),
 		mkFrame(200, 3, 91_832, false), // 2 -> 3: GT7 reports the full lap 2 time
 		mkFrame(300, 3, 0, false),
 		mkFrame(400, 4, 90_685, false), // 3 -> 4: a full lap
-	)
-	if len(laps) != 3 {
-		t.Fatalf("got %d laps, want 3", len(laps))
+		mkFrame(500, 4, 0, false),
+	} {
+		seg.OnFrame("s1", f)
 	}
-	if l := laps[0]; l.LapNumber != 2 || l.Complete || l.Valid || l.Fingerprint != "" || !l.Fallback {
-		t.Errorf("partial first lap = %+v, want lap 2 incomplete, invalid, unfingerprinted, fallback duration", l)
+	seg.OnSessionEnd(rec)
+	laps := store.BySession("s1")
+	if len(laps) != 2 {
+		t.Fatalf("got %d laps, want 2 (partial first lap 2 not stored)", len(laps))
 	}
-	if l := laps[1]; !l.Complete || !l.Valid || l.Fingerprint == "" || l.Duration != 90_685*time.Millisecond {
+	if l := laps[0]; l.LapNumber != 3 || !l.Complete || !l.Valid || l.Fingerprint == "" || l.Duration != 90_685*time.Millisecond {
 		t.Errorf("lap 3 = %+v, want complete, valid, fingerprinted, 90.685s", l)
+	}
+	if l := laps[1]; l.LapNumber != 4 || l.Complete || !l.Fallback {
+		t.Errorf("lap 4 = %+v, want the incomplete final lap", l)
+	}
+	if len(saved) != 2 || saved[0] != 3 {
+		t.Errorf("OnSaved laps = %v, want [3 4] (never the partial first lap)", saved)
+	}
+}
+
+// TestSegmenter_PartialFirstLapOnly: a session that ends while still on its joined-mid-lap first lap
+// stores nothing (the Detector drops such a session under rule B anyway; nothing to purge).
+func TestSegmenter_PartialFirstLapOnly(t *testing.T) {
+	if laps := runSeg(mkFrame(0, 2, 0, false), mkFrame(100, 2, 0, false)); len(laps) != 0 {
+		t.Errorf("got %d laps, want 0", len(laps))
 	}
 }
 

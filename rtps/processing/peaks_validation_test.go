@@ -12,6 +12,7 @@ import (
 	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/session"
 	"github.com/arush-sal/garage/backend/telemetry"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // lapFromCapture decodes one VictoryDash telemetry.json (a single real driven lap of already-decrypted
@@ -37,6 +38,10 @@ func lapFromCapture(t *testing.T, path string) processing.NormalizedLap {
 	tr.OnSessionStart(rec)
 
 	base := time.Unix(1_700_000_000, 0).UTC()
+	// The capture starts ON its timed lap, which the recorder (like a live session) would drop as a
+	// joined-mid-lap first lap. A synthetic formation-lap frame first makes the capture's laps regular
+	// laps; distance resets at the boundary, so it does not affect the samples.
+	tr.OnFrame(rec.ID, &telemetryv1.TelemetryFrame{RecvTimestamp: timestamppb.New(base.Add(-time.Second))})
 	var seq uint64
 	var lastPID uint32
 	var seen bool
