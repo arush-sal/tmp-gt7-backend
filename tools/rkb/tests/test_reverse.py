@@ -193,3 +193,106 @@ def test_derive_reverse_confidence_and_provenance():
 def test_derive_reverse_passes_schema_validation():
     rec = derive_reverse(_forward_record(), _reverse_ident())
     validate_record(rec)  # no raise
+
+
+# ---- trust of the reversed apex order (Go rtps/rkb/detection.go trustedApexSources) ----
+
+def _with_corner_source(src):
+    fwd = _forward_record()
+    for c in fwd["corners"]:
+        c["source"] = src
+    fwd["provenance"]["corners"] = src
+    return fwd
+
+
+def test_reverse_of_driven_lap_corners_is_trusted_derived_reverse():
+    rev = derive_reverse(_with_corner_source("kinematic"), _reverse_ident())
+    assert {c["source"] for c in rev["corners"]} == {"derived-reverse"}
+    assert rev["provenance"]["corners"] == "derived-reverse"
+
+
+def test_reverse_of_untrusted_corners_keeps_the_untrusted_source():
+    # Stored labels / outline curvature follow SVG order, not travel: reversing them must not
+    # mint "derived-reverse", which the detector trusts as the real direction of travel.
+    for src in ("stored", "outline_curvature"):
+        rev = derive_reverse(_with_corner_source(src), _reverse_ident())
+        validate_record(rev)
+        assert {c["source"] for c in rev["corners"]} == {src}, src
+        assert rev["provenance"]["corners"] == src
+
+
+# ---- measured, directed boundaries swap sides for the reverse travel direction ----
+
+def test_reverse_swaps_and_reverses_measured_left_right_boundary():
+    fwd = _forward_record()
+    fwd["boundary"] = {"source": "victorydash",
+                       "left": [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+                       "right": [[0.0, 9.0], [1.0, 9.0], [2.0, 9.0]],
+                       "cl": [[0.0, 4.5], [10.0, 4.5], [5.0, 8.0]]}  # a (tiny) lap
+    rev = derive_reverse(fwd, _reverse_ident())
+    validate_record(rev)
+    b = rev["boundary"]
+    assert b["source"] == "victorydash"
+    assert b["left"] == [[2.0, 9.0], [1.0, 9.0], [0.0, 9.0]]    # forward right, reverse travel order
+    assert b["right"] == [[2.0, 0.0], [1.0, 0.0], [0.0, 0.0]]
+    assert b["cl"] == [[0.0, 4.5], [5.0, 8.0], [10.0, 4.5]]  # same lap, other way, from start/finish
+    assert fwd["boundary"]["left"] == [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]  # parent untouched
+
+
+def test_reverse_keeps_undirected_outline_boundary():
+    fwd = _forward_record()
+    rev = derive_reverse(fwd, _reverse_ident())
+    assert rev["boundary"] == fwd["boundary"]
+
+
+def test_reverse_phases_follow_the_source_contract():
+    # db.py / Go setPhases: derived-reverse -> explicit null; stored/outline_curvature -> absent.
+    rev = derive_reverse(_with_corner_source("kinematic"), _reverse_ident())
+    assert all("phases" in c and c["phases"] is None for c in rev["corners"])
+    for src in ("stored", "outline_curvature"):
+        rev = derive_reverse(_with_corner_source(src), _reverse_ident())
+        assert all("phases" not in c for c in rev["corners"]), src
+
+
+def test_reverse_reverses_driven_line_cl_of_an_outline_boundary():
+    # A capture parent: outline shape + its driven line `cl` (provenance outline+driven_line).
+    # The backend measures sector positions along cl, so it must run in the reverse's travel order.
+    fwd = _forward_record()
+    fwd["boundary"] = {"source": "outline", "outline": [[0.0, 0.0], [100.0, 100.0]],
+                       "cl": [[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]]}
+    rev = derive_reverse(fwd, _reverse_ident())
+    validate_record(rev)
+    # cl is a lap: the start/finish anchor (cl[0]) stays first, the rest runs the other way.
+    assert rev["boundary"]["cl"] == [[0.0, 0.0], [5.0, 8.0], [10.0, 0.0]]
+    assert rev["boundary"]["outline"] == [[0.0, 0.0], [100.0, 100.0]]  # undirected shape kept
+    assert rev["boundary"]["source"] == "outline"
+    assert fwd["boundary"]["cl"] == [[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]]  # parent untouched
+
+
+def test_reverse_keeps_closed_cl_start_finish_anchor():
+    # A closed driven lap whose first and last samples are distinct (like grand-valley-south-2's,
+    # 0.32 m apart): the backend measures sector positions from cl[0], the start/finish, so the
+    # reverse must keep that point first and walk the rest of the lap the other way.
+    fwd = _forward_record()
+    square = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+    fwd["boundary"] = {"source": "outline", "outline": [[0.0, 0.0], [100.0, 100.0]], "cl": square}
+    rev = derive_reverse(fwd, _reverse_ident())
+    assert rev["boundary"]["cl"] == [[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]]
+
+
+def test_reverse_keeps_explicitly_closed_cl_closed():
+    # A cl that repeats its first point at the end stays explicitly closed on both ends.
+    fwd = _forward_record()
+    closed = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 0.0]]
+    fwd["boundary"] = {"source": "outline", "outline": [[0.0, 0.0], [100.0, 100.0]], "cl": closed}
+    rev = derive_reverse(fwd, _reverse_ident())
+    assert rev["boundary"]["cl"] == [[0.0, 0.0], [10.0, 10.0], [10.0, 0.0], [0.0, 0.0]]
+
+
+def test_reverse_lap_short_cl_is_copied():
+    # Fewer than 3 points can't describe a lap: copied unchanged (a 2-point "line" has no direction
+    # worth anchoring), and never the same list object as the parent's.
+    from rkb.reverse import _reverse_lap
+    two = [[0.0, 0.0], [1.0, 0.0]]
+    out = _reverse_lap(two)
+    assert out == two and out is not two

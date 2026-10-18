@@ -136,7 +136,7 @@ for (a, b) in segs:
     # radius: min over the segment core (representative corner tightness at the apex)
     core = slice(max(a, ai-15), min(b+1, ai+16))
     Rapex = float(np.min(SPs[core] / np.maximum(np.abs(YRs[core]), 1e-3)))
-    direction = "left" if YRs[ai] > 0 else "right"
+    direction = "right" if YRs[ai] > 0 else "left"   # GT7 y-up world: +heading rate = RIGHT (see rkb.corners.turn_direction)
     # ---- 4-phase ----
     # braking zone: last brake-onset (>8%) before apex within a lookback
     look = range(max(a-90, 0), ai)

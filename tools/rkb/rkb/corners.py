@@ -83,6 +83,18 @@ def select_lap(rows):
     return cands[0][0]
 
 
+def turn_direction(heading_rate) -> str:
+    """Left/right for a signed rate of change of heading atan2(z, x) in GT7's world frame.
+
+    GT7's world is right-handed with y UP, so seen from above +z is 90 deg CLOCKWISE
+    of +x (z = x cross y): an INCREASING atan2(z, x) is a RIGHT turn -- the mirror of
+    the textbook x-right/y-up plane. Verified on real laps (tests/test_direction.py):
+    the inner (more-steered) front wheel and GT7's angular_velocity_y (negative in
+    right-handers) agree, and Suzuka T1 / Spa La Source come out right.
+    """
+    return "right" if heading_rate > 0 else "left"
+
+
 def _smooth(a, w=9):
     k = np.ones(w) / w
     return np.convolve(np.concatenate([a[-w:], a, a[:w]]), k, mode="same")[w:-w]
@@ -208,7 +220,7 @@ def detect_corners(rows):
         # radius: min over the segment core (representative corner tightness at the apex)
         core = slice(max(a, ai - 15), min(b + 1, ai + 16))
         Rapex = float(np.min(SPs[core] / np.maximum(np.abs(YRs[core]), 1e-3)))
-        direction = "left" if YRs[ai] > 0 else "right"
+        direction = turn_direction(YRs[ai])
         # ---- 4-phase ----
         # braking zone: last brake-onset (>8%) before apex within a lookback
         look = range(max(a - 90, 0), ai)
@@ -270,6 +282,14 @@ def corners_from_outline(outline_px, affine):
     """Fallback corners from coarse SVG-outline curvature (position-only heading change).
 
     `outline_px` is a closed polyline of (px, py) points. No telemetry required.
+
+    `direction` is always None (unknown): the SVG path's drawing order is not the
+    driving direction (forward and reverse twins share one outline), so the sign of
+    its curvature says nothing about left vs right. An unverified direction must
+    never be stored as fact; provenance still records these corners as
+    `outline_curvature`. For the same reason `heading_change_deg` is stored as an
+    unsigned magnitude (its sign would encode that drawing order), matching the
+    driven-lap and derived-reverse corners, which are unsigned too.
     """
     if len(outline_px) < 4:
         return []
@@ -284,6 +304,6 @@ def corners_from_outline(outline_px, affine):
         if abs(dh) >= 25:
             out.append({"turn": len(out) + 1, "apex_world": [float(b[0]), float(b[1])],
                         "source": "outline_curvature", "apex_is_label": False,
-                        "radius_m": None, "direction": "left" if dh > 0 else "right",
-                        "heading_change_deg": round(dh, 1), "type": None})
+                        "radius_m": None, "direction": None,
+                        "heading_change_deg": round(abs(dh), 1), "type": None})
     return out

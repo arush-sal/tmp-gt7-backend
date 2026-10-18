@@ -14,11 +14,11 @@ while the rest of the pipeline is a self-contained Python package (`rkb/`).
 
 ```bash
 cd backend/tools/rkb
-./.venv/bin/python -m rkb.build
+./.venv/bin/python -m rkb
 ```
 
-(`rkb.build` is the pipeline entrypoint added in a later task; this task only
-scaffolds the package and relocates the prototype scripts.)
+(`rkb/__main__.py` is the pipeline entry point; it calls `rkb.build.build_all`
+with the default data paths.)
 
 To rebuild the `pcap2csv` decoder from the backend module root:
 
