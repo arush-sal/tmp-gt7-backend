@@ -163,6 +163,7 @@ body {
 }
 
 .right-panel-wrap {
+  position: relative;
   width: 318px;
   flex-shrink: 0;
   display: flex;
@@ -424,6 +425,11 @@ body {
   padding: 2px 7px;
   border-radius: 6px;
 }
+
+.telemetry-dock__toggle--right { right: auto; left: 6px; }
+/* Doubled class: this sits before the base .telemetry-reopen rule, whose `left` would otherwise win and
+   stretch the button across the whole column. */
+.telemetry-reopen.telemetry-reopen--right { left: auto; right: 14px; }
 
 /* Shown only when the dock is collapsed: a small handle to bring it back. Sits below the
    track-trace header row so it never covers the "Track Trace" heading. */

@@ -16,7 +16,7 @@ import { useSectorTimes } from "../hooks/useSectorTimes";
 import { useSessions } from "../hooks/useSessions";
 import { usePlayback } from "../hooks/usePlayback";
 import type { AppMode } from "../hooks/useMode";
-import { UNKNOWN_TRACK, analysisTracks, defaultAnalysisLap, reconcileAnalysis, trackKey } from "../lib/analysisSelection";
+import { UNKNOWN_TRACK, analysisTracks, defaultAnalysisLap, fastestLapNumber, reconcileAnalysis, trackKey } from "../lib/analysisSelection";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
@@ -45,6 +45,13 @@ import FloatingPanel from "./telemetry/FloatingPanel";
 import CornerDetailPanel from "./CornerDetailPanel";
 import RightPanel from "./RightPanel";
 import PeaksTable from "./PeaksTable";
+
+// Open/closed state of a dock panel, persisted under its own localStorage key (default open).
+function usePersistedOpen(key: string) {
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem(key) !== "0"; } catch { return true; } });
+  useEffect(() => { try { localStorage.setItem(key, open ? "1" : "0"); } catch { /* no storage */ } }, [key, open]);
+  return [open, setOpen] as const;
+}
 
 export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange, recordSlot, mode = "live" }: {
   source?: LiveSource; recordSlot?: HTMLElement | null; theme?: "light" | "dark"; onLiveChange?: (live: boolean) => void;
@@ -129,12 +136,8 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
 
   // Telemetry panel is docked on the left of the track area. Collapsing hides it entirely so
   // the track canvas fills the freed width; the open/closed choice persists across refreshes.
-  const [telemetryOpen, setTelemetryOpen] = useState(() => {
-    try { return localStorage.getItem("gt7:telemetry-open") !== "0"; } catch { return true; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem("gt7:telemetry-open", telemetryOpen ? "1" : "0"); } catch { /* no storage */ }
-  }, [telemetryOpen]);
+  const [telemetryOpen, setTelemetryOpen] = usePersistedOpen("gt7:telemetry-open");
+  const [detailsOpen, setDetailsOpen] = usePersistedOpen("gt7:details-open");
 
   // Dock width: `dockWidth` is the user's preference; the rendered width is clamped to the measured
   // .center-column so the track panel keeps its minimum. Shrinking the window never overwrites the
@@ -311,7 +314,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     try { await pinReference(slug, viewSessionId, lap); setPinVersion(v => v + 1); }
     catch (e) { setRefError(refErrorText(e)); }
   };
-  // Lap History list: every completed racing lap with its time, ascending; fastest flagged.
+  // Lap History list: every completed racing lap with its time, ascending; fastest (complete, valid) flagged.
   const lapHistory = useMemo(() => {
     const rows = laps.laps
       .filter(l => l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.duration_ns > 0)
@@ -322,8 +325,8 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
         isRef: selectedRef.stored != null && l.track_slug === refSlug
           && selectedRef.stored.session_id === viewSessionId && selectedRef.stored.lap_number === l.lap_number,
       }));
-    const bestNs = rows.reduce((m, r) => (m === 0 || r.durationNs < m ? r.durationNs : m), 0);
-    return rows.map(r => ({ lap: r.lap, time: r.time, best: r.durationNs === bestNs, canSetRef: r.canSetRef, isRef: r.isRef }));
+    const fastest = fastestLapNumber(laps.laps, totalLaps); // shared eligibility: complete + valid only
+    return rows.map(r => ({ lap: r.lap, time: r.time, best: r.lap === fastest, canSetRef: r.canSetRef, isRef: r.isRef }));
   }, [laps.laps, totalLaps, selectedRef.stored, refSlug, viewSessionId]);
   // "All laps" overlay: fetch every completed lap's trace (cache-first) only while "all" is selected.
   const allLapViews = useAllLapTraces(viewSessionId, selectedLap === "all" ? lapHistory.map(l => l.lap) : []);
@@ -678,6 +681,17 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               graphs ▶
             </button>
           )}
+          {!detailsOpen && (
+            <button
+              type="button"
+              className="telemetry-reopen telemetry-reopen--right chip"
+              onClick={() => setDetailsOpen(true)}
+              aria-label="show details"
+              title="show details"
+            >
+              ◀ details
+            </button>
+          )}
           <div className="track-panel">
             <TrackTraceCanvas
               store={history}
@@ -743,7 +757,16 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
           )}
         </div>
 
-        <div className="right-panel-wrap">
+        {detailsOpen && <div className="right-panel-wrap">
+          <button
+            type="button"
+            className="telemetry-dock__toggle telemetry-dock__toggle--right chip"
+            onClick={() => setDetailsOpen(false)}
+            aria-label="hide details"
+            title="hide details"
+          >
+            ▶
+          </button>
           <RightPanel
             view={displayView}
             corners={corners}
@@ -775,7 +798,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               ) : null
             }
           />
-        </div>
+        </div>}
       </div>
     </>
   );

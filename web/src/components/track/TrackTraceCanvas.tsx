@@ -73,6 +73,7 @@ export default function TrackTraceCanvas(props: {
   // the graphs), instead of the canvas's own spatial zoom used in live mode.
   const windowed = analysisLap != null;
   const [showReference, setShowReference] = useState(true);
+  const [showCurrent, setShowCurrent] = useState(true); // our lap's line; the scrub/car marker is drawn separately and stays
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<Konva.Stage | null>(null);
@@ -169,7 +170,7 @@ export default function TrackTraceCanvas(props: {
   // redraw trace layer immediately on view/theme/selectedLap/reference change (independent of rAF)
   useEffect(() => {
     traceLayerRef.current?.batchDraw();
-  }, [view.scale, view.offsetX, view.offsetZ, theme, selectedLap, referenceLap, showReference, overlayLaps]);
+  }, [view.scale, view.offsetX, view.offsetZ, theme, selectedLap, referenceLap, showReference, showCurrent, overlayLaps]);
 
   // Shared center-anchored zoom math: given the current view/zoom and a factor, compute
   // the clamped new zoom plus the manualView that keeps `pointer` (screen coords, relative
@@ -300,6 +301,15 @@ export default function TrackTraceCanvas(props: {
               {showReference ? "reference on" : "reference off"}
             </button>
           )}
+          <button
+            type="button"
+            className="chip"
+            onClick={() => setShowCurrent(v => !v)}
+            aria-pressed={showCurrent}
+            title="toggle your lap's line"
+          >
+            {showCurrent ? "current on" : "current off"}
+          </button>
           {referenceControl}
           <button type="button" className="chip" onClick={handleExportPng}>export png</button>
         </div>
@@ -333,6 +343,7 @@ export default function TrackTraceCanvas(props: {
                   trace: store.trace(), view, theme, select: selectedLap,
                   analysisLap: analysisLap ?? undefined,
                   referenceLap: showReference ? referenceLap : null,
+                  showCurrent,
                   overlayLaps,
                 });
               }}

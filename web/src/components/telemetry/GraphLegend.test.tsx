@@ -10,10 +10,15 @@ describe("GraphLegend — single-series", () => {
     expect(onToggle).toHaveBeenCalledWith("median");
   });
 
-  it("does not render 'current' as a button, but its label is present", () => {
-    render(<GraphLegend variant="single" channels={["speed"]} hidden={[]} medianAvailable={true} referenceAvailable={false} onToggle={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: /current/i })).toBeNull();
-    expect(screen.getByText(/current/i)).toBeInTheDocument();
+  it("renders current as a toggle button: pressed when shown, calls onToggle('actual')", () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(<GraphLegend variant="single" channels={["speed"]} hidden={[]} medianAvailable={true} referenceAvailable={false} onToggle={onToggle} />);
+    const btn = screen.getByRole("button", { name: /current/i });
+    expect(btn).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(btn);
+    expect(onToggle).toHaveBeenCalledWith("actual");
+    rerender(<GraphLegend variant="single" channels={["speed"]} hidden={["actual"]} medianAvailable={true} referenceAvailable={false} onToggle={onToggle} />);
+    expect(screen.getByRole("button", { name: /current/i })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("colours the median chip to match its line", () => {

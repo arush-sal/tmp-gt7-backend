@@ -5,6 +5,7 @@ import { decimate, penUpBreaks } from "../../lib/traceDecimate";
 
 const TOOTH_STEP = 7; // px, fixed arc-length step between sawtooth vertices
 const TOOTH_AMP = 3;  // px, perpendicular offset amplitude
+const BRAKE_SAWTOOTH_COLOR = "rgba(225,6,0,0.9)"; // the driver lap's brake marking; the reference uses its own colour
 
 // Resample a screen-space polyline at a fixed arc-length step, offsetting each
 // vertex perpendicular to the local segment direction by alternating +/- amp.
@@ -41,11 +42,11 @@ function sawtoothPoints(pts: ReadonlyArray<{ sx: number; sy: number }>, step: nu
 
 // Regular sawtooth ribbon drawn on top of the racing line, confined to brake spans.
 function drawBrakeSawtooth(ctx: CanvasRenderingContext2D, keptPts: ReadonlyArray<TracePoint>,
-  spans: ReadonlyArray<[number, number]>, view: View, alpha: number) {
+  spans: ReadonlyArray<[number, number]>, view: View, alpha: number, color = BRAKE_SAWTOOTH_COLOR) {
   if (spans.length === 0) return;
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = "rgba(225,6,0,0.9)";
+  ctx.strokeStyle = color;
   ctx.lineWidth = 2.2;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -64,8 +65,9 @@ function drawBrakeSawtooth(ctx: CanvasRenderingContext2D, keptPts: ReadonlyArray
 }
 
 // The predicted (reference) lap's drive-line: a single flat VIOLET solid stroke — deliberately NOT
-// the per-segment throttle/brake colouring (and no brake sawtooth), so it reads as one clearly
-// distinct line beside the driver's green/red/amber/white line. Matches REFERENCE_COLOR (graphs).
+// the per-segment throttle/brake colouring, so it reads as one clearly
+// distinct line beside the driver's green/red/amber/white line. Its brake spans get the same sawtooth
+// as the driver's, but in the reference colour. Matches REFERENCE_COLOR (graphs).
 // The predicted lap is spliced from fastest-sector segments of different laps, so its position jumps
 // at splice boundaries (measured ~69 m in 0.1 s ≈ 678 m/s) — break the line there with a TIGHT
 // teleport ceiling (100 m/s -> 400 m/s w/ penUpBreaks' 4x margin; the driver line's 200 was too loose
@@ -99,6 +101,20 @@ function drawReferenceLine(ctx: CanvasRenderingContext2D, pts: ReadonlyArray<Tra
   }
   ctx.stroke();
   ctx.restore();
+  // Same brake marking as the driver line (same brakeSpans threshold), in the reference colour. Spans are
+  // split at splice teleports so a tooth ribbon never bridges the jump.
+  const keptPts = keep.map(i => pts[i]);
+  const spans: Array<[number, number]> = [];
+  for (const [a, b] of brakeSpans(keptPts.map(p => p.brake))) {
+    let from = a;
+    for (let k = a + 1; k <= b; k++) {
+      let cut = false;
+      for (let o = keep[k - 1] + 1; o <= keep[k]; o++) if (breaks.has(o)) { cut = true; break; }
+      if (cut) { spans.push([from, k - 1]); from = k; }
+    }
+    spans.push([from, b]);
+  }
+  drawBrakeSawtooth(ctx, keptPts, spans, view, 0.9, REFERENCE_LINE_COLOR);
 }
 
 function drawLap(ctx: CanvasRenderingContext2D, pts: ReadonlyArray<TracePoint>, view: View,
@@ -139,10 +155,12 @@ export function drawTrace(ctx: CanvasRenderingContext2D, opts: {
   analysisLap?: readonly TracePoint[];
   referenceLap?: readonly TracePoint[] | null; // predicted lap; drawn beneath the driver line
   overlayLaps?: ReadonlyArray<readonly TracePoint[]>; // "all" mode: every completed lap, faint
+  showCurrent?: boolean; // false hides the driver's line (and brake marks); the reference is unaffected
 }) {
   const select = opts.select ?? "all";
   // Reference line first, so the driver's line sits on top of it.
   if (opts.referenceLap && opts.referenceLap.length > 1) drawReferenceLine(ctx, opts.referenceLap, opts.view);
+  if (opts.showCurrent === false) return;
   if (select === "all") {
     // Overlay every completed lap faintly; fall back to the live buffer when none are loaded yet.
     if (opts.overlayLaps?.length) {

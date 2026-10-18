@@ -76,6 +76,25 @@ describe("Dashboard (live)", () => {
     expect(screen.getByText(/connecting|waiting|no telemetry/i)).toBeTruthy();
   });
 
+  it("hides and re-opens the right details panel, persisting under its own key", () => {
+    localStorage.clear();
+    const { source, push } = fakeSource();
+    const { unmount } = render(<Dashboard source={source} />);
+    act(() => push());
+    expect(screen.getByText("87°C")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "hide details" }));
+    expect(screen.queryByText("87°C")).toBeNull();
+    expect(localStorage.getItem("gt7:details-open")).toBe("0");
+    expect(localStorage.getItem("gt7:telemetry-open")).not.toBe("0"); // left panel unaffected
+    unmount();
+    const r = fakeSource();
+    render(<Dashboard source={r.source} />);
+    act(() => r.push());
+    expect(screen.queryByText("87°C")).toBeNull(); // remembered
+    fireEvent.click(screen.getByRole("button", { name: "show details" }));
+    expect(screen.getByText("87°C")).toBeTruthy();
+  });
+
   it("renders live values after a snapshot arrives", () => {
     const { source, push } = fakeSource();
     render(<Dashboard source={source} />);
@@ -833,6 +852,21 @@ describe("Dashboard (analysis mode)", () => {
     await waitFor(() => expect(sessionSelect().value).toBe("s-spa"));
     await waitFor(() => expect(calls.some(c => c.url.startsWith("/v1/sessions/s-spa/laps"))).toBe(true));
     expect(calls.filter(c => c.url.includes("gone-1"))).toEqual([]);
+  });
+
+  it("Lap History marks the fastest complete valid lap, never a session-end fragment", async () => {
+    vi.mocked(fetch).mockImplementation((async (url: string) => {
+      const u = String(url);
+      calls.push({ url: u, method: "GET" });
+      if (u === "/v1/sessions") return { ok: true, status: 200, json: async () => sessions };
+      if (/\/v1\/sessions\/[^/]+\/laps$/.test(u)) return { ok: true, status: 200, json: async () => [
+        lapRow(1, "spa"), { ...lapRow(2, "spa"), duration_ns: 80e9 },
+        { ...lapRow(5, "spa"), duration_ns: 0.198e9, complete: false, valid: false }] };
+      return { ok: true, status: 200, json: async () => [] };
+    }) as never);
+    const { container } = render(<Analysis />);
+    await waitFor(() => expect(container.querySelectorAll(".lap-best-hl")).toHaveLength(1));
+    expect(container.querySelector(".lap-best-hl")!.textContent).toBe("1:20.000");
   });
 
   it("speed peaks compare vs the stored reference lap when it is in this session", async () => {

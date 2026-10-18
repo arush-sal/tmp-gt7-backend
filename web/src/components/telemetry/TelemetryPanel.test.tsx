@@ -52,6 +52,20 @@ describe("TelemetryPanel", () => {
     expect(screen.queryByText(/^Speed$/)).toBeNull();
   });
 
+  it("toggles current per card and persists it in hidden", () => {
+    const KEY = "gt7:test-panel-current";
+    localStorage.clear();
+    const store = createHistoryStore();
+    const { unmount } = render(<TelemetryPanel store={store} storageKey={KEY} />);
+    const speed = () => within(screen.getByText(/^Speed$/).closest(".accordion-item") as HTMLElement);
+    fireEvent.click(speed().getByRole("button", { name: /current/i }));
+    expect(speed().getByRole("button", { name: /current/i })).toHaveAttribute("aria-pressed", "false");
+    expect(JSON.parse(localStorage.getItem(KEY)!).cards.speed.hidden).toContain("actual");
+    unmount();
+    render(<TelemetryPanel store={store} storageKey={KEY} />);
+    expect(speed().getByRole("button", { name: /current/i })).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("adds a card from the picker and persists it across remount", () => {
     const KEY = "gt7:test-panel-add";
     localStorage.clear();

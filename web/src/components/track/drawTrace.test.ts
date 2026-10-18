@@ -219,3 +219,46 @@ test("a numeric select with no analysisLap draws nothing", () => {
   });
   expect(calls.length).toBe(0);
 });
+
+// Recording ctx: every stroke() captures the active strokeStyle/lineWidth.
+function recCtx() {
+  const strokes: Array<{ style: unknown; width: unknown }> = [];
+  const st: { strokeStyle: unknown; lineWidth: unknown } = { strokeStyle: undefined, lineWidth: undefined };
+  const ctx = new Proxy({}, {
+    get: (_t, p) => {
+      if (p === "strokeStyle") return st.strokeStyle;
+      if (p === "lineWidth") return st.lineWidth;
+      if (p === "stroke") return () => { strokes.push({ style: st.strokeStyle, width: st.lineWidth }); };
+      return () => {};
+    },
+    set: (_t, p, v) => { if (p === "strokeStyle") st.strokeStyle = v; if (p === "lineWidth") st.lineWidth = v; return true; },
+  }) as any;
+  return { ctx, strokes };
+}
+const brakingLap = [0, 5, 10, 15, 20, 25, 30].map((x, i) => ({
+  posX: x, posZ: 0, throttle: i >= 2 && i <= 4 ? 0 : 100, brake: i >= 2 && i <= 4 ? 80 : 0, surface: "TTTT" }));
+const view = { scale: 1, offsetX: 0, offsetZ: 0 };
+
+test("reference line draws a sawtooth over its brake spans in the reference colour, not red", () => {
+  const { ctx, strokes } = recCtx();
+  drawTrace(ctx, { trace: { current: [] }, view, theme: "dark", select: "current", referenceLap: brakingLap });
+  const saw = strokes.filter(s => s.width === 2.2);
+  expect(saw.length).toBeGreaterThan(0);
+  expect(saw.every(s => s.style === "#F433FF")).toBe(true);
+  expect(strokes.some(s => s.style === "rgba(225,6,0,0.9)")).toBe(false);
+});
+
+test("reference line with no braking has no sawtooth", () => {
+  const { ctx, strokes } = recCtx();
+  drawTrace(ctx, { trace: { current: [] }, view, theme: "dark", select: "current",
+    referenceLap: brakingLap.map(p => ({ ...p, brake: 0, throttle: 100 })) });
+  expect(strokes.filter(s => s.width === 2.2).length).toBe(0);
+});
+
+test("showCurrent=false hides the lap line and its brake marks but keeps the reference", () => {
+  const { ctx, strokes } = recCtx();
+  drawTrace(ctx, { trace: { current: brakingLap }, view, theme: "dark", select: "current", showCurrent: false, referenceLap: brakingLap });
+  expect(strokes.filter(s => s.width === 3).length).toBe(0);
+  expect(strokes.some(s => s.style === "rgba(225,6,0,0.9)")).toBe(false);
+  expect(strokes.some(s => s.style === "#F433FF" && s.width === 2)).toBe(true);
+});

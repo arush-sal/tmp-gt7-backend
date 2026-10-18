@@ -32,14 +32,24 @@ export function reconcileAnalysis(sessions: S[], id: string | null, track: strin
 
 type L = { lap_number: number; duration_ns: number; complete: boolean; valid: boolean };
 
+/** racingComplete: a real racing lap with a time (not formation 0, not cooldown > totalLaps when totalLaps > 0), complete. */
+const racingComplete = (l: L, totalLaps: number) =>
+  l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.complete && l.duration_ns > 0;
+
+/**
+ * fastestLapNumber is the fastest valid complete racing lap, or null. The one definition of "fastest":
+ * an incomplete session-end fragment (a fraction of a second) can never be it.
+ */
+export function fastestLapNumber(laps: L[], totalLaps: number): number | null {
+  const best = laps.filter(l => racingComplete(l, totalLaps) && l.valid).sort((a, b) => a.duration_ns - b.duration_ns)[0];
+  return best?.lap_number ?? null;
+}
+
 /**
  * defaultAnalysisLap picks the lap analysis opens on: the fastest valid complete lap, else the last
- * complete lap, else "all". Formation (0) and cooldown (> totalLaps, when totalLaps > 0) laps never count,
- * so a session-end fragment (incomplete, a fraction of a second) is never the default.
+ * complete lap, else "all".
  */
 export function defaultAnalysisLap(laps: L[], totalLaps: number): number | "all" {
-  const racing = laps.filter(l => l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.complete && l.duration_ns > 0);
-  const best = racing.filter(l => l.valid).sort((a, b) => a.duration_ns - b.duration_ns)[0];
-  const last = racing.sort((a, b) => b.lap_number - a.lap_number)[0];
-  return best?.lap_number ?? last?.lap_number ?? "all";
+  const last = laps.filter(l => racingComplete(l, totalLaps)).sort((a, b) => b.lap_number - a.lap_number)[0];
+  return fastestLapNumber(laps, totalLaps) ?? last?.lap_number ?? "all";
 }

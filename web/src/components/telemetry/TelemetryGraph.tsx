@@ -111,6 +111,9 @@ export default function TelemetryGraph({
     ...channelsRef.current,
   ];
 
+  // The current series is keyed by its channel name but toggled via the legend's "actual" key.
+  const isHidden = (h: string[], key: string) => h.includes(key) || (h.includes("actual") && channelsRef.current.length === 1 && key === channelsRef.current[0]);
+
   const strokeFor = (key: string): string =>
     key === "reference" ? REFERENCE_COLOR : key === "median" ? MEDIAN_COLOR : CHANNEL_COLOR[key as Channel];
 
@@ -219,7 +222,7 @@ export default function TelemetryGraph({
           dash: s.dash,
           width: 1.5,
           points: { show: false },
-          show: !hiddenRef.current.includes(s.key),
+          show: !isHidden(hiddenRef.current, s.key),
         })),
       ],
       axes: [
@@ -324,7 +327,7 @@ export default function TelemetryGraph({
   useLayoutEffect(() => {
     const u = uRef.current;
     if (!u) return;
-    orderedSeriesKeys().forEach((key, i) => u.setSeries(i + 1, { show: !(hidden ?? []).includes(key) }));
+    orderedSeriesKeys().forEach((key, i) => u.setSeries(i + 1, { show: !isHidden(hidden ?? [], key) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hidden]);
 

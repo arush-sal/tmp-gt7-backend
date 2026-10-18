@@ -13,8 +13,8 @@ interface Props {
 }
 
 // A clickable legend. Single-series cards show actual/median/reference; multi-series cards show
-// one chip per channel. Reference is disabled (no data) until the backend ships it. "current" is
-// compulsory (always visible) so it renders as a static, non-interactive chip rather than a toggle.
+// one chip per channel. Reference is disabled (no data) until the backend ships it. "current" is a toggle too
+// (hidden key "actual", since the current series is keyed by its channel name).
 // On hover, each chip appends the value at the cursor (lifted from the plot — see TelemetryGraph),
 // so the readout never covers the line.
 export default function GraphLegend({ variant, channels, hidden, medianAvailable, referenceAvailable, onToggle, hover = null }: Props) {
@@ -40,21 +40,12 @@ export default function GraphLegend({ variant, channels, hidden, medianAvailable
     );
   };
 
-  const staticChip = (key: string, label: string, color: string, seriesKey: string) => {
-    const val = hover?.values[seriesKey];
-    return (
-      <span key={key} className="chip chip--static" style={{ color }} title={`${label}${val != null ? ` ${val}` : ""}`}>
-        {label}{val != null ? ` ${val}` : ""}
-      </span>
-    );
-  };
-
   if (variant === "multi") {
     return <div className="graph-legend">{channels.map(c => chip(c, c, CHANNEL_COLOR[c], c))}</div>;
   }
   return (
     <div className="graph-legend">
-      {staticChip("actual", "— current", CHANNEL_COLOR[channels[0]], channels[0])}
+      {chip("actual", "— current", CHANNEL_COLOR[channels[0]], channels[0])}
       {chip("median", "— median", MEDIAN_COLOR, "median", !medianAvailable)}
       {chip("reference", "— reference", REFERENCE_COLOR, "reference", !referenceAvailable)}
     </div>

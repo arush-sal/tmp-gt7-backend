@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { UNKNOWN_TRACK, trackKey, analysisTracks, reconcileAnalysis, defaultAnalysisLap } from "./analysisSelection";
+import { UNKNOWN_TRACK, trackKey, analysisTracks, reconcileAnalysis, defaultAnalysisLap, fastestLapNumber } from "./analysisSelection";
 
 const s = (id: string, track_slug: string | null) => ({ id, track_slug });
 
@@ -46,5 +46,10 @@ describe("analysisSelection", () => {
     expect(defaultAnalysisLap([lap(1, 92, { valid: false }), lap(2, 95, { valid: false }), lap(3, 1, { complete: false })], 0)).toBe(2);
     expect(defaultAnalysisLap([lap(1, 1, { complete: false, valid: false })], 0)).toBe("all");
     expect(defaultAnalysisLap([], 0)).toBe("all");
+  });
+  it("fastestLapNumber: shortest complete valid racing lap; a partial fragment never wins", () => {
+    expect(fastestLapNumber([lap(1, 92), lap(2, 90), lap(5, 0.198, { complete: false, valid: false })], 0)).toBe(2);
+    expect(fastestLapNumber([lap(1, 92, { valid: false }), lap(2, 1, { complete: false })], 0)).toBeNull();
+    expect(fastestLapNumber([lap(0, 60), lap(1, 92), lap(3, 50)], 2)).toBe(1);
   });
 });
