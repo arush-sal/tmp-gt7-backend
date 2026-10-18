@@ -301,7 +301,10 @@ func TestTrackDetector_ReleasesWhenPersistentlyOff(t *testing.T) {
 	enrich := &fakeEnricher{}
 	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, enrich, nil)
 	var locks []string
-	d.OnLock = func(id string, since time.Time, slug string) { locks = append(locks, slug) }
+	d.OnLock = func(_ context.Context, id string, _ processing.TimeSpan, slug string) error {
+		locks = append(locks, slug)
+		return nil
+	}
 	rec := &session.Record{ID: "s1"}
 	d.OnSessionStart(rec)
 	feedFrames(d, "s1", lapFraction(0.95))
@@ -334,11 +337,7 @@ func TestTrackDetector_TwoTracksInOneSession_LabelsEachStint(t *testing.T) {
 	}
 	store := processing.NewMemLapStore()
 	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, &fakeEnricher{}, nil)
-	d.OnLock = func(id string, since time.Time, slug string) {
-		if err := store.LabelTrack(id, since, slug); err != nil {
-			t.Error(err)
-		}
-	}
+	d.OnLock = store.LabelTrack
 	seg := processing.NewLapSegmenter(store)
 	seg.TrackFn = d.Track
 
@@ -610,16 +609,21 @@ func TestTrackDetector_DirectionSeparatesNearIdenticalLayouts(t *testing.T) {
 	}
 }
 
-// TestTrackDetector_SessionEndKeepsProvisional: a session ending before any lock rule is met leaves the
-// provisional guess as it was (ending early is not evidence for it).
-func TestTrackDetector_SessionEndKeepsProvisional(t *testing.T) {
+// TestTrackDetector_SessionEndWithdrawsProvisional: a session ending before any lock rule is met
+// withdraws its provisional guess from the published track (it was never confirmed, and the stored lap
+// labels are cleared with it), so the just-ended session's analysis cannot use a possibly wrong layout.
+func TestTrackDetector_SessionEndWithdrawsProvisional(t *testing.T) {
 	loop := circlePoints(0, 0, loopRadius, loopN)
 	geoms := []rkb.TrackGeom{
 		{Slug: "track-a", Base: 7, Points: loop, LengthM: loopLength},
 		{Slug: "track-a-long", Base: 7, Points: circlePoints(0, 0, 600, 120), LengthM: 2 * math.Pi * 600},
 	}
-	if slug, conf := lastSlug(t, runSession(t, geoms, lapFraction(0.4))); slug != "track-a" || conf != "provisional" {
-		t.Fatalf("want track-a/provisional at session end, got %s/%s", slug, conf)
+	enrich := runSession(t, geoms, lapFraction(0.4))
+	if slug, conf := lastSlug(t, enrich); slug != "track-a" || conf != "provisional" {
+		t.Fatalf("setup: want track-a/provisional published, got %s/%s", slug, conf)
+	}
+	if enrich.clears != 2 { // one at session start, one withdrawing the provisional guess at the end
+		t.Fatalf("ClearTrack calls = %d, want 2 (start + end withdrawal)", enrich.clears)
 	}
 }
 
@@ -861,7 +865,11 @@ func TestTrackDetector_SlowOnLockDoesNotHoldTheSession(t *testing.T) {
 	}
 	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, &fakeEnricher{}, nil)
 	entered, release := make(chan struct{}), make(chan struct{})
-	d.OnLock = func(string, time.Time, string) { close(entered); <-release }
+	d.OnLock = func(context.Context, string, processing.TimeSpan, string) error {
+		close(entered)
+		<-release
+		return nil
+	}
 	rec := &session.Record{ID: "s1"}
 	d.OnSessionStart(rec)
 	done := make(chan struct{})
@@ -887,4 +895,312 @@ func TestTrackDetector_SlowOnLockDoesNotHoldTheSession(t *testing.T) {
 	}
 	close(release)
 	<-done
+}
+
+// endToEndLabels drives legs through the real segmenter + lap store + detector wired as the backend
+// wires them (segmenter before detector; OnLock backfills; OnEnd clears provisional labels outside the
+// spans whose backfill failed). labelFailures is how many LabelTrack calls fail first (-1: all of them).
+// It returns the stored laps by lap number as they were just before OnEnd's clear ran (before) and
+// after the session ended (after).
+func endToEndLabels(t *testing.T, geoms []rkb.TrackGeom, legs []legPoints, labelFailures int) (before, after map[int32]*processing.Lap) {
+	t.Helper()
+	store := processing.NewMemLapStore()
+	snapshot := func() map[int32]*processing.Lap {
+		out := map[int32]*processing.Lap{}
+		for _, l := range store.BySession("s1") {
+			out[l.LapNumber] = l
+		}
+		return out
+	}
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, &fakeEnricher{}, nil)
+	failures := labelFailures
+	d.OnLock = func(ctx context.Context, id string, span processing.TimeSpan, slug string) error {
+		if failures != 0 {
+			if failures > 0 {
+				failures--
+			}
+			return errors.New("label failed")
+		}
+		return store.LabelTrack(ctx, id, span, slug)
+	}
+	d.OnEnd = func(ctx context.Context, id string, keep []processing.TimeSpan) {
+		before = snapshot()
+		if err := store.ClearProvisionalLabels(ctx, id, keep...); err != nil {
+			t.Error(err)
+		}
+	}
+	seg := processing.NewLapSegmenter(store)
+	seg.TrackFn = d.Track
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	d.OnSessionStart(rec)
+	base := time.Unix(1_700_000_000, 0)
+	n := 0
+	for _, l := range legs {
+		for _, p := range l.pts {
+			f := posFrame(true, float32(p[0]), float32(p[1]), l.lap, uint32(n))
+			f.RecvTimestamp = timestamppb.New(base.Add(time.Duration(n) * time.Second / 60))
+			f.LastLap = durationpb.New(time.Minute)
+			n++
+			seg.OnFrame("s1", f)
+			d.OnFrame("s1", f)
+		}
+	}
+	seg.OnSessionEnd(rec)
+	d.OnSessionEnd(rec)
+	return before, snapshot()
+}
+
+// legPoints is the points driven while the game's lap counter reads lap.
+type legPoints struct {
+	lap int32
+	pts [][2]float64
+}
+
+// TestTrackDetector_NeverLocked_ClearsProvisionalAtEnd: a session that never confirms a track keeps no
+// provisional label once it ends (the guess was often wrong: HSR-reverse as another layout).
+func TestTrackDetector_NeverLocked_ClearsProvisionalAtEnd(t *testing.T) {
+	// A quarter of a loop is below the coverage a lock needs but fits track-a as a provisional guess.
+	loop := jitterPoints(circlePoints(0, 0, loopRadius, loopN))
+	geoms := []rkb.TrackGeom{{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength}, farTrack()}
+	before, after := endToEndLabels(t, geoms, []legPoints{{0, loop[:60]}, {1, loop[60:120]}, {2, loop[120:150]}}, 0)
+	provisional := 0
+	for _, l := range before {
+		if l.TrackConfidence == processing.ConfidenceProvisional {
+			provisional++
+		}
+	}
+	if provisional == 0 {
+		t.Fatalf("setup: no provisional lap before the end: %+v", before)
+	}
+	for n, l := range after {
+		if l.TrackSlug != "" || l.TrackConfidence != "" {
+			t.Errorf("lap %d = %q/%q after end, want none", n, l.TrackSlug, l.TrackConfidence)
+		}
+	}
+}
+
+// TestTrackDetector_Locked_KeepsConfidentAtEnd: a session that locks keeps its confident labels.
+func TestTrackDetector_Locked_KeepsConfidentAtEnd(t *testing.T) {
+	loop := jitterPoints(circlePoints(0, 0, loopRadius, loopN))
+	geoms := []rkb.TrackGeom{{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength}, farTrack()}
+	_, after := endToEndLabels(t, geoms, []legPoints{{0, loop[:100]}, {1, loop[100:]}, {2, loop}, {3, loop[:100]}}, 0)
+	if len(after) == 0 {
+		t.Fatal("no laps stored")
+	}
+	for n, l := range after {
+		if l.TrackSlug != "track-a" || l.TrackConfidence != processing.ConfidenceConfident {
+			t.Errorf("lap %d = %q/%q, want track-a/confident", n, l.TrackSlug, l.TrackConfidence)
+		}
+	}
+}
+
+// TestTrackDetector_SecondStintNeverLocks_KeepsFirstClearsSecond: stint 1 locks track-a and keeps it;
+// after the release, stint 2 (a path matching nothing for long enough to lock) is cleared at the end.
+func TestTrackDetector_SecondStintNeverLocks_KeepsFirstClearsSecond(t *testing.T) {
+	loopA := jitterPoints(circlePoints(0, 0, loopRadius, loopN))
+	// track-b's reference is only the first quarter of the second loop, so driving it never completes
+	// enough coverage to lock but does fit as a provisional guess.
+	loopB := circlePoints(20000, 0, 400, 480)
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		{Slug: "track-b", Points: circlePoints(20000, 0, 400, 480), LengthM: 2 * math.Pi * 400},
+		farTrack(),
+	}
+	jb := jitterPoints(loopB)
+	before, after := endToEndLabels(t, geoms, []legPoints{
+		{0, loopA[:100]}, {1, loopA[100:]}, {2, loopA}, {3, loopA[:100]},
+		{4, jb[:100]}, {5, jb[100:140]}, {6, jb[140:170]},
+	}, 0)
+	sawProvisional := false
+	for _, l := range before {
+		sawProvisional = sawProvisional || l.TrackConfidence == processing.ConfidenceProvisional
+	}
+	if !sawProvisional {
+		t.Fatalf("setup: second stint left no provisional lap: %+v", before)
+	}
+	for n, l := range after {
+		if n <= 2 && (l.TrackSlug != "track-a" || l.TrackConfidence != processing.ConfidenceConfident) {
+			t.Errorf("stint 1 lap %d = %q/%q, want track-a/confident", n, l.TrackSlug, l.TrackConfidence)
+		}
+		if n >= 5 && (l.TrackSlug != "" || l.TrackConfidence != "") {
+			t.Errorf("stint 2 lap %d = %q/%q, want none", n, l.TrackSlug, l.TrackConfidence)
+		}
+	}
+}
+
+// twoStintLegs is a session whose first stint locks track-a and whose second never locks track-b.
+func twoStintLegs() ([]rkb.TrackGeom, []legPoints) {
+	loopA := jitterPoints(circlePoints(0, 0, loopRadius, loopN))
+	jb := jitterPoints(circlePoints(20000, 0, 400, 480))
+	geoms := []rkb.TrackGeom{
+		{Slug: "track-a", Points: circlePoints(0, 0, loopRadius, loopN), LengthM: loopLength},
+		{Slug: "track-b", Points: circlePoints(20000, 0, 400, 480), LengthM: 2 * math.Pi * 400},
+		farTrack(),
+	}
+	return geoms, []legPoints{
+		{0, loopA[:100]}, {1, loopA[100:]}, {2, loopA}, {3, loopA[:100]},
+		{4, jb[:100]}, {5, jb[100:140]}, {6, jb[140:170]},
+	}
+}
+
+// TestTrackDetector_BackfillFailsOnce_RetriedAtEnd: the lock's backfill fails once; the detector retries
+// it at session end BEFORE clearing, so the laps detection confirmed end up confident, not unlabelled.
+func TestTrackDetector_BackfillFailsOnce_RetriedAtEnd(t *testing.T) {
+	geoms, legs := twoStintLegs()
+	_, after := endToEndLabels(t, geoms, legs, 1)
+	for n := int32(0); n <= 3; n++ {
+		if l := after[n]; l.TrackSlug != "track-a" || l.TrackConfidence != processing.ConfidenceConfident {
+			t.Errorf("stint 1 lap %d = %q/%q, want track-a/confident", n, l.TrackSlug, l.TrackConfidence)
+		}
+	}
+	// The retry is bounded to stint 1: the never-locked stint 2 must be cleared, not labelled track-a.
+	sawStint2 := false
+	for n, l := range after {
+		if n >= 5 {
+			sawStint2 = true
+			if l.TrackSlug != "" || l.TrackConfidence != "" {
+				t.Errorf("stint 2 lap %d = %q/%q, want none", n, l.TrackSlug, l.TrackConfidence)
+			}
+		}
+	}
+	if !sawStint2 {
+		t.Fatal("setup: no stint 2 laps")
+	}
+}
+
+// TestTrackDetector_BackfillAlwaysFails_KeepsLockedStintClearsOther: the backfill never succeeds, so the
+// locked stint's provisional laps (right, just not promoted) are kept; the never-locked stint is cleared.
+func TestTrackDetector_BackfillAlwaysFails_KeepsLockedStintClearsOther(t *testing.T) {
+	geoms, legs := twoStintLegs()
+	before, after := endToEndLabels(t, geoms, legs, -1)
+	if before[0] == nil || before[0].TrackConfidence != processing.ConfidenceProvisional {
+		t.Fatalf("setup: lap 0 should be provisional before the end: %+v", before[0])
+	}
+	for n := int32(0); n <= 3; n++ {
+		if after[n].TrackSlug != before[n].TrackSlug || after[n].TrackConfidence != before[n].TrackConfidence {
+			t.Errorf("stint 1 lap %d changed %q/%q -> %q/%q, want kept", n,
+				before[n].TrackSlug, before[n].TrackConfidence, after[n].TrackSlug, after[n].TrackConfidence)
+		}
+	}
+	sawStint2 := false
+	for n, l := range after {
+		if n >= 5 {
+			sawStint2 = true
+			if l.TrackSlug != "" || l.TrackConfidence != "" {
+				t.Errorf("stint 2 lap %d = %q/%q, want none", n, l.TrackSlug, l.TrackConfidence)
+			}
+		}
+	}
+	if !sawStint2 {
+		t.Fatal("setup: no stint 2 laps")
+	}
+}
+
+// TestTrackDetector_SessionEndDBHangIsBounded: a lock backfill retry and a clear that hang (a stuck
+// database) are cut off by the session-end timeout: OnSessionEnd returns within the bound, the timed-out
+// retry counts as failed (its span is handed to the clear as kept), and the hung clear is just abandoned.
+func TestTrackDetector_SessionEndDBHangIsBounded(t *testing.T) {
+	geoms, legs := twoStintLegs()
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, &fakeEnricher{}, nil)
+	const timeout = 100 * time.Millisecond
+	processing.SetEndTimeoutForTest(d, timeout)
+	calls := 0
+	d.OnLock = func(ctx context.Context, id string, span processing.TimeSpan, slug string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("label failed") // the mid-session backfill fails fast
+		}
+		<-ctx.Done() // the session-end retry hangs until its deadline
+		return ctx.Err()
+	}
+	var keep []processing.TimeSpan
+	clearReturned := false
+	d.OnEnd = func(ctx context.Context, id string, k []processing.TimeSpan) {
+		keep = k
+		<-ctx.Done() // the clear hangs too
+		clearReturned = true
+	}
+	rec := &session.Record{ID: "s1"}
+	d.OnSessionStart(rec)
+	for i, l := range legs {
+		for j, p := range l.pts {
+			d.OnFrame("s1", posFrame(true, float32(p[0]), float32(p[1]), l.lap, uint32(i*1000+j)))
+		}
+	}
+	start := time.Now()
+	d.OnSessionEnd(rec)
+	if took := time.Since(start); took > 10*timeout {
+		t.Errorf("OnSessionEnd took %v with a %v timeout", took, timeout)
+	}
+	if !clearReturned {
+		t.Error("clear was not cut off by its deadline")
+	}
+	if len(keep) != 1 || !keep[0].From.IsZero() {
+		t.Errorf("keep = %+v, want the failed stint's span", keep)
+	}
+}
+
+// TestTrackDetector_LockBackfillHangIsBounded: a lock backfill (OnLock) whose database call hangs must
+// not stall the ingest goroutine. fireLock bounds it like the session-end calls, and a timed-out backfill
+// counts as failed: it is retried at session end and its span is kept rather than cleared.
+func TestTrackDetector_LockBackfillHangIsBounded(t *testing.T) {
+	geoms, legs := twoStintLegs()
+	d := processing.NewTrackDetector(&fakeGeomProvider{geoms: geoms}, &fakeEnricher{}, nil)
+	const timeout = 100 * time.Millisecond
+	processing.SetEndTimeoutForTest(d, timeout)
+	d.OnLock = func(ctx context.Context, id string, span processing.TimeSpan, slug string) error {
+		<-ctx.Done() // every backfill hangs until its deadline
+		return ctx.Err()
+	}
+	var keep []processing.TimeSpan
+	d.OnEnd = func(ctx context.Context, id string, k []processing.TimeSpan) { keep = k }
+	rec := &session.Record{ID: "s1"}
+	d.OnSessionStart(rec)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i, l := range legs {
+			for j, p := range l.pts {
+				d.OnFrame("s1", posFrame(true, float32(p[0]), float32(p[1]), l.lap, uint32(i*1000+j)))
+			}
+		}
+		d.OnSessionEnd(rec)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung lock backfill stalled OnFrame/OnSessionEnd (no deadline)")
+	}
+	if len(keep) != 1 || !keep[0].From.IsZero() {
+		t.Errorf("keep = %+v, want the timed-out stint's span kept", keep)
+	}
+}
+
+// blockingGeomProvider's DetectionGeometry blocks until its context is done.
+type blockingGeomProvider struct{}
+
+func (blockingGeomProvider) DetectionGeometry(ctx context.Context) ([]rkb.TrackGeom, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestTrackDetector_GeometryLoadHangIsBounded: the lazy geometry load runs inline on the ingest goroutine
+// (OnSessionStart), so a stalled read must be cut off by its deadline: detection is then disabled for the
+// run (logged), exactly like any other load failure, and the stream keeps flowing.
+func TestTrackDetector_GeometryLoadHangIsBounded(t *testing.T) {
+	d := processing.NewTrackDetector(blockingGeomProvider{}, &fakeEnricher{}, nil)
+	processing.SetGeomTimeoutForTest(d, 100*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.OnSessionStart(&session.Record{ID: "s1"})
+		d.OnFrame("s1", posFrame(true, 1, 2, 1, 1))
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hung geometry load stalled OnSessionStart (no deadline)")
+	}
 }

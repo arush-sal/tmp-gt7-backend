@@ -2,6 +2,7 @@ package processing
 
 import (
 	"math"
+	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/rkb"
 )
@@ -134,3 +135,9 @@ func (d *TrackDetector) SampleCountForTest(sessionID string) int {
 	defer st.mu.Unlock()
 	return st.samples + len(st.pending)
 }
+
+// SetEndTimeoutForTest shortens the session-end database timeout so a hang test runs quickly.
+func SetEndTimeoutForTest(d *TrackDetector, timeout time.Duration) { d.endTimeout = timeout }
+
+// SetGeomTimeoutForTest shortens the geometry-load deadline (geomLoadTimeout) so tests needn't wait 30 s.
+func SetGeomTimeoutForTest(d *TrackDetector, timeout time.Duration) { d.geomTimeout = timeout }

@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -18,13 +19,22 @@ const (
 // ErrLapNotFound is returned by TrackRefStore.PinReference for a lap that is not stored.
 var ErrLapNotFound = errors.New("processing: lap not found")
 
+// TimeSpan is a half-open interval of lap start times [From, Until); a zero Until is open-ended.
+type TimeSpan struct{ From, Until time.Time }
+
 // TrackRefStore is the per-track side of the lap store: per-lap track labels, the stored laps of a
 // track, and the user's pinned reference lap per track. MemLapStore and PostgresLapStore implement it.
 type TrackRefStore interface {
-	// LabelTrack marks the session's laps that started at or after since and are unlabelled or
-	// provisional as slug/confident: a detector lock backfilling its own detection stint. A zero since
-	// covers the whole session (the first stint).
-	LabelTrack(sessionID string, since time.Time, slug string) error
+	// LabelTrack marks the session's laps that started inside span ([From, Until); a zero From covers
+	// from the session start, a zero Until is open-ended) and are unlabelled or provisional as
+	// slug/confident: a detector lock backfilling its own detection stint. The current stint's backfill
+	// is open-ended; a retry for an already-ended stint is bounded by that stint's end.
+	LabelTrack(ctx context.Context, sessionID string, span TimeSpan, slug string) error
+	// ClearProvisionalLabels nulls the track fields of the session's provisional laps: a lap whose
+	// detector guess was never confirmed has no trustworthy track. Run once, when the session ends
+	// (after any final lock backfill). Laps that started inside a keep span (a stint whose lock
+	// backfill failed, so its labels are right but not promoted) are left alone. Confident and unlabelled laps, and other sessions, are untouched.
+	ClearProvisionalLabels(ctx context.Context, sessionID string, keep ...TimeSpan) error
 	// Lap returns one stored lap (found false when absent).
 	Lap(sessionID string, lapNumber int32) (*Lap, bool, error)
 	// TrackLaps returns up to limit reference-eligible laps on slug (see RefEligible), fastest first,

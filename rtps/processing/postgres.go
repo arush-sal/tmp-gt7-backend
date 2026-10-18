@@ -106,13 +106,43 @@ func (s *PostgresLapStore) DeleteSession(sessionID string) error {
 	return nil
 }
 
-// LabelTrack implements TrackRefStore (one UPDATE; runs once per detector lock).
-func (s *PostgresLapStore) LabelTrack(sessionID string, since time.Time, slug string) error {
-	_, err := s.pool.Exec(context.Background(), `UPDATE laps SET track_slug=$3, track_confidence='confident'
- WHERE session_id=$1 AND start_time >= $2 AND (track_confidence IS NULL OR track_confidence='provisional')`,
-		sessionID, since, slug)
+// LabelTrack implements TrackRefStore (one UPDATE; runs once per detector lock). A zero span.Until is
+// open-ended (a NULL bound).
+func (s *PostgresLapStore) LabelTrack(ctx context.Context, sessionID string, span TimeSpan, slug string) error {
+	var until *time.Time
+	if !span.Until.IsZero() {
+		until = &span.Until
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE laps SET track_slug=$3, track_confidence='confident'
+ WHERE session_id=$1 AND start_time >= $2 AND ($4::timestamptz IS NULL OR start_time < $4)
+   AND (track_confidence IS NULL OR track_confidence='provisional')`,
+		sessionID, span.From, slug, until)
 	if err != nil {
 		return fmt.Errorf("processing: label laps of %s as %s: %w", sessionID, slug, err)
+	}
+	return nil
+}
+
+// ClearProvisionalLabels implements TrackRefStore. One UPDATE, once per session end; laps that started
+// inside a keep span are skipped (the spans travel as two parallel timestamptz arrays, a null Until
+// being open-ended).
+func (s *PostgresLapStore) ClearProvisionalLabels(ctx context.Context, sessionID string, keep ...TimeSpan) error {
+	from := make([]time.Time, len(keep))
+	until := make([]*time.Time, len(keep))
+	for i, k := range keep {
+		from[i] = k.From
+		if !k.Until.IsZero() {
+			u := k.Until
+			until[i] = &u
+		}
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE laps SET track_slug=NULL, track_confidence=NULL
+ WHERE session_id=$1 AND track_confidence='provisional'
+   AND NOT EXISTS (SELECT 1 FROM unnest($2::timestamptz[], $3::timestamptz[]) AS k(f, u)
+                   WHERE laps.start_time >= k.f AND (k.u IS NULL OR laps.start_time < k.u))`,
+		sessionID, from, until)
+	if err != nil {
+		return fmt.Errorf("processing: clear provisional labels of %s: %w", sessionID, err)
 	}
 	return nil
 }

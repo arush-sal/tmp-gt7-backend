@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sort"
@@ -156,12 +157,24 @@ func (m *MemLapStore) find(sessionID string, lapNumber int32) *Lap {
 }
 
 // LabelTrack implements TrackRefStore.
-func (m *MemLapStore) LabelTrack(sessionID string, since time.Time, slug string) error {
+func (m *MemLapStore) LabelTrack(_ context.Context, sessionID string, span TimeSpan, slug string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.bySession[sessionID] {
-		if !l.StartTime.Before(since) && (l.TrackConfidence == "" || l.TrackConfidence == ConfidenceProvisional) {
+		if inSpans(l.StartTime, []TimeSpan{span}) && (l.TrackConfidence == "" || l.TrackConfidence == ConfidenceProvisional) {
 			l.TrackSlug, l.TrackConfidence = slug, ConfidenceConfident
+		}
+	}
+	return nil
+}
+
+// ClearProvisionalLabels implements TrackRefStore.
+func (m *MemLapStore) ClearProvisionalLabels(_ context.Context, sessionID string, keep ...TimeSpan) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, l := range m.bySession[sessionID] {
+		if l.TrackConfidence == ConfidenceProvisional && !inSpans(l.StartTime, keep) {
+			l.TrackSlug, l.TrackConfidence = "", ""
 		}
 	}
 	return nil
@@ -241,4 +254,14 @@ func (m *MemLapStore) UnpinReferenceIf(slug, sessionID string, lapNumber int32) 
 	}
 	delete(m.pins, slug)
 	return true, nil
+}
+
+// inSpans reports whether t falls in any of the half-open spans (a zero Until is open-ended).
+func inSpans(t time.Time, spans []TimeSpan) bool {
+	for _, k := range spans {
+		if !t.Before(k.From) && (k.Until.IsZero() || t.Before(k.Until)) {
+			return true
+		}
+	}
+	return false
 }

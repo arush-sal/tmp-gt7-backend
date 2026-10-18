@@ -30,7 +30,7 @@ func sharedPostgres(t *testing.T) string {
 			return
 		}
 		ctx := context.Background()
-		c, err := postgres.Run(ctx, "timescale/timescaledb:latest-pg16",
+		c, err := postgres.Run(ctx, "timescale/timescaledb:2.17.2-pg16",
 			postgres.WithDatabase("garage"),
 			postgres.WithUsername("test"),
 			postgres.WithPassword("test"),
@@ -291,4 +291,26 @@ func TestPostgresLapStore_TrackReference(t *testing.T) {
 			t.Fatalf("set total_laps: %v", err)
 		}
 	})
+}
+
+// TestPostgresLapStore_ClearProvisionalLabels runs the clear-provisional contract against Postgres.
+func TestPostgresLapStore_ClearProvisionalLabels(t *testing.T) {
+	pool := freshPool(t)
+	sessions := session.NewPostgresStore(pool)
+	for _, id := range []string{"c1", "c2", "c3", "c4"} {
+		if err := sessions.Save(&session.Record{ID: id, StartTime: time.Unix(1000, 0).UTC(), Status: session.StatusFinished}); err != nil {
+			t.Fatalf("save session: %v", err)
+		}
+	}
+	testClearProvisionalContract(t, NewPostgresLapStore(pool))
+}
+
+// TestPostgresLapStore_LabelTrackSpan runs the bounded-backfill contract against Postgres.
+func TestPostgresLapStore_LabelTrackSpan(t *testing.T) {
+	pool := freshPool(t)
+	sessions := session.NewPostgresStore(pool)
+	if err := sessions.Save(&session.Record{ID: "c4", StartTime: time.Unix(1000, 0).UTC(), Status: session.StatusFinished}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	testLabelSpanContract(t, NewPostgresLapStore(pool))
 }

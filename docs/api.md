@@ -131,7 +131,10 @@ Returns the session's laps in lap order: `lap_number`, `duration_ns`, `complete`
 - `track_slug`: the track this lap was driven on, or `null` when the track detector had no guess. A
   session can contain laps on several tracks, so the track belongs to the lap, not the session.
 - `track_confidence`: `"provisional"` (the detector's guess when the lap completed; it may still have
-  switched) or `"confident"` (the detector locked on this track), or `null`.
+  switched) or `"confident"` (the detector locked on this track), or `null`. When a session ends, laps
+  the detector never confirmed have their labels cleared to `null`. A finished session can still show
+  `"provisional"` only if that clear failed or timed out, or for a stint the detector DID lock whose
+  label backfill failed (kept, since the lock confirmed it).
 - `reference_eligible`: whether this lap can be its track's stored reference lap: complete, valid,
   `confident` on its track, and not the first lap of a race (`total_laps` > 0). Clients use it to show
   or hide "set as reference" instead of repeating the rule. The field is always present: the web

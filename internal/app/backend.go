@@ -103,13 +103,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	// writes it there, and it is RETAINED after the session ends — see EnrichSink.OnSessionEnd), so the
 	// RKB adapter can resolve real sectors for the live and just-finished session. Older sessions have
 	// no slug here and fall back to mini-sectors (surfaced, not hidden, via the serving path's reason).
-	slugFor := func(sessionID string) (string, bool) {
-		en := enrich.Get()
-		if en.SessionID == sessionID && en.Track != nil {
-			return *en.Track, true
-		}
-		return "", false
-	}
+	slugFor := enrichSlugFor(enrich)
 	// rkbAdapter bridges the turn-labeled RKB (centerline + sector labels) to reference.KB's arc-length
 	// sector fractions. It backs BOTH the analyzer's KB (fixing live /v1/live sector geometry) and the
 	// lap-serving path (processing.SectorProvider) via one instance, so a slug logs its missing-geometry
@@ -165,14 +159,26 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	}, func(err error) { log.Error("stored reference load failed", zap.Error(err)) })
 	defer refLoader.Close()
 	detector := processing.NewTrackDetector(rkbStore, refLoader, log)
-	detector.OnLock = func(sessionID string, since time.Time, slug string) {
-		if err := trackRefs.LabelTrack(sessionID, since, slug); err != nil {
+	detector.OnLock = func(ctx context.Context, sessionID string, span processing.TimeSpan, slug string) error {
+		if err := trackRefs.LabelTrack(ctx, sessionID, span, slug); err != nil {
 			log.Error("labelling laps with the locked track failed", zap.String("session", sessionID), zap.Error(err))
-			return
+			return err
 		}
 		// The lock was published before this backfill, so the loader's first load may have missed the
 		// laps just labelled: reload once now that they are eligible.
 		refLoader.Reload(slug)
+		return nil
+	}
+	// At session end (after the final lock backfill) a provisional label was never confirmed and was
+	// often wrong (an unresolved track guessed as a neighbouring layout): clear it, once per session.
+	detector.OnEnd = func(ctx context.Context, sessionID string, keep []processing.TimeSpan) {
+		if err := trackRefs.ClearProvisionalLabels(ctx, sessionID, keep...); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				log.Warn("clearing unconfirmed track labels timed out; leaving them", zap.String("session", sessionID))
+				return
+			}
+			log.Error("clearing unconfirmed track labels failed", zap.String("session", sessionID), zap.Error(err))
+		}
 	}
 	segmenter.TrackFn = detector.Track
 	segmenter.OnSaved = func(l processing.Lap) {
@@ -442,5 +448,19 @@ func sessionTotalLaps(st session.Store) func(string) int32 {
 			return r.TotalLaps
 		}
 		return 0
+	}
+}
+
+// enrichSlugFor returns the session-to-track lookup the RKB adapter uses (rkbref.New): the track
+// published in live enrichment for sessionID, if any. A track the detector only guessed is withdrawn
+// from enrichment when the session ends (TrackDetector.OnSessionEnd), so it never reaches this lookup
+// for a finished session.
+func enrichSlugFor(enrich *live.EnrichmentState) func(sessionID string) (string, bool) {
+	return func(sessionID string) (string, bool) {
+		en := enrich.Get()
+		if en.SessionID == sessionID && en.Track != nil {
+			return *en.Track, true
+		}
+		return "", false
 	}
 }

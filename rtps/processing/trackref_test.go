@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -63,7 +64,7 @@ func testTrackRefContract(t *testing.T, s trackRefStore, dropSession func(id str
 
 	// Lock on suzuka for the stint that began at lap 3: laps 3 (provisional) and 5 (unlabelled) become
 	// confident; lap 6 (locked on another track) and laps before the stint stay as they were.
-	if err := s.LabelTrack("s1", at(200), "suzuka"); err != nil {
+	if err := s.LabelTrack(context.Background(), "s1", TimeSpan{From: at(200)}, "suzuka"); err != nil {
 		t.Fatal(err)
 	}
 	got := s.BySession("s1")
@@ -228,3 +229,98 @@ func TestMemLapStore_TrackReference(t *testing.T) {
 	s.SessionTotalLaps = func(id string) int32 { return totals[id] }
 	testTrackRefContract(t, s, func(id string) { _ = s.DeleteSession(id) }, func(id string, n int32) { totals[id] = n })
 }
+
+// testClearProvisionalContract is the shared Mem/Postgres contract for ClearProvisionalLabels: it
+// nulls the track fields of the session's provisional laps only; confident and unlabelled laps and
+// every other session are untouched. The sessions "c1", "c2" and "c3" must exist (Postgres FK).
+func testClearProvisionalContract(t *testing.T, s trackRefStore) {
+	t.Helper()
+	sec := time.Second
+	for _, l := range []*Lap{
+		refLap("c1", 1, 0, 90*sec, true, "suzuka", ConfidenceConfident),
+		refLap("c1", 2, 100, 90*sec, true, "brands-hatch-indy", ConfidenceProvisional),
+		refLap("c1", 3, 200, 90*sec, true, "", ""),
+		refLap("c1", 4, 300, 90*sec, true, "interlagos", ConfidenceProvisional),
+		refLap("c2", 1, 0, 90*sec, true, "interlagos", ConfidenceProvisional),
+	} {
+		if err := s.Save(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ClearProvisionalLabels(context.Background(), "c1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []struct {
+		session string
+		lap     int32
+		slug    string
+		conf    string
+	}{
+		{"c1", 1, "suzuka", ConfidenceConfident}, {"c1", 2, "", ""}, {"c1", 3, "", ""}, {"c1", 4, "", ""},
+		{"c2", 1, "interlagos", ConfidenceProvisional},
+	} {
+		l, ok, err := s.Lap(w.session, w.lap)
+		if err != nil || !ok {
+			t.Fatalf("Lap(%s,%d) = %v %v", w.session, w.lap, ok, err)
+		}
+		if l.TrackSlug != w.slug || l.TrackConfidence != w.conf {
+			t.Errorf("%s#%d = %q/%q, want %q/%q", w.session, w.lap, l.TrackSlug, l.TrackConfidence, w.slug, w.conf)
+		}
+	}
+	if err := s.ClearProvisionalLabels(context.Background(), "no-such-session"); err != nil {
+		t.Errorf("unknown session: %v", err)
+	}
+
+	// keep spans protect provisional laps that started inside [From, Until) (Until zero = open-ended).
+	for _, l := range []*Lap{
+		refLap("c3", 1, 0, 90*sec, true, "a", ConfidenceProvisional),
+		refLap("c3", 2, 100, 90*sec, true, "b", ConfidenceProvisional),
+		refLap("c3", 3, 200, 90*sec, true, "c", ConfidenceProvisional),
+		refLap("c3", 4, 300, 90*sec, true, "d", ConfidenceProvisional),
+	} {
+		if err := s.Save(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ClearProvisionalLabels(context.Background(), "c3", TimeSpan{From: at(100), Until: at(200)}, TimeSpan{From: at(300)}); err != nil {
+		t.Fatal(err)
+	}
+	for lap, want := range map[int32]string{1: "", 2: "b", 3: "", 4: "d"} {
+		l, _, _ := s.Lap("c3", lap)
+		wantConf := ConfidenceProvisional
+		if want == "" {
+			wantConf = ""
+		}
+		if l.TrackSlug != want || l.TrackConfidence != wantConf {
+			t.Errorf("c3#%d = %q/%q, want %q/%q", lap, l.TrackSlug, l.TrackConfidence, want, wantConf)
+		}
+	}
+}
+
+func TestMemLapStore_ClearProvisionalLabels(t *testing.T) {
+	testClearProvisionalContract(t, NewMemLapStore())
+}
+
+// testLabelSpanContract: LabelTrack with a closed span labels only the laps that started inside
+// [From, Until); laps from Until onward stay provisional. The session "c4" must exist (Postgres FK).
+func testLabelSpanContract(t *testing.T, s trackRefStore) {
+	t.Helper()
+	sec := time.Second
+	for i := int32(1); i <= 4; i++ {
+		if err := s.Save(refLap("c4", i, int(i-1)*100, 90*sec, true, "guess", ConfidenceProvisional)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.LabelTrack(context.Background(), "c4", TimeSpan{From: at(100), Until: at(300)}, "suzuka"); err != nil {
+		t.Fatal(err)
+	}
+	for lap, want := range map[int32][2]string{1: {"guess", ConfidenceProvisional}, 2: {"suzuka", ConfidenceConfident},
+		3: {"suzuka", ConfidenceConfident}, 4: {"guess", ConfidenceProvisional}} {
+		l, _, _ := s.Lap("c4", lap)
+		if l.TrackSlug != want[0] || l.TrackConfidence != want[1] {
+			t.Errorf("c4#%d = %q/%q, want %q/%q", lap, l.TrackSlug, l.TrackConfidence, want[0], want[1])
+		}
+	}
+}
+
+func TestMemLapStore_LabelTrackSpan(t *testing.T) { testLabelSpanContract(t, NewMemLapStore()) }

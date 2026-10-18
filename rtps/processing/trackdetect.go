@@ -196,6 +196,16 @@ type trackDetectState struct {
 	locked     int       // geoms index of the latched match (valid while latched)
 	offRunM    float64   // metres driven in a row more than releaseDistM from the locked layout
 	stintStart time.Time // recv time of the frame that began this detection stint (zero: session start)
+
+	// failed lists the locks whose OnLock backfill returned an error (rare: a storage failure), so
+	// OnSessionEnd can retry them and, if still failing, protect those stints' laps from the clear.
+	failed []lockSpan
+}
+
+// lockSpan is a lock whose backfill failed, with the stint's end (zero while the stint is still open).
+type lockSpan struct {
+	lockEvent
+	until time.Time
 }
 
 // newStint resets the matching state for a fresh detection stint starting at start (zero time for the
@@ -236,10 +246,20 @@ type TrackDetector struct {
 	twinOf     []int
 
 	// OnLock, if set, is called (on the stream goroutine, once per stint) when a match locks: slug
-	// locked for sessionID, for the stint that began at since (zero = the session start). The backend
+	// locked for sessionID, for the stint that began at span.From (zero = the session start). The backend
 	// backfills the stint's unlabelled/provisional laps with it (TrackRefStore.LabelTrack). It runs after
-	// the lock is published (SetTrack) and outside the session's lock, so it may do I/O.
-	OnLock func(sessionID string, since time.Time, slug string)
+	// the lock is published (SetTrack) and outside the session's lock, so it may do I/O. span.Until is
+	// zero (open-ended) except in OnSessionEnd's retry of an already-ended stint; the retry's ctx carries
+	// the session-end timeout. A returned error marks the backfill failed (retried at session end).
+	OnLock func(ctx context.Context, sessionID string, span TimeSpan, slug string) error
+
+	// OnEnd, if set, is called once as the last step of OnSessionEnd (after the final re-score and its
+	// OnLock backfill), with a ctx bounded by the session-end timeout; keep is the spans of stints whose
+	// backfill still failed, whose provisional laps must not be cleared.
+	OnEnd func(ctx context.Context, sessionID string, keep []TimeSpan)
+
+	endTimeout  time.Duration // per-call bound on lock backfills, their retry and the label clear (endDBTimeout)
+	geomTimeout time.Duration // bound on the one-time lazy geometry load (geomLoadTimeout)
 }
 
 // NewTrackDetector returns a detector that matches driven paths against geom's reference geometry and
@@ -254,8 +274,22 @@ func NewTrackDetector(geom DetectionGeomProvider, enrich TrackEnricher, log *zap
 		enrich:       enrich,
 		log:          log,
 		state:        make(map[string]*trackDetectState),
+		endTimeout:   endDBTimeout,
+		geomTimeout:  geomLoadTimeout,
 	}
 }
+
+// endDBTimeout bounds each Postgres call the detector makes on the ingest goroutine (every lock backfill,
+// its session-end retry, and the label clear), so a hung database must not stall the stream and the next
+// session; these are single indexed UPDATEs that take milliseconds, so 5 s is generous yet short enough to
+// move on.
+const endDBTimeout = 5 * time.Second
+
+// geomLoadTimeout bounds the one-time lazy RKB geometry load (a local SQLite read, also on the ingest
+// goroutine, in OnSessionStart). It is deliberately much looser than endDBTimeout: the load runs once per
+// process and a timeout disables track detection until restart, so a briefly slow disk must not trip it,
+// while a truly stalled read still can't hang ingest forever.
+const geomLoadTimeout = 30 * time.Second
 
 // OnSessionStart starts fresh detection for the session and clears any stale track (a new session has
 // not been matched yet, even if the previous one was). It also lazily loads the reference geometry on
@@ -265,7 +299,9 @@ func (d *TrackDetector) OnSessionStart(rec *session.Record) {
 	d.mu.Lock()
 	if !d.geomLoaded {
 		d.geomLoaded = true // attempt exactly once: a persistent load failure must not retry per session
-		geoms, err := d.geomProvider.DetectionGeometry(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), d.geomTimeout)
+		geoms, err := d.geomProvider.DetectionGeometry(ctx)
+		cancel()
 		if err != nil {
 			d.log.Warn("track detection geometry load failed; track detection disabled for this run",
 				zap.Error(err))
@@ -337,7 +373,7 @@ func (d *TrackDetector) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame)
 	if st == nil {
 		return
 	}
-	d.fireLock(sessionID, d.frame(sessionID, st, p, f))
+	d.fireLock(sessionID, st, d.frame(sessionID, st, p, f))
 }
 
 // frame is OnFrame's work under st.mu; it returns a lock to report once the state is unlocked.
@@ -375,9 +411,20 @@ type lockEvent struct {
 
 // fireLock calls OnLock for ev. Called WITHOUT st.mu: OnLock does storage I/O (the lap backfill), which
 // must not hold up Track() (read by the lap segmenter) or the session's frames.
-func (d *TrackDetector) fireLock(sessionID string, ev lockEvent) {
-	if ev.ok && d.OnLock != nil {
-		d.OnLock(sessionID, ev.since, ev.slug)
+// A failed backfill is remembered on st for OnSessionEnd's retry (the lock itself stands).
+func (d *TrackDetector) fireLock(sessionID string, st *trackDetectState, ev lockEvent) {
+	if !ev.ok || d.OnLock == nil {
+		return
+	}
+	// Bounded like the session-end calls: fireLock runs on the ingest goroutine (mid-session locks and
+	// the final re-score at session end alike). A timed-out backfill is a failed one - recorded below,
+	// retried at session end, and its span kept rather than cleared.
+	ctx, cancel := context.WithTimeout(context.Background(), d.endTimeout)
+	defer cancel()
+	if err := d.OnLock(ctx, sessionID, TimeSpan{From: ev.since}, ev.slug); err != nil {
+		st.mu.Lock()
+		st.failed = append(st.failed, lockSpan{lockEvent: ev})
+		st.mu.Unlock()
 	}
 }
 
@@ -399,7 +446,11 @@ func (d *TrackDetector) watchLock(sessionID string, st *trackDetectState, prev, 
 		return
 	}
 	slug := st.publishedSlug
-	st.newStint(f.GetRecvTimestamp().AsTime())
+	start := f.GetRecvTimestamp().AsTime()
+	if n := len(st.failed); n > 0 && st.failed[n-1].since.Equal(st.stintStart) {
+		st.failed[n-1].until = start // the stint whose backfill failed ends here
+	}
+	st.newStint(start)
 	d.enrich.ClearTrack(sessionID)
 	d.log.Info("track lock released: car left the locked track; detecting again",
 		zap.String("session_id", sessionID), zap.String("slug", slug))
@@ -436,9 +487,21 @@ func (st *trackDetectState) accept(p [2]float64, step float64) {
 func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 
 // OnSessionEnd makes a final re-score with whatever was driven (bypassing the cadence, but still
-// requiring minCoveragePoints), then drops the session's state. A session that ends before the lock
-// rules are met keeps its last provisional guess: ending early is not evidence for the guess.
+// requiring minCoveragePoints), then drops the session's state. A track still only provisional at the
+// end was never confirmed (ending early is not evidence for it): it is withdrawn from the published
+// track, and OnEnd clears the provisional labels stored on the session's laps.
 func (d *TrackDetector) OnSessionEnd(rec *session.Record) {
+	// OnEnd runs last, after the final re-score may have locked and backfilled (OnLock), so only labels
+	// that no lock ever confirmed are left for it to clear. keep (set below) shields the laps of stints
+	// that did lock but whose backfill still fails after a retry. Once per session end, off the frame path.
+	var keep []TimeSpan
+	if d.OnEnd != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), d.endTimeout)
+			defer cancel()
+			d.OnEnd(ctx, rec.ID, keep)
+		}()
+	}
 	d.mu.Lock()
 	st := d.state[rec.ID]
 	delete(d.state, rec.ID)
@@ -451,8 +514,33 @@ func (d *TrackDetector) OnSessionEnd(rec *session.Record) {
 	if !st.latched && st.frames >= minCoveragePoints {
 		ev = d.rescore(rec.ID, st)
 	}
+	if st.publishedConf == ConfidenceProvisional {
+		// Never confirmed: withdraw the guess so the just-ended session's analysis falls back to
+		// mini-sectors instead of a possibly wrong layout (a confirmed track stays published).
+		st.publishedSlug, st.publishedConf = "", ""
+		d.enrich.ClearTrack(rec.ID)
+	}
 	st.mu.Unlock()
-	d.fireLock(rec.ID, ev)
+	d.fireLock(rec.ID, st, ev)
+
+	// Retry each failed backfill once; one that still fails keeps its stint's laps (right, just not
+	// promoted to confident) out of the clear.
+	st.mu.Lock()
+	failed := st.failed
+	st.mu.Unlock()
+	if d.OnLock == nil {
+		return
+	}
+	for _, f := range failed {
+		ctx, cancel := context.WithTimeout(context.Background(), d.endTimeout)
+		err := d.OnLock(ctx, rec.ID, TimeSpan{From: f.since, Until: f.until}, f.slug)
+		cancel()
+		if err != nil {
+			d.log.Warn("lock backfill still failing at session end; keeping the stint's provisional labels",
+				zap.String("session_id", rec.ID), zap.String("slug", f.slug), zap.Error(err))
+			keep = append(keep, TimeSpan{From: f.since, Until: f.until})
+		}
+	}
 }
 
 // rescore folds the pending samples into every alive candidate, decides, and publishes on a change. A
