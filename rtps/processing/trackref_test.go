@@ -324,3 +324,44 @@ func testLabelSpanContract(t *testing.T, s trackRefStore) {
 }
 
 func TestMemLapStore_LabelTrackSpan(t *testing.T) { testLabelSpanContract(t, NewMemLapStore()) }
+
+// testSetSessionTrackContract: SetSessionTrack overwrites every lap of the session (unlabelled,
+// provisional AND confident: the user's pick wins over an earlier detector lock) and leaves other
+// sessions alone. Sessions "u1" and "u2" must exist (Postgres FK).
+func testSetSessionTrackContract(t *testing.T, s trackRefStore) {
+	t.Helper()
+	sec := time.Second
+	for i, conf := range []string{"", ConfidenceProvisional, ConfidenceConfident} {
+		slug := ""
+		if conf != "" {
+			slug = "guess"
+		}
+		if err := s.Save(refLap("u1", int32(i+1), i*100, 90*sec, true, slug, conf)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Save(refLap("u2", 1, 0, 90*sec, true, "other", ConfidenceConfident)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionTrack(context.Background(), "u1", "suzuka", ConfidenceConfident); err != nil {
+		t.Fatal(err)
+	}
+	for lap := int32(1); lap <= 3; lap++ {
+		l, _, _ := s.Lap("u1", lap)
+		if l.TrackSlug != "suzuka" || l.TrackConfidence != ConfidenceConfident {
+			t.Errorf("u1#%d = %q/%q, want suzuka/confident", lap, l.TrackSlug, l.TrackConfidence)
+		}
+	}
+	if l, _, _ := s.Lap("u2", 1); l.TrackSlug != "other" || l.TrackConfidence != ConfidenceConfident {
+		t.Errorf("u2#1 = %q/%q, want other/confident untouched", l.TrackSlug, l.TrackConfidence)
+	}
+	// Withdrawing the pick downgrades the labels to provisional (detection owns the session again).
+	if err := s.SetSessionTrack(context.Background(), "u1", "suzuka", ConfidenceProvisional); err != nil {
+		t.Fatal(err)
+	}
+	if l, _, _ := s.Lap("u1", 2); l.TrackSlug != "suzuka" || l.TrackConfidence != ConfidenceProvisional {
+		t.Errorf("u1#2 after withdraw = %q/%q, want suzuka/provisional", l.TrackSlug, l.TrackConfidence)
+	}
+}
+
+func TestMemLapStore_SetSessionTrack(t *testing.T) { testSetSessionTrackContract(t, NewMemLapStore()) }

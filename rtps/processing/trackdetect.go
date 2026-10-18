@@ -3,8 +3,10 @@ package processing
 import (
 	"context"
 	"math"
+	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	telemetryv1 "github.com/arush-sal/garage/backend/gen/gt7/telemetry/v1"
@@ -192,6 +194,21 @@ type trackDetectState struct {
 	// published is what was last sent via SetTrack ("" = nothing yet), so SetTrack fires only on a change.
 	publishedSlug, publishedConf string
 	latched                      bool // a confident match was published: only watchLock runs until a release
+	// user: the published track is the user's pick (TrackOverride, committed from the HTTP goroutine),
+	// so detection is bypassed for the session: no scoring, no lock release. userSlug is the last pick
+	// (kept after a withdrawal: its labels are what the withdrawal downgrades). userDirty: a pick or
+	// withdrawal was committed and the stored labels are not yet relabelled (syncUser; atomic so the
+	// per-frame check is lock-free). userRetry: that relabel failed and is retried at session end.
+	user      bool
+	userSlug  string
+	userDirty atomic.Bool
+	userRetry bool
+
+	// locks is every lock detection made in the session, its span closed at the release, or at a pick
+	// (so a withdrawal can give those laps back their confirmed label). lastRecv is the recv time of the
+	// last frame detection saw, where a pick closes the open lock's span.
+	locks    []lockSpan
+	lastRecv time.Time
 
 	locked     int       // geoms index of the latched match (valid while latched)
 	offRunM    float64   // metres driven in a row more than releaseDistM from the locked layout
@@ -258,6 +275,15 @@ type TrackDetector struct {
 	// backfill still failed, whose provisional laps must not be cleared.
 	OnEnd func(ctx context.Context, sessionID string, keep []TimeSpan)
 
+	// Override, if set, is the user's track pick (see TrackOverride; NewTrackOverride sets it).
+	Override *TrackOverride
+	// OnUserTrack, if set, is called (on the stream goroutine, at the frame after a pick or withdrawal
+	// was committed, or at the session end) with the pick's slug and confident, or with the withdrawn
+	// slug and provisional. The backend sets every lap of the session to it
+	// (TrackRefStore.SetSessionTrack) and reloads the stored reference. A failed call is retried once
+	// at session end.
+	OnUserTrack func(ctx context.Context, sessionID, slug, confidence string) error
+
 	endTimeout  time.Duration // per-call bound on lock backfills, their retry and the label clear (endDBTimeout)
 	geomTimeout time.Duration // bound on the one-time lazy geometry load (geomLoadTimeout)
 }
@@ -316,6 +342,108 @@ func (d *TrackDetector) OnSessionStart(rec *session.Record) {
 	d.mu.Unlock()
 
 	d.enrich.ClearTrack(rec.ID)
+	if d.Override != nil {
+		d.Override.start(rec.ID) // commits a pick made while no session was open
+	}
+}
+
+// commitUser applies the user's pick (slug) or its withdrawal ("") to the open session id at once, on
+// the caller's (HTTP) goroutine; the caller holds TrackOverride.mu, which the session's start and end
+// also take, so the pick is the session's before the end can run. A pick wins silently over detection:
+// it is published as confident (so the stored reference loads), Track returns it for later laps, and
+// detection is bypassed for the rest of the session (frame returns early). A withdrawal clears the
+// published track and restarts detection from the session start, so a later lock backfills the whole
+// session. The stored labels follow on the ingest goroutine (syncUser). Reports whether anything
+// changed (false: unknown session, or a withdrawal with no pick).
+func (d *TrackDetector) commitUser(id, slug string) bool {
+	st := d.session(id)
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if slug == "" {
+		if !st.user {
+			return false // nothing picked: detection already owns the session
+		}
+		st.user = false
+		st.newStint(time.Time{})
+		d.enrich.ClearTrack(id)
+		d.log.Info("user track withdrawn; detecting again", zap.String("session_id", id), zap.String("slug", st.userSlug))
+	} else {
+		if !st.user && st.latched {
+			// End the open lock's span just after the last frame detection saw: laps that began by then
+			// were confirmed by it, later ones are the pick's. +1ns because TimeSpan is half-open.
+			st.locks[len(st.locks)-1].until = st.lastRecv.Add(time.Nanosecond)
+		}
+		st.user, st.userSlug, st.failed = true, slug, nil // earlier backfill retries would fight the pick
+		st.publishedSlug, st.publishedConf = slug, ConfidenceConfident
+		conf := ConfidenceConfident
+		d.enrich.SetTrack(id, &slug, &conf)
+		d.log.Info("track set by the user", zap.String("session_id", id), zap.String("slug", slug))
+	}
+	st.userDirty.Store(true)
+	return true
+}
+
+// syncUser brings the session's stored lap labels in line with the committed pick, on the ingest
+// goroutine (storage I/O, so outside st.mu): a pick sets every lap of the session to it (OnUserTrack,
+// confident); a withdrawal downgrades them to provisional and then re-confirms the laps of every lock
+// detection made (OnLock over its span; LabelTrack only touches provisional laps), so only the laps
+// the pick labelled are left for a later lock to relabel or the session end to clear. A failed
+// relabel is retried when force (session end) is set; a failed lock restore is kept like a failed
+// backfill (st.failed). Lock-free unless something was committed.
+func (d *TrackDetector) syncUser(id string, st *trackDetectState, force bool) {
+	if !force && !st.userDirty.Load() {
+		return
+	}
+	st.mu.Lock()
+	if !st.userDirty.Load() && (!force || !st.userRetry) {
+		st.mu.Unlock()
+		return
+	}
+	st.userDirty.Store(false)
+	st.userRetry = false
+	picked, slug, restore := st.user, st.userSlug, slices.Clone(st.locks)
+	st.mu.Unlock()
+
+	conf := ConfidenceConfident
+	if !picked {
+		conf = ConfidenceProvisional
+	}
+	if err := d.relabel(id, slug, conf); err != nil {
+		st.mu.Lock()
+		st.userRetry = true
+		st.mu.Unlock()
+		if force {
+			d.log.Warn("relabelling laps for the user's track still failing at session end",
+				zap.String("session_id", id), zap.String("slug", slug), zap.String("confidence", conf), zap.Error(err))
+		}
+		return
+	}
+	if picked || d.OnLock == nil {
+		return
+	}
+	for _, l := range restore {
+		ctx, cancel := context.WithTimeout(context.Background(), d.endTimeout)
+		err := d.OnLock(ctx, id, TimeSpan{From: l.since, Until: l.until}, l.slug)
+		cancel()
+		if err != nil {
+			st.mu.Lock()
+			st.failed = append(st.failed, l)
+			st.mu.Unlock()
+		}
+	}
+}
+
+// relabel calls OnUserTrack (if set), bounded by the end timeout like a lock backfill.
+func (d *TrackDetector) relabel(sessionID, slug, conf string) error {
+	if d.OnUserTrack == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d.endTimeout)
+	defer cancel()
+	return d.OnUserTrack(ctx, sessionID, slug, conf)
 }
 
 // filterDetectable drops tracks with no reference points (the needs-capture tracks): they can never
@@ -362,16 +490,17 @@ func (d *TrackDetector) session(id string) *trackDetectState {
 // position is likewise only a reference, since there is no step yet to vet it by. While locked, only
 // watchLock runs.
 func (d *TrackDetector) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame) {
+	st := d.session(sessionID)
+	if st == nil {
+		return
+	}
+	d.syncUser(sessionID, st, false) // relabel for a committed pick; one atomic load otherwise
 	if !session.OnTrack(f) || f.GetIsPaused() || f.GetIsLoading() {
 		return
 	}
 	p := [2]float64{float64(f.GetPositionX()), float64(f.GetPositionZ())}
 	if !finite(p[0]) || !finite(p[1]) {
 		return // a NaN/Inf position would poison every score (and the bbox) for the session
-	}
-	st := d.session(sessionID)
-	if st == nil {
-		return
 	}
 	d.fireLock(sessionID, st, d.frame(sessionID, st, p, f))
 }
@@ -380,6 +509,10 @@ func (d *TrackDetector) OnFrame(sessionID string, f *telemetryv1.TelemetryFrame)
 func (d *TrackDetector) frame(sessionID string, st *trackDetectState, p [2]float64, f *telemetryv1.TelemetryFrame) lockEvent {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if st.user {
+		return lockEvent{} // the user's pick wins: detection is bypassed for the session
+	}
+	st.lastRecv = f.GetRecvTimestamp().AsTime()
 	prev, hadPrev := st.last, st.hasLast
 	st.last, st.hasLast = p, true
 	if st.latched {
@@ -450,6 +583,7 @@ func (d *TrackDetector) watchLock(sessionID string, st *trackDetectState, prev, 
 	if n := len(st.failed); n > 0 && st.failed[n-1].since.Equal(st.stintStart) {
 		st.failed[n-1].until = start // the stint whose backfill failed ends here
 	}
+	st.locks[len(st.locks)-1].until = start // the latched lock is the last one
 	st.newStint(start)
 	d.enrich.ClearTrack(sessionID)
 	d.log.Info("track lock released: car left the locked track; detecting again",
@@ -502,6 +636,9 @@ func (d *TrackDetector) OnSessionEnd(rec *session.Record) {
 			d.OnEnd(ctx, rec.ID, keep)
 		}()
 	}
+	if d.Override != nil {
+		d.Override.end(rec.ID) // picks committed before this are the session's; later ones go elsewhere
+	}
 	d.mu.Lock()
 	st := d.state[rec.ID]
 	delete(d.state, rec.ID)
@@ -509,9 +646,10 @@ func (d *TrackDetector) OnSessionEnd(rec *session.Record) {
 	if st == nil {
 		return
 	}
+	d.syncUser(rec.ID, st, true) // a pick committed since the last frame (or a failed relabel) lands now
 	var ev lockEvent
 	st.mu.Lock()
-	if !st.latched && st.frames >= minCoveragePoints {
+	if !st.latched && !st.user && st.frames >= minCoveragePoints {
 		ev = d.rescore(rec.ID, st)
 	}
 	if st.publishedConf == ConfidenceProvisional {
@@ -562,6 +700,7 @@ func (d *TrackDetector) rescore(sessionID string, st *trackDetectState) lockEven
 		conf = ConfidenceConfident
 		st.latched = true
 		st.locked = v.idx
+		st.locks = append(st.locks, lockSpan{lockEvent: lockEvent{ok: true, since: st.stintStart, slug: v.slug}})
 	}
 	if v.slug == st.publishedSlug && conf == st.publishedConf {
 		return lockEvent{}

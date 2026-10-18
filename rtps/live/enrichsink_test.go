@@ -288,3 +288,19 @@ func TestEnrichSink_CloseRace(t *testing.T) {
 func (r *recordingLapStore) DominantTracks() map[string]string { return r.inner.DominantTracks() }
 
 func (b *blockingLapStore) DominantTracks() map[string]string { return b.inner.DominantTracks() }
+
+// TestEnrichSink_SessionStartKeepsTrack: the track belongs to the TrackDetector, which resets it at its
+// own session start and may publish one at once (a user's pending track pick). The enrich sink's
+// session-start reset must not wipe it, whichever of the two sinks runs first.
+func TestEnrichSink_SessionStartKeepsTrack(t *testing.T) {
+	state := NewEnrichmentState()
+	e := NewEnrichSink(analysis.Analyzer{}, state, nil)
+	defer e.Close()
+	slug, conf := "red-bull-ring", "confident"
+	state.SetTrack("s2", &slug, &conf)
+	e.OnSessionStart(&session.Record{ID: "s2"})
+	got := state.Get()
+	if got.SessionID != "s2" || got.Track == nil || *got.Track != slug || got.TrackConfidence == nil || *got.TrackConfidence != conf {
+		t.Fatalf("after start: %+v, want s2 with red-bull-ring/confident kept", got)
+	}
+}

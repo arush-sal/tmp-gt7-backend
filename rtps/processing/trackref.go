@@ -35,6 +35,10 @@ type TrackRefStore interface {
 	// (after any final lock backfill). Laps that started inside a keep span (a stint whose lock
 	// backfill failed, so its labels are right but not promoted) are left alone. Confident and unlabelled laps, and other sessions, are untouched.
 	ClearProvisionalLabels(ctx context.Context, sessionID string, keep ...TimeSpan) error
+	// SetSessionTrack sets EVERY lap of the session to slug/confidence, overwriting any label (even a
+	// confident detector lock): the user's track pick (confident) or its withdrawal (provisional, so
+	// a later lock relabels the laps and an unconfirmed session end clears them).
+	SetSessionTrack(ctx context.Context, sessionID, slug, confidence string) error
 	// Lap returns one stored lap (found false when absent).
 	Lap(sessionID string, lapNumber int32) (*Lap, bool, error)
 	// TrackLaps returns up to limit reference-eligible laps on slug (see RefEligible), fastest first,

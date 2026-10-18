@@ -23,7 +23,12 @@ type Enrichment struct {
 	CarName         *string                   `json:"car_name"`
 	Track           *string                   `json:"track"`
 	TrackConfidence *string                   `json:"track_confidence"` // "provisional" (may still switch) or "confident" (locked); nil until a first guess
-	DeltaToBestNs   *int64                    `json:"delta_to_best_ns"`
+	// TrackSource says where Track came from: TrackSourceUser (the user picked it; always confident)
+	// or TrackSourceDetected; nil when Track is nil. PendingTrackSlug is a user pick waiting for the
+	// next session (nil = none). Both are overlaid by the API from its TrackPicker when serving.
+	TrackSource      *string `json:"track_source"`
+	PendingTrackSlug *string `json:"pending_track_slug"`
+	DeltaToBestNs    *int64  `json:"delta_to_best_ns"`
 	// DeltaToStoredRefNs is the live gap to the current track's STORED reference lap (pinned, else the
 	// fastest stored lap on it): null while the track is unknown or only provisional, when the track has
 	// no stored reference, or before a lap has started at the line. Overlaid by the API from the
@@ -38,6 +43,12 @@ type Enrichment struct {
 	// The API overlays it from the RecordingControl when serving (EnrichmentState does not track it).
 	Recording bool `json:"recording"`
 }
+
+// Values of Enrichment.TrackSource.
+const (
+	TrackSourceUser     = "user"
+	TrackSourceDetected = "detected"
+)
 
 // EnrichmentState is the concurrency-safe holder the egress path reads and the processing side writes.
 //
@@ -89,6 +100,16 @@ func (e *EnrichmentState) ClearTrack(sessionID string) {
 	e.cur.SessionID = sessionID
 	e.cur.Track = nil
 	e.cur.TrackConfidence = nil
+	e.mu.Unlock()
+}
+
+// StartSession resets the snapshot for a new session: SessionID becomes sessionID and every other field
+// is cleared EXCEPT Track/TrackConfidence. The track is the TrackDetector's: it resets it at its own
+// session start and may publish one at once (a user's pending track pick), so this reset must not wipe
+// it whichever sink runs first.
+func (e *EnrichmentState) StartSession(sessionID string) {
+	e.mu.Lock()
+	e.cur = Enrichment{SessionID: sessionID, Track: e.cur.Track, TrackConfidence: e.cur.TrackConfidence}
 	e.mu.Unlock()
 }
 

@@ -217,6 +217,16 @@ func (m *MemLapStore) ClearProvisionalLabels(_ context.Context, sessionID string
 	return nil
 }
 
+// SetSessionTrack implements TrackRefStore.
+func (m *MemLapStore) SetSessionTrack(_ context.Context, sessionID, slug, confidence string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, l := range m.bySession[sessionID] {
+		l.TrackSlug, l.TrackConfidence = slug, confidence
+	}
+	return nil
+}
+
 // Lap implements TrackRefStore.
 func (m *MemLapStore) Lap(sessionID string, lapNumber int32) (*Lap, bool, error) {
 	m.mu.RLock()

@@ -180,6 +180,19 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 			log.Error("clearing unconfirmed track labels failed", zap.String("session", sessionID), zap.Error(err))
 		}
 	}
+	// The user's "this is <track>" pick (POST /v1/live/track): committed to the detector's session at
+	// once, where it wins over detection for that session. Its relabel (on the stream goroutine)
+	// overwrites every lap of the session (the pick beats an earlier lock), then reloads the stored
+	// reference once the laps are labelled, as OnLock does.
+	override := processing.NewTrackOverride(detector)
+	detector.OnUserTrack = func(ctx context.Context, sessionID, slug, confidence string) error {
+		if err := trackRefs.SetSessionTrack(ctx, sessionID, slug, confidence); err != nil {
+			log.Error("labelling laps with the user's track failed", zap.String("session", sessionID), zap.Error(err))
+			return err
+		}
+		refLoader.Reload(slug)
+		return nil
+	}
 	segmenter.TrackFn = detector.Track
 	segmenter.OnSaved = func(l processing.Lap) {
 		// The segmenter's lap does not carry the session total (the lap stores fill it at read time, from
@@ -242,6 +255,7 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	recording := session.NewRecordingControl()
 	local.Recording = recording
 	apiSrv.Recording = recording
+	apiSrv.TrackPick = override
 	source, err := newSource(cfg, log, local, reconfigure)
 	if err != nil {
 		_ = lis.Close()

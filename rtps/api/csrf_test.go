@@ -20,6 +20,8 @@ func TestAPI_MutatingRouteGuard(t *testing.T) {
 		{http.MethodPost, "/v1/live/recording", `{"recording": false}`},
 		{http.MethodPut, "/v1/tracks/suzuka/reference-lap", `{"session_id": "nope", "lap_number": 1}`},
 		{http.MethodDelete, "/v1/tracks/suzuka/reference-lap", ""},
+		{http.MethodPost, "/v1/live/track", `{"track_slug": "suzuka"}`},
+		{http.MethodDelete, "/v1/live/track", ""},
 	}
 	cases := []struct {
 		name, origin, ctype string

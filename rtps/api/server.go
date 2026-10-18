@@ -42,6 +42,9 @@ type Server struct {
 	// Recording is the in-process stream's Record switch (POST /v1/live/recording, and the live
 	// snapshot's enrichment.recording). nil = no switch: the POST answers 409, recording reads true.
 	Recording RecordingSwitch
+	// TrackPick is the user's track pick (POST/DELETE /v1/live/track, and the live snapshot's
+	// enrichment.track_source / pending_track_slug). nil = no picker: POST answers 503.
+	TrackPick TrackPicker
 
 	// TrackRefs backs the /v1/tracks/{slug}/reference-lap and /laps routes (stored laps per track and
 	// the pinned reference). nil = nothing stored: GET 404 / [], PUT 404.
@@ -80,7 +83,8 @@ func NewServer(c coach.Coach, sessions session.Store, hub *live.Hub, enrich *liv
 	return &Server{coach: c, sessions: sessions, live: hub, enrich: enrich, delta: delta, tracks: tracks, log: log, laps: laps, traces: traces, sectors: sectors}
 }
 
-// liveEnrichment returns the current enrichment snapshot with the Record switch state and (when a
+// liveEnrichment returns the current enrichment snapshot with the Record switch state, the track's
+// source and any pending track pick (from TrackPick) and (when a
 // DeltaTracker is wired) the live per-frame deltas (to the session best and to the track's stored
 // reference lap) overlaid. s.enrich.Get() returns a value copy, so setting DeltaToBestNs here mutates only
 // that local copy, never the shared EnrichmentState (see Enrichment's immutability invariant).
@@ -89,6 +93,18 @@ func (s *Server) liveEnrichment() live.Enrichment {
 	en.Recording = true
 	if s.Recording != nil {
 		en.Recording, _ = s.Recording.State()
+	}
+	if en.Track != nil {
+		src := live.TrackSourceDetected
+		if s.TrackPick != nil && s.TrackPick.UserTrack() == *en.Track {
+			src = live.TrackSourceUser
+		}
+		en.TrackSource = &src
+	}
+	if s.TrackPick != nil {
+		if p := s.TrackPick.Pending(); p != "" {
+			en.PendingTrackSlug = &p
+		}
 	}
 	if s.delta != nil {
 		if ns, ok := s.delta.Delta(); ok {
@@ -114,6 +130,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/live", s.handleLive)
 	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
 	mux.HandleFunc("POST /v1/live/recording", s.handleSetRecording)
+	mux.HandleFunc("POST /v1/live/track", s.handleSetLiveTrack)
+	mux.HandleFunc("DELETE /v1/live/track", s.handleClearLiveTrack)
 	mux.HandleFunc("GET /v1/tracks", s.handleListTracks)
 	// Literal "coverage" beats the "{slug}" wildcard by Go 1.22 mux precedence (most-specific wins).
 	mux.HandleFunc("GET /v1/tracks/coverage", s.handleTracksCoverage)

@@ -17,6 +17,8 @@ unless noted; errors use the shape `{"error": "..."}`. Durations encoded as stri
 | `GET` | `/v1/live` | Latest frame plus a progressively-enriched snapshot. |
 | `GET` | `/v1/live/stream` | Server-Sent Events: one event per fresh frame, plus track events. |
 | `POST` | `/v1/live/recording` | Switch recording of the current session on or off. |
+| `POST` | `/v1/live/track` | Set the track of the current (or next) session yourself. |
+| `DELETE` | `/v1/live/track` | Clear that choice; track detection takes over again. |
 | `GET` | `/v1/tracks` | Reference Knowledge Base (RKB) track index. |
 | `GET` | `/v1/tracks/{slug}` | Full RKB record for one track. |
 | `GET` | `/v1/sessions/{id}/laps` | A session's laps with sector splits and the track each lap was driven on. |
@@ -65,6 +67,13 @@ the id of the stored original and `enrichment.duplicate_of` carries that same id
 absent when the live session is not a duplicate. Before a duplicate is recognised (at its first
 completed lap), `session_id` is the new session's own id.
 
+`enrichment.track` and `enrichment.track_confidence` are the session's track (`null` until known)
+and how sure it is: `"provisional"` (a guess that may still change) or `"confident"`.
+`enrichment.track_source` is `"user"` when you set the track with
+[`POST /v1/live/track`](#post-v1livetrack), `"detected"` when track detection found it, and `null`
+when there is no track. A track you set is always `"confident"`. `enrichment.pending_track_slug` is a
+track you set while no session was open, waiting for the next session to start (`null` when none).
+
 `enrichment.recording` is always present: `true` by default and at every new session, `false` after
 recording was switched off for the current session.
 
@@ -101,6 +110,38 @@ The switch applies to the telemetry source running inside `rtps` (the PS5 collec
 `--replay-file`), not to external collectors streaming over gRPC.
 
 > **Security:** see [Security](#security): this endpoint is unauthenticated.
+
+### `POST /v1/live/track`
+
+Tells `rtps` which track you are on, instead of waiting for track detection to be sure. Body:
+`{"track_slug": "<slug>"}`, a slug from [`GET /v1/tracks`](#get-v1tracks).
+
+- `200` `{"track_slug": "<slug>", "applies_to": "current" | "next", "session_id": "<id or empty>"}`.
+  `"current"`: a session is open and the track is already applied to it when the response arrives
+  (`session_id` is its id; with several telemetry streams open at once, the most recently started
+  one), so it stays on that session's laps even if the session ends right after. `"next"`:
+  no session is open (menus), so the track applies to the next session the moment it starts
+  (`session_id` is empty; `/v1/live` shows it as `enrichment.pending_track_slug` until then).
+- `404` (`{"error": "unknown track"}`) when the slug is not in the RKB.
+- `400` on a missing or malformed body.
+
+Your choice always wins over track detection for that session, without a warning if detection
+disagrees. It takes effect at once: `/v1/live` reports the track as `"confident"` with
+`track_source` `"user"`, the session's laps already stored are labelled with it (replacing any
+detected label), later laps get it too, and the track's stored reference lap is loaded, so
+`delta_to_stored_ref_ns` and sector timing work from the first timed lap. It applies to one session:
+it is cleared when that session ends, so a later session on another track is detected as usual.
+Setting a track again replaces it.
+
+### `DELETE /v1/live/track`
+
+Clears the track you set. `200` `{"track_slug": null}`. If it was waiting for the next session, it is
+dropped. If it applied to the open session, track detection starts again for that session. Laps that
+track detection had already confirmed before you set the track get their detected track back; the
+other laps keep your track as a provisional label until detection is confident (which relabels them),
+and lose it if the session ends first.
+
+> **Security:** see [Security](#security): these endpoints are unauthenticated.
 
 ### `GET /v1/live/stream`
 
@@ -223,7 +264,8 @@ unknown track or one with no stored laps returns `[]`.
 ## Security
 
 The API has no authentication. Its mutating endpoints are `POST /v1/live/recording` (switching
-recording off discards the current session) and `PUT`/`DELETE /v1/tracks/{slug}/reference-lap`
+recording off discards the current session), `POST`/`DELETE /v1/live/track` (setting the session's
+track) and `PUT`/`DELETE /v1/tracks/{slug}/reference-lap`
 (changing a track's pinned reference lap). Anyone who can reach `api.addr` can call them.
 `api.addr` defaults to `localhost:8080`; only bind it to another interface on a network you trust.
 

@@ -174,6 +174,15 @@ func (s *PostgresLapStore) ClearProvisionalLabels(ctx context.Context, sessionID
 	return nil
 }
 
+// SetSessionTrack implements TrackRefStore. One UPDATE per user pick (or its withdrawal).
+func (s *PostgresLapStore) SetSessionTrack(ctx context.Context, sessionID, slug, confidence string) error {
+	if _, err := s.pool.Exec(ctx, `UPDATE laps SET track_slug=$2, track_confidence=$3 WHERE session_id=$1`,
+		sessionID, slug, confidence); err != nil {
+		return fmt.Errorf("processing: set track of %s to %s/%s: %w", sessionID, slug, confidence, err)
+	}
+	return nil
+}
+
 // Lap implements TrackRefStore.
 func (s *PostgresLapStore) Lap(sessionID string, lapNumber int32) (*Lap, bool, error) {
 	return s.oneLap("SELECT "+lapCols+" FROM laps WHERE session_id=$1 AND lap_number=$2", sessionID, lapNumber)

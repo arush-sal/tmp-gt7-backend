@@ -20,8 +20,8 @@ import (
 // progressively during the session. OnSessionEnd does NOT clear the published enrichment: the finished
 // race's enrichment (analysis, track, session_id) is intentionally RETAINED so the live view keeps
 // showing post-race context (D-race-lifecycle A1) rather than reverting to null between stints. The
-// next OnSessionStart overwrites it (`e.state.Set(Enrichment{SessionID: rec.ID})`) when a new session
-// begins.
+// next OnSessionStart resets it (EnrichmentState.StartSession, which leaves the TrackDetector's track
+// alone) when a new session begins.
 //
 // AnalyzeSession (normalizes traces + splits sectors) runs on a SEPARATE worker goroutine, never on
 // the ingest goroutine — recomputing inline would block stream.Recv and stall the live publish cadence
@@ -161,7 +161,7 @@ func (e *EnrichSink) OnSessionStart(rec *session.Record) {
 	e.gen++
 	e.active[rec.ID] = e.gen
 	e.mu.Unlock()
-	e.state.Set(Enrichment{SessionID: rec.ID})
+	e.state.StartSession(rec.ID)
 }
 
 // OnFrame detects lap boundaries (current_lap increasing) and requests an async recompute. It also

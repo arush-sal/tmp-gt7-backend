@@ -319,3 +319,15 @@ func TestPostgresLapStore_LabelTrackSpan(t *testing.T) {
 	}
 	testLabelSpanContract(t, NewPostgresLapStore(pool))
 }
+
+// TestPostgresLapStore_SetSessionTrack runs the user-pick relabel contract against Postgres.
+func TestPostgresLapStore_SetSessionTrack(t *testing.T) {
+	pool := freshPool(t)
+	sessions := session.NewPostgresStore(pool)
+	for _, id := range []string{"u1", "u2"} {
+		if err := sessions.Save(&session.Record{ID: id, StartTime: time.Unix(1000, 0).UTC(), Status: session.StatusFinished}); err != nil {
+			t.Fatalf("save session: %v", err)
+		}
+	}
+	testSetSessionTrackContract(t, NewPostgresLapStore(pool))
+}
