@@ -44,6 +44,9 @@ type recordingResponse struct {
 // no-op. This is the API's only mutating route and it is unauthenticated:
 // keep api.addr on localhost (the default) unless the network is trusted.
 func (s *Server) handleSetRecording(w http.ResponseWriter, r *http.Request) {
+	if s.noLiveFeed(w) {
+		return
+	}
 	var req recordingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Recording == nil {
 		writeError(w, http.StatusBadRequest, `body must be {"recording": true|false}`)

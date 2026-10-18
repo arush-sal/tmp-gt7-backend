@@ -120,3 +120,33 @@ func TestAPI_LiveRecordingDefaultTrue(t *testing.T) {
 		t.Errorf("no switch wired: status %d, want 409", rr.Code)
 	}
 }
+
+// TestAPI_Mode: GET /v1/mode reports the run mode (live when unset); in analysis mode the mutating
+// live routes answer 409 while stored-data routes are untouched.
+func TestAPI_Mode(t *testing.T) {
+	srv, _ := testServer()
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Host = "localhost" // mutating routes pass the CSRF host guard
+		req.Header.Set("Content-Type", "application/json")
+		srv.Handler().ServeHTTP(rr, req)
+		return rr
+	}
+	if rr := do(http.MethodGet, "/v1/mode", ""); strings.TrimSpace(rr.Body.String()) != `{"mode":"live"}` {
+		t.Fatalf("default mode: %d %s", rr.Code, rr.Body)
+	}
+	srv.Mode = "analysis"
+	if rr := do(http.MethodGet, "/v1/mode", ""); strings.TrimSpace(rr.Body.String()) != `{"mode":"analysis"}` {
+		t.Fatalf("analysis mode: %d %s", rr.Code, rr.Body)
+	}
+	for _, c := range [][2]string{{http.MethodPost, "/v1/live/recording"}, {http.MethodPost, "/v1/live/track"}, {http.MethodDelete, "/v1/live/track"}} {
+		rr := do(c[0], c[1], `{"recording":true,"track_slug":"x"}`)
+		if rr.Code != http.StatusConflict || strings.TrimSpace(rr.Body.String()) != `{"error":"no live feed in analysis mode"}` {
+			t.Errorf("%s %s: %d %s, want 409 no live feed", c[0], c[1], rr.Code, rr.Body)
+		}
+	}
+	if rr := do(http.MethodGet, "/v1/sessions", ""); rr.Code != http.StatusOK {
+		t.Errorf("GET /v1/sessions in analysis: %d", rr.Code)
+	}
+}

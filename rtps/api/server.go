@@ -53,6 +53,10 @@ type Server struct {
 	// stored-reference delta reloads (live.RefLoader.Reload).
 	OnReferenceChange func(slug string)
 
+	// Mode is the rtps run mode served at GET /v1/mode: "live", "replay" or "analysis" (empty = live). In
+	// analysis mode there is no in-process source, so the mutating live routes answer 409.
+	Mode string
+
 	// AllowedHosts are the Host names, beyond the loopback ones, accepted on mutating routes (see
 	// MutationHosts and guardMutations). Read when Handler is built.
 	AllowedHosts []string
@@ -127,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/laps/{n}/peaks", s.handleLapPeaks)
 	mux.HandleFunc("GET /v1/sessions/{id}/median", s.handleSessionMedian)
 	mux.HandleFunc("GET /v1/sessions/{id}/reference", s.handleSessionReference)
+	mux.HandleFunc("GET /v1/mode", s.handleMode)
 	mux.HandleFunc("GET /v1/live", s.handleLive)
 	mux.HandleFunc("GET /v1/live/stream", s.handleLiveStream) // implemented in Task 5
 	mux.HandleFunc("POST /v1/live/recording", s.handleSetRecording)
@@ -143,6 +148,25 @@ func (s *Server) Handler() http.Handler {
 	// The embedded SPA owns everything else; the /v1/* routes above are more specific and win.
 	mux.Handle("GET /", web.Handler())
 	return guardMutations(mux, s.AllowedHosts)
+}
+
+// handleMode: GET /v1/mode -> {"mode":"live"|"replay"|"analysis"}.
+func (s *Server) handleMode(w http.ResponseWriter, _ *http.Request) {
+	mode := s.Mode
+	if mode == "" {
+		mode = "live"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"mode": mode})
+}
+
+// noLiveFeed answers 409 and returns true in analysis mode, where no in-process source exists for the
+// mutating live routes (recording, track pick) to act on. Call it first in those handlers.
+func (s *Server) noLiveFeed(w http.ResponseWriter) bool {
+	if s.Mode != "analysis" {
+		return false
+	}
+	writeError(w, http.StatusConflict, "no live feed in analysis mode")
+	return true
 }
 
 // sessionSummary is the API view of a session — identity + lifecycle, without internal fields like

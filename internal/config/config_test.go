@@ -170,15 +170,15 @@ func TestLoadBackend_CollectorDefaults(t *testing.T) {
 	}
 }
 
-// TestLoadBackend_SourceSelection: exactly one of ps5.ip / replay-file is required — neither leaves
-// rtps with no telemetry source, and both would mix a replay into live PB/session state.
+// TestLoadBackend_SourceSelection: at most one of ps5.ip / replay-file — neither is analysis mode
+// (no telemetry source), and both would mix a replay into live PB/session state.
 func TestLoadBackend_SourceSelection(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    []string
 		wantErr bool
 	}{
-		{"neither", nil, true},
+		{"neither (analysis)", nil, false},
 		{"both", []string{"--ps5.ip=1.2.3.4", "--replay-file=x.pcapng"}, true},
 		{"ps5 only", []string{"--ps5.ip=1.2.3.4"}, false},
 		{"replay only", []string{"--replay-file=x.pcapng"}, false},
@@ -295,5 +295,19 @@ func TestLoadBackend_APIAllowedHosts(t *testing.T) {
 	_, restart := ClassifyBackendReload(BackendConfig{}, BackendConfig{APIAllowedHosts: []string{"x"}})
 	if _, ok := restart["api.allowed_hosts"]; !ok {
 		t.Errorf("api.allowed_hosts change should be restart-required: %v", restart)
+	}
+}
+
+// TestBackendConfig_Mode: the run mode is implied by which source flag is set.
+func TestBackendConfig_Mode(t *testing.T) {
+	for args, want := range map[string]string{"--ps5.ip=1.2.3.4": ModeLive, "--replay-file=x.pcapng": ModeReplay, "": ModeAnalysis} {
+		var a []string
+		if args != "" {
+			a = []string{args}
+		}
+		c, err := LoadBackend(a)
+		if err != nil || c.Mode() != want {
+			t.Errorf("LoadBackend(%v): mode %q err %v, want %q", a, c.Mode(), err, want)
+		}
 	}
 }

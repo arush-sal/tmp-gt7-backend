@@ -12,6 +12,7 @@ unless noted; errors use the shape `{"error": "..."}`. Durations encoded as stri
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/v1/mode` | The run mode: `live`, `replay` or `analysis`. |
 | `GET` | `/v1/sessions` | List detected sessions (summaries). |
 | `GET` | `/v1/sessions/{id}/coaching` | Coaching report for one finished session. |
 | `GET` | `/v1/live` | Latest frame plus a progressively-enriched snapshot. |
@@ -87,6 +88,14 @@ mid-way). The reference is loaded when the track locks, and reloaded when its pi
 lap stored on the track could replace it (the track's first stored lap, or a new fastest lap while
 nothing is pinned), and when the session it came from is discarded.
 
+### `GET /v1/mode`
+
+`200` `{"mode": "live" | "replay" | "analysis"}`. `live`: `rtps` runs with `--ps5.ip`; `replay`: with
+`--replay-file`; `analysis`: with neither, so there is no telemetry source and `rtps` serves stored
+data only. In `analysis` mode `POST /v1/live/recording`, `POST /v1/live/track` and
+`DELETE /v1/live/track` answer `409` `{"error": "no live feed in analysis mode"}`; the stored-data
+routes (sessions, laps, tracks, reference pin and unpin) work as usual.
+
 ### `POST /v1/live/recording`
 
 Switches recording of the current session. Body: `{"recording": false, "session_id": "<id>"}` or
@@ -100,6 +109,7 @@ itself); otherwise nothing changes and the response is `409` `"session changed"`
 - `409` (`{"error": "session changed"}`) when `session_id` no longer names the open session.
 - `503` (`{"error": "telemetry stalled; recording unchanged"}`) when no telemetry arrived to apply
   the change within 2 seconds. The request is withdrawn, so it never applies later.
+- `409` (`{"error": "no live feed in analysis mode"}`) in analysis mode.
 - `400` on a malformed body.
 
 Switching off discards the whole current session: its session, laps and traces are deleted and
@@ -123,6 +133,7 @@ Tells `rtps` which track you are on, instead of waiting for track detection to b
   no session is open (menus), so the track applies to the next session the moment it starts
   (`session_id` is empty; `/v1/live` shows it as `enrichment.pending_track_slug` until then).
 - `404` (`{"error": "unknown track"}`) when the slug is not in the RKB.
+- `409` (`{"error": "no live feed in analysis mode"}`) in analysis mode (also for `DELETE`).
 - `400` on a missing or malformed body.
 
 Your choice always wins over track detection for that session, without a warning if detection

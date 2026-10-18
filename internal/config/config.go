@@ -64,8 +64,28 @@ type BackendConfig struct {
 	ConfigPath string
 }
 
-// LoadBackend parses args for the rtps binary and returns the resolved BackendConfig. Exactly one of
-// --ps5.ip / --replay-file is required.
+// The rtps run modes, implied by which source flag is set (see BackendConfig.Mode). The strings are the
+// GET /v1/mode contract the web UI codes against.
+const (
+	ModeLive     = "live"     // --ps5.ip: in-process GT7 UDP collector
+	ModeReplay   = "replay"   // --replay-file: in-process capture replay
+	ModeAnalysis = "analysis" // neither: no in-process source; serve stored data only
+)
+
+// Mode returns the run mode implied by the source flags: live (PS5IP), replay (ReplayFile) or analysis
+// (neither). Validate rejects both being set.
+func (c BackendConfig) Mode() string {
+	switch {
+	case c.PS5IP != "":
+		return ModeLive
+	case c.ReplayFile != "":
+		return ModeReplay
+	}
+	return ModeAnalysis
+}
+
+// LoadBackend parses args for the rtps binary and returns the resolved BackendConfig. --ps5.ip and
+// --replay-file are mutually exclusive; with neither, rtps runs in analysis mode (no telemetry source).
 func LoadBackend(args []string) (BackendConfig, error) {
 	fs := pflag.NewFlagSet("rtps", pflag.ContinueOnError)
 	fs.String("ingest.addr", "localhost:50051", "address the telemetry ingest gRPC server listens on")
@@ -74,7 +94,7 @@ func LoadBackend(args []string) (BackendConfig, error) {
 	fs.String("log.level", "info", "log level: debug|info|warn|error")
 	fs.String("storage", "memory", "session store backing: memory|postgres")
 	fs.String("db.dsn", "", "PostgreSQL connection string (required when storage=postgres)")
-	fs.String("ps5.ip", "", "GT7 console IP address: run the UDP collector (exclusive with --replay-file)")
+	fs.String("ps5.ip", "", "GT7 console IP address: run the UDP collector (live mode; exclusive with --replay-file; neither flag = analysis mode)")
 	fs.Int("udp.recv_port", 33740, "UDP port telemetry is received on")
 	fs.Int("udp.send_port", 33739, "UDP port the heartbeat is sent to")
 	fs.Duration("heartbeat.interval", time.Second, "heartbeat send interval")
@@ -178,8 +198,6 @@ func (c BackendConfig) validate() error {
 		return fmt.Errorf("config: storage must be memory|postgres, got %q", c.Storage)
 	}
 	switch {
-	case c.PS5IP == "" && c.ReplayFile == "":
-		return errors.New("config: one of --ps5.ip (live) or --replay-file (replay) is required")
 	case c.PS5IP != "" && c.ReplayFile != "":
 		return errors.New("config: --ps5.ip and --replay-file are mutually exclusive")
 	}

@@ -1,5 +1,5 @@
 // Command rtps is the GARAGE platform binary: it runs the GT7 UDP collector in-process (--ps5.ip) or
-// replays a capture (--replay-file), and hosts the ingest gRPC server (for external collectors), the
+// replays a capture (--replay-file), or with neither runs in analysis mode (stored data only), and hosts the ingest gRPC server (for external collectors), the
 // Session/Processing/Analysis/Coaching domains, and the HTTP API + embedded web dashboard.
 package main
 

@@ -21,7 +21,7 @@ COMPOSE  ?= docker-compose
 # `make web-up` / `make web-preview`: backend the Vite dev proxy forwards /v1 to (host:port or URL)
 RTPS     ?= localhost:8080
 
-.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean deploy-stack replay-stack stop-stack web-install web-up web-build web-preview web-test
+.PHONY: all build test test-race vet fmt fmt-check lint vuln tidy cover hooks tools clean deploy-stack replay-stack analysis-stack stop-stack web-install web-up web-build web-preview web-test
 
 ## all: format check, lint, and test (the default gate)
 all: fmt-check lint test
@@ -87,14 +87,19 @@ hooks:
 ##   make deploy-stack IP=192.168.1.99 [STORAGE=memory | DB_DSN='postgres://...'] [API_ADDR=host:port]
 ## replay-stack: same, but rtps replays a recorded capture instead of a live PS5 (keeps serving at EOF).
 ##   make replay-stack FILE=capture.pcapng [SPEED=1] [STORAGE=memory | DB_DSN=...] [API_ADDR=host:port]
-## Both default to STORAGE=postgres. Re-running a capture is safe: a session whose laps are already
-## stored is dropped as a duplicate (lap fingerprints).
+## analysis-stack: same, but rtps runs with no telemetry source (analysis mode): serves stored laps and
+## the track reference over the API + dashboard only. The ingest server still runs for external collectors.
+##   make analysis-stack [STORAGE=postgres | DB_DSN=...] [API_ADDR=host:port]
+## All three default to STORAGE=postgres (analysis with memory has nothing to show). Re-running a capture
+## is safe: a session whose laps are already stored is dropped as a duplicate (lap fingerprints).
 deploy-stack: SOURCE = --ps5.ip=$(IP)
 deploy-stack: NEED = $(IP)
 replay-stack: SOURCE = --replay-file="$(FILE)" --replay.speed=$(SPEED)
 replay-stack: NEED = $(FILE)
-deploy-stack replay-stack: web-build
-	@test -n "$(NEED)" || { echo "usage: make deploy-stack IP=<ps5-ip> | make replay-stack FILE=<capture> [SPEED=1]  [STORAGE=memory | DB_DSN=...] [API_ADDR=host:port]"; exit 2; }
+analysis-stack: SOURCE =
+analysis-stack: NEED = analysis
+deploy-stack replay-stack analysis-stack: web-build
+	@test -n "$(NEED)" || { echo "usage: make deploy-stack IP=<ps5-ip> | make replay-stack FILE=<capture> [SPEED=1] | make analysis-stack  [STORAGE=memory | DB_DSN=...] [API_ADDR=host:port]"; exit 2; }
 	@if [ "$(STORAGE)" = postgres ]; then mkdir -p "$(DB_DIR)" && $(COMPOSE) up -d --wait timescaledb; fi
 	@mkdir -p bin
 	$(GO) build -o bin/rtps ./cmd/rtps
@@ -105,7 +110,7 @@ deploy-stack replay-stack: web-build
 		curl -sf -o /dev/null http://$(API_ADDR)/ && echo "dashboard  ok    http://$(API_ADDR)/" || echo "dashboard  DOWN  (bin/rtps.log)"; \
 		echo "stop: make stop-stack"
 
-## stop-stack: stop a running deploy-stack/replay-stack (rtps, and timescaledb when STORAGE=postgres;
+## stop-stack: stop a running deploy-stack/replay-stack/analysis-stack (rtps, and timescaledb when STORAGE=postgres;
 ## the DB volume is kept).
 stop-stack:
 	@bash -c 'pkill -x rtps && echo "stopped rtps" || echo "rtps not running"'
@@ -126,7 +131,7 @@ web-up: web/node_modules
 	GT7_API_ADDR="$(RTPS)" npm --prefix web run dev
 
 ## web-build: build the web UI into web/dist (embedded into rtps by go build). Incremental: only rebuilds
-## when a web source/config file is newer than web/dist/index.html, so deploy-stack/replay-stack skip
+## when a web source/config file is newer than web/dist/index.html, so deploy-stack/replay-stack/analysis-stack skip
 ## the ~10-20 s npm build when nothing in web/ changed.
 WEB_SRC := $(shell find web/src -type f 2>/dev/null) web/index.html web/package.json web/package-lock.json \
 	web/vite.config.ts web/tsconfig.json

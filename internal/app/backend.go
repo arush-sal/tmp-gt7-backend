@@ -30,7 +30,8 @@ import (
 )
 
 // RunBackend starts the rtps process: the in-process telemetry source (the GT7 UDP collector when
-// ps5.ip is set, or a capture replay when replay-file is set), the ingest gRPC server for external
+// ps5.ip is set, or a capture replay when replay-file is set; neither = analysis mode, no source, stored
+// data only), the ingest gRPC server for external
 // collectors (Session Management -> Processing), and the HTTP read API (Analysis -> Coaching ->
 // Presentation). It serves until ctx is cancelled (SIGINT/SIGTERM) — including after a replay ends —
 // then stops everything gracefully. Stores are in-memory or Postgres per config. reconfigure is an
@@ -235,6 +236,10 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 	apiSrv := api.NewServer(coach.New(analyzer), sessStore, hub, enrich, delta, rkbStore, log, lapStore, traceStore, rkbAdapter)
 	apiSrv.TrackRefs = trackRefs
 	apiSrv.OnReferenceChange = refLoader.Reload
+	apiSrv.Mode = cfg.Mode()
+	if cfg.Mode() == config.ModeAnalysis && cfg.Storage == "memory" {
+		log.Warn("analysis mode with --storage=memory: nothing is stored, so there is nothing to analyse; use --storage=postgres")
+	}
 	apiSrv.AllowedHosts = api.MutationHosts(cfg.APIAddr, cfg.APIAllowedHosts)
 	httpSrv := &http.Server{Addr: cfg.APIAddr, Handler: apiSrv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 
@@ -321,7 +326,8 @@ func RunBackend(ctx context.Context, cfg config.BackendConfig, log *zap.Logger, 
 // blocks until ctx is cancelled or the source ends; stopLocal ends the in-process stream (finalizing
 // the session) and is called by a replay at EOF. A non-nil return is fatal to serving (only a live
 // collector's receive failure); a replay's read error is logged and rtps keeps serving. With neither
-// source configured (config validation forbids it; tests rely on it) the source just waits for ctx.
+// source configured (analysis mode) the source just waits for ctx; the ingest gRPC server keeps running
+// so an external collector can still feed it.
 func newSource(cfg config.BackendConfig, log *zap.Logger, local *ingest.Local, reconfigure <-chan time.Duration) (func(ctx context.Context, stopLocal func()) error, error) {
 	switch {
 	case cfg.PS5IP != "":

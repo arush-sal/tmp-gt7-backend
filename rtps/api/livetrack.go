@@ -35,6 +35,9 @@ type liveTrackResponse struct {
 // and is cleared when that session ends. 404 for a slug not in the RKB, 400 on a bad body, 503 when
 // the RKB or the picker is not wired.
 func (s *Server) handleSetLiveTrack(w http.ResponseWriter, r *http.Request) {
+	if s.noLiveFeed(w) {
+		return
+	}
 	var req liveTrackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TrackSlug == nil || *req.TrackSlug == "" {
 		writeError(w, http.StatusBadRequest, `body must be {"track_slug": "<slug>"}`)
@@ -59,6 +62,9 @@ func (s *Server) handleSetLiveTrack(w http.ResponseWriter, r *http.Request) {
 
 // handleClearLiveTrack: DELETE /v1/live/track clears the pick (applied or pending); detection resumes.
 func (s *Server) handleClearLiveTrack(w http.ResponseWriter, _ *http.Request) {
+	if s.noLiveFeed(w) {
+		return
+	}
 	if s.TrackPick != nil {
 		s.TrackPick.Clear()
 		s.log.Info("user track pick cleared")
