@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState } from "react";
 import AppBar from "./components/AppBar";
 import Dashboard from "./components/Dashboard";
+import { useMode } from "./hooks/useMode";
 import OnboardingFlow from "./components/onboarding/OnboardingFlow";
 import type { OnboardingPrefs } from "./components/onboarding/types";
 import "./index.css";
@@ -68,13 +69,14 @@ export default function App() {
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === "light" ? "dark" : "light"));
+  const mode = useMode(); // null while /v1/mode loads: the dashboard waits so analysis never flashes live UI
   const [live, setLive] = useState(false);
   // The bar owns the slot element; Dashboard portals the record toggle into it.
   const [recordSlot, setRecordSlot] = useState<HTMLElement | null>(null);
 
   return (
     <>
-      <AppBar theme={theme} onToggleTheme={toggleTheme} live={live} recordSlotRef={phase.kind === "dashboard" ? setRecordSlot : undefined} />
+      <AppBar theme={theme} onToggleTheme={toggleTheme} live={live} mode={mode ?? undefined} recordSlotRef={phase.kind === "dashboard" ? setRecordSlot : undefined} />
       <div className="app">
         {phase.kind === "onboarding" ? (
           <OnboardingFlow
@@ -83,8 +85,8 @@ export default function App() {
               setPhase({ kind: "dashboard", prefs });
             }}
           />
-        ) : (
-          <Dashboard recordSlot={recordSlot} theme={theme} onLiveChange={setLive} />
+        ) : mode && (
+          <Dashboard recordSlot={recordSlot} theme={theme} onLiveChange={setLive} mode={mode} />
         )}
       </div>
     </>

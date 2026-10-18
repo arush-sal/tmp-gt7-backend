@@ -292,6 +292,11 @@ export default function TelemetryGraph({
   useLayoutEffect(() => {
     const u = uRef.current;
     if (!u || !analysisLap) return;
+    // Push the new lap's data BEFORE fitting: u.data still holds the previous lap until the next
+    // rAF tick, and tick() never resets scales in analysis mode, so fitting to u.data as-is would
+    // pin the old lap's x-range. (Cards whose overlay presence flips are re-keyed and dodge this;
+    // e.g. Steering, which has no median/reference overlay, never is.)
+    u.setData(toAligned(dataCols()), false);
     const xs = u.data[0];
     if (!xs || !xs.length) return;
     if (xRange) u.setScale("x", { min: xRange[0], max: xRange[1] });

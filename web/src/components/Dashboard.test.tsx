@@ -714,3 +714,138 @@ describe("user-confirmed track (live picker)", () => {
     expect(await screen.findByLabelText("Track")).toBeInTheDocument();
   });
 });
+
+describe("Dashboard (analysis mode)", () => {
+  const sess = (id: string, start: string, track_slug: string | null, car = "Car") => ({
+    id, car_id: 1, car_name: car, status: "finished", start_time: start, end_time: start,
+    frame_count: 1, gap_count: 0, current_lap: 2, total_laps: 0, best_lap: "90s", track_slug });
+  const lapRow = (n: number, slug: string | null) => ({
+    lap_number: n, duration_ns: 90e9 + n, complete: true, valid: true, timed: true, delta_to_pb_ns: null,
+    sectors: { reliable: true, reason: null, splits: [] }, track_slug: slug, track_confidence: slug ? "confident" : null, reference_eligible: true });
+  const sessions = [
+    sess("s-old", "2026-01-01T00:00:00Z", null, "Old"),
+    sess("s-spa", "2026-03-01T00:00:00Z", "spa", "SpaCar"),
+    sess("s-suz", "2026-02-01T00:00:00Z", "suzuka", "SuzCar"),
+  ];
+  const calls: { url: string; method: string }[] = [];
+  let trace: object[] = [];
+  beforeEach(() => {
+    calls.length = 0;
+    trace = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, method: init?.method ?? "GET" });
+      if (u === "/v1/tracks") return { ok: true, status: 200, json: async () => [{ slug: "spa", name: "Spa" }, { slug: "suzuka", name: "Suzuka" }, { slug: "monza", name: "Monza" }] };
+      if (u === "/v1/sessions") return { ok: true, status: 200, json: async () => sessions };
+      const m = /\/v1\/sessions\/([^/]+)\/laps$/.exec(u);
+      if (m) {
+        const slug = sessions.find(s => s.id === m[1])?.track_slug ?? null;
+        return { ok: true, status: 200, json: async () => [lapRow(1, slug), { ...lapRow(2, slug), duration_ns: 80e9 }, { ...lapRow(3, slug), duration_ns: 0.198e9, complete: false, valid: false }] };
+      }
+      if (/\/laps\/\d+\/trace/.test(u)) return { ok: true, status: 200, json: async () => trace };
+      if (u.includes("/reference-lap")) return { ok: true, status: 200, json: async () => storedRef() };
+      return { ok: true, status: 200, json: async () => [] };
+    }) as unknown as typeof fetch);
+  });
+  function Analysis() {
+    const [slot, setSlot] = useState<HTMLElement | null>(null);
+    const { source } = fakeSource();
+    return (<><AppBar theme="light" onToggleTheme={() => {}} live={false} mode="analysis" recordSlotRef={setSlot} />
+      <Dashboard source={source} recordSlot={slot} mode="analysis" /></>);
+  }
+  const sessionSelect = () => screen.getByLabelText<HTMLSelectElement>("Session");
+  const trackSelect = () => screen.getByLabelText<HTMLSelectElement>("Track");
+
+  it("opens the most recent stored session and its laps; hides the live-only UI", async () => {
+    render(<Analysis />);
+    await waitFor(() => expect(sessionSelect().value).toBe("s-spa"));
+    await waitFor(() => expect(calls.some(c => c.url === "/v1/sessions/s-spa/laps")).toBe(true));
+    expect(screen.getByText("ANALYSIS")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Live" })).toBeNull();
+    expect(screen.queryByText("Back to live")).toBeNull();
+    expect(screen.queryByText("Viewing stored session")).toBeNull();
+    for (const l of ["Position", "Lap delta", "Predicted"]) expect(screen.queryByText(l)).toBeNull();
+    expect(screen.queryByText(/waiting for telemetry|connecting/i)).toBeNull();
+    expect(screen.queryByText(/LIVE|OFFLINE|REC/)).toBeNull();
+    expect(screen.queryByRole("option", { name: "Current lap" })).toBeNull();
+    expect(screen.getByRole("button", { name: /play/i })).toBeInTheDocument();
+  });
+
+  it("Track picker lists only tracks with sessions (+ Unknown) and is coupled to the Session picker", async () => {
+    render(<Analysis />);
+    await waitFor(() => expect(trackSelect().value).toBe("spa"));
+    const trackOpts = [...trackSelect().options].map(o => o.textContent);
+    expect(trackOpts).toEqual(expect.arrayContaining(["Spa", "Suzuka", "Unknown track"]));
+    expect(trackOpts).not.toContain("Monza");
+    // session list is filtered to the picked track
+    expect([...sessionSelect().options].map(o => o.value)).toEqual(["s-spa"]);
+    // picking a track switches to its most recent session
+    fireEvent.change(trackSelect(), { target: { value: "suzuka" } });
+    await waitFor(() => expect(sessionSelect().value).toBe("s-suz"));
+    expect([...sessionSelect().options].map(o => o.value)).toEqual(["s-suz"]);
+    // Unknown track holds sessions with no track
+    fireEvent.change(trackSelect(), { target: { value: "__unknown__" } });
+    await waitFor(() => expect(sessionSelect().value).toBe("s-old"));
+    expect(calls.filter(c => c.url === "/v1/live/track")).toHaveLength(0);
+  });
+
+  it("compares against the stored track reference only; the saved live choice is untouched", async () => {
+    localStorage.setItem("gt7:ref-source", "predicted");
+    render(<Analysis />);
+    await waitFor(() => expect(calls.some(c => c.url.startsWith("/v1/tracks/spa/reference-lap"))).toBe(true));
+    expect(screen.queryByLabelText("Reference source")).toBeNull();
+    expect(localStorage.getItem("gt7:ref-source")).toBe("predicted");
+  });
+
+  it("Play is disabled (with a reason) unless a single lap is selected", async () => {
+    render(<Analysis />);
+    const play = await screen.findByRole("button", { name: /play/i });
+    fireEvent.change(screen.getByLabelText("Lap"), { target: { value: "all" } });
+    expect(play).toBeDisabled();
+    expect(play.getAttribute("title")).toMatch(/single lap/i);
+  });
+
+  it("Play toggles to Pause for a selected lap with samples", async () => {
+    const smp = (i: number) => ({ seq: i, t_ns: i * 1e9, distance: i * 10, pos_x: i, pos_z: i, throttle: 0, brake: 0, speed: 100,
+      gear: 3, rpm: 5000, fuel: 50, tyre_temp_fl: 80, tyre_temp_fr: 80, tyre_temp_rl: 80, tyre_temp_rr: 80, clutch: 0, boost: 0,
+      delta_to_best_ns: null, steering: 0, surface_type: "" });
+    trace = [smp(0), smp(1), smp(2)];
+    render(<Analysis />);
+    const play = await screen.findByRole("button", { name: "Play" });
+    await waitFor(() => expect(play).toBeEnabled());
+    fireEvent.click(play);
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+  });
+
+  it("defaults the Lap select to the session's best valid lap, also after a track/session change", async () => {
+    render(<Analysis />);
+    await waitFor(() => expect(screen.getByLabelText<HTMLSelectElement>("Lap").value).toBe("2"));
+    fireEvent.change(screen.getByLabelText("Lap"), { target: { value: "3" } });
+    fireEvent.change(trackSelect(), { target: { value: "suzuka" } });
+    await waitFor(() => expect(sessionSelect().value).toBe("s-suz"));
+    await waitFor(() => expect(screen.getByLabelText<HTMLSelectElement>("Lap").value).toBe("2"));
+    expect(calls.some(c => c.url === "/v1/sessions/s-suz/laps/2/trace?decimate=1500" || /s-suz\/laps\/2\/trace/.test(c.url))).toBe(true);
+  });
+
+  it("never fetches under a remembered session id that is not in /v1/sessions", async () => {
+    localStorage.setItem("gt7:race", JSON.stringify({ schemaVersion: 1, payload: { raceKey: "gone-1", lastLap: 3, sticky: null } }));
+    render(<Analysis />);
+    await waitFor(() => expect(sessionSelect().value).toBe("s-spa"));
+    await waitFor(() => expect(calls.some(c => c.url.startsWith("/v1/sessions/s-spa/laps"))).toBe(true));
+    expect(calls.filter(c => c.url.includes("gone-1"))).toEqual([]);
+  });
+
+  it("speed peaks compare vs the stored reference lap when it is in this session", async () => {
+    vi.mocked(fetch).mockImplementation((async (url: string) => {
+      const u = String(url);
+      calls.push({ url: u, method: "GET" });
+      if (u === "/v1/sessions") return { ok: true, status: 200, json: async () => sessions };
+      if (/\/v1\/sessions\/[^/]+\/laps$/.test(u)) return { ok: true, status: 200, json: async () => [lapRow(1, "spa"), { ...lapRow(2, "spa"), duration_ns: 80e9 }] };
+      if (u.includes("/reference-lap")) return { ok: true, status: 200, json: async () => ({ ...storedRef(), session_id: "s-spa", lap_number: 1 }) };
+      return { ok: true, status: 200, json: async () => [] };
+    }) as never);
+    render(<Analysis />);
+    await waitFor(() => expect(calls.some(c => /s-spa\/laps\/2\/peaks\?reference=1/.test(c.url))).toBe(true));
+    expect(screen.getByLabelText<HTMLSelectElement>("Peaks reference").value).toBe("1");
+  });
+});

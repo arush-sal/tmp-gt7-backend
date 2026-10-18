@@ -30,3 +30,12 @@ describe("AppBar status chip", () => {
     expect(screen.getByRole("status").getAttribute("aria-label")).toBe("not live");
   });
 });
+
+describe("AppBar mode badge", () => {
+  it("shows an ANALYSIS badge in analysis mode only", () => {
+    const { rerender } = render(<AppBar theme="light" onToggleTheme={() => {}} live={false} mode="analysis" />);
+    expect(screen.getByText("ANALYSIS")).toBeInTheDocument();
+    rerender(<AppBar theme="light" onToggleTheme={() => {}} live={false} mode="live" />);
+    expect(screen.queryByText("ANALYSIS")).toBeNull();
+  });
+});

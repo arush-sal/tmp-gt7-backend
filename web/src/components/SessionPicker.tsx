@@ -47,9 +47,10 @@ interface Props {
   replay: boolean;                 // live feed is a replay of a stored session
   onSelect: (id: string | null) => void;
   onOpen: () => void;              // refresh the list when the picker is used
+  allowLive?: boolean;             // false in analysis mode: no "Live" entry, no back-to-live chips
 }
 
-export default function SessionPicker({ sessions, trackNames, error, selectedId, replay, onSelect, onOpen }: Props) {
+export default function SessionPicker({ sessions, trackNames, error, selectedId, replay, onSelect, onOpen, allowLive = true }: Props) {
   const known = selectedId === null || sessions.some(s => s.id === selectedId);
   const shown = sessions.find(x => x.id === selectedId);
   const fullLabel = selectedId === null ? "Live" : shown ? sessionTitle(shown, trackNames) : selectedId;
@@ -64,11 +65,11 @@ export default function SessionPicker({ sessions, trackNames, error, selectedId,
         onFocus={onOpen}
         onChange={e => onSelect(e.target.value || null)}
       >
-        <option value="">Live</option>
+        {allowLive && <option value="">Live</option>}
         {!known && <option value={selectedId!}>{selectedId}</option>}
         {sessions.map(s => <option key={s.id} value={s.id} title={sessionTitle(s, trackNames)}>{labels.get(s.id)}</option>)}
       </select>
-      {selectedId !== null && (
+      {allowLive && selectedId !== null && (
         <>
           <span className="chip chip--amber" role="status">Viewing stored session</span>
           <button type="button" className="chip" onClick={() => onSelect(null)}>Back to live</button>

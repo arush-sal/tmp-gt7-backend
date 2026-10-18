@@ -14,6 +14,9 @@ import { usePeaks } from "../hooks/usePeaks";
 import { useTrack } from "../hooks/useTrack";
 import { useSectorTimes } from "../hooks/useSectorTimes";
 import { useSessions } from "../hooks/useSessions";
+import { usePlayback } from "../hooks/usePlayback";
+import type { AppMode } from "../hooks/useMode";
+import { UNKNOWN_TRACK, analysisTracks, defaultAnalysisLap, reconcileAnalysis, trackKey } from "../lib/analysisSelection";
 import { estimateLapsLeft } from "../lib/fuelEstimate";
 import { subscribeLive, type LiveSource } from "../lib/liveSource";
 import { gateAfterRace } from "../lib/gateAfterRace";
@@ -43,9 +46,13 @@ import CornerDetailPanel from "./CornerDetailPanel";
 import RightPanel from "./RightPanel";
 import PeaksTable from "./PeaksTable";
 
-export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange, recordSlot }: {
+export default function Dashboard({ source = subscribeLive, theme = "light", onLiveChange, recordSlot, mode = "live" }: {
   source?: LiveSource; recordSlot?: HTMLElement | null; theme?: "light" | "dark"; onLiveChange?: (live: boolean) => void;
+  mode?: AppMode;
 }) {
+  // Analysis mode (rtps serving stored data only): no live feed, so the live-only UI is hidden, a stored
+  // session is always shown, and Track/Session pickers are coupled. Live and replay modes are unchanged.
+  const analysis = mode === "analysis";
   // Gate the stream once, share it with both subscriptions: after a race finishes, one latch
   // stops cooldown frames reaching history, sectors, view, and track alike (see gateAfterRace).
   const gated = useMemo(() => gateAfterRace(source), [source]);
@@ -54,9 +61,30 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // Stored-session picker: null = follow the live feed. viewSessionId feeds every session-scoped
   // fetch/cache; the live history store and race-reset logic keep using raceKey.
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const viewSessionId = selectedSessionId ?? sessionId;
   const viewing = selectedSessionId !== null;
   const sessionsList = useSessions(snapshot?.enrichment?.session_id);
+  // raceKey may be restored from localStorage and name a session that no longer exists (404s on every
+  // session fetch). Only fetch under it once it is confirmed: it is the live feed's session, or it is
+  // in /v1/sessions. Analysis never follows it (no live feed; a stored session is always selected).
+  const liveSessionOk = !analysis && sessionId !== null &&
+    (sessionId === snapshot?.enrichment?.session_id || sessionsList.sessions.some(s => s.id === sessionId));
+  const viewSessionId = selectedSessionId ?? (liveSessionOk ? sessionId : null);
+  // Analysis: the Track picker's choice (a slug or UNKNOWN_TRACK); null until the first session loads.
+  // Kept consistent with the selected session: a session sets its track, a track picks its newest session.
+  const [analysisTrack, setAnalysisTrack] = useState<string | null>(null);
+  useEffect(() => {
+    if (!analysis) return;
+    const r = reconcileAnalysis(sessionsList.sessions, selectedSessionId, analysisTrack);
+    if (r.id !== null && r.id !== selectedSessionId) setSelectedSessionId(r.id);
+    if (r.track !== null && r.track !== analysisTrack) setAnalysisTrack(r.track);
+  }, [analysis, sessionsList.sessions, selectedSessionId, analysisTrack]);
+  const pickAnalysisSession = (id: string | null) => {
+    const s = sessionsList.sessions.find(x => x.id === id);
+    setSelectedSessionId(id);
+    if (s) setAnalysisTrack(trackKey(s));
+  };
+  const pickerSessions = analysis && analysisTrack !== null
+    ? sessionsList.sessions.filter(s => trackKey(s) === analysisTrack) : sessionsList.sessions;
   // Independent live subscription (per the plan: fan-out to a single subscription is a
   // later pass) — feeds the graph buffer only, reuses the same gated `source` as
   // useSession so tests (and a future single-subscription refactor) see one seam. On each lap
@@ -187,7 +215,9 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     } catch (e) { setPickError(trackErrorText(e)); }
   };
 
-  const track = useTrack(sel.slug);
+  // The track drawn on the canvas: live = the selected/detected one; analysis = the Track picker's.
+  const shownSlug = analysis ? (analysisTrack && analysisTrack !== UNKNOWN_TRACK ? analysisTrack : null) : sel.slug;
+  const track = useTrack(shownSlug);
   const geometry = useMemo(() => (track.record ? toDrawGeometry(track.record) : null), [track.record]);
   const sectorTimes = useSectorTimes(snapshot, geometry, sel.slug, live);
 
@@ -213,7 +243,9 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // Lap selection: which lap's trace is drawn on the canvas. A numeric `selectedLap` is a
   // lap_number (1-based). Auto-follows: "current" (live view) while live, the latest completed
   // lap once live ends -- until the user picks explicitly.
-  const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>("current");
+  // Analysis has no "Current lap" (nothing is live): it rests on "All laps" until a lap exists.
+  const idleLap = analysis ? "all" : "current";
+  const [selectedLap, setSelectedLap] = useState<"all" | "current" | number>(idleLap);
   const [userPickedLap, setUserPickedLap] = useState(false);
   const completedLapCount = history.completedLapCount();
   // Authoritative lap list from the backend (survives a page refresh — the live counter above
@@ -229,12 +261,16 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     (m, l) => (l.lap_number >= 1 && (totalLaps <= 0 || l.lap_number <= totalLaps) && l.lap_number > m ? l.lap_number : m),
     0);
   const latestLap = viewing ? backendMaxLap : Math.max(backendMaxLap, completedLapCount);
+  // Analysis opens on the session's best valid lap (not the latest: that is often a partial fragment at
+  // the session end). Wait for the new session's laps: useLaps keeps the prior list while loading.
+  const analysisDefaultLap = analysis && !laps.loading ? defaultAnalysisLap(laps.laps, totalLaps) : null;
   useEffect(() => {
     if (userPickedLap) return;
-    setSelectedLap(live && !viewing ? "current" : latestLap > 0 ? latestLap : "current");
-  }, [live, viewing, latestLap, userPickedLap]);
+    if (analysis) { if (analysisDefaultLap !== null) setSelectedLap(analysisDefaultLap); return; }
+    setSelectedLap(live && !viewing ? "current" : latestLap > 0 ? latestLap : idleLap);
+  }, [analysis, analysisDefaultLap, live, viewing, latestLap, userPickedLap, idleLap]);
   // Switching session (or back to live) restarts lap auto-follow; a stale lap number must not carry over.
-  useEffect(() => { setUserPickedLap(false); setSelectedLap("current"); }, [selectedSessionId]);
+  useEffect(() => { setUserPickedLap(false); setSelectedLap(idleLap); }, [selectedSessionId, idleLap]);
   // The reference (predicted) lap is cut on the backend-detected track's RKB sectors, so refetch when
   // that track changes (a provisional switch), not only as laps complete. A stored session being
   // viewed is not live-detected, so only the lap count keys it.
@@ -258,8 +294,10 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   const setRefSource = (v: RefSource) => { setRefSourceState(v); saveRefSource(v); };
   const [pinVersion, setPinVersion] = useState(0); // bumped after a pin/clear -> refetch the stored reference
   // THE selected reference: every reference consumer below reads `reference` / `refStored`.
-  const selectedRef = useSelectedReference(refSlug, refSource, sessionReference, pinVersion, `${latestLap}:${laps.laps.length}`);
-  const reference = selectedRef.reference;
+  // Analysis compares against the TRACK's stored reference only: forced "stored" (the saved live choice is
+  // left alone), and no predicted fallback when the track has no stored lap.
+  const selectedRef = useSelectedReference(refSlug, analysis ? "stored" : refSource, sessionReference, pinVersion, `${latestLap}:${laps.laps.length}`);
+  const reference = analysis && selectedRef.effective !== "stored" ? null : selectedRef.reference;
   const refStored = selectedRef.effective === "stored";
   // Reference (ideal) drive-line for the track canvas.
   const referenceLap = useMemo(
@@ -309,6 +347,9 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   useEffect(() => {
     setScrubIndex(typeof selectedLap === "number" ? (lapView?.length ?? 1) - 1 : null);
   }, [selectedLap, lapView]);
+  // Analysis playback drives the same scrub cursor the graphs + track canvas already follow.
+  const lapTimes = useMemo(() => (lapView ? lapView.points.map(p => p.t ?? 0) : null), [lapView]);
+  const playback = usePlayback(analysis && typeof selectedLap === "number" ? lapTimes : null, setScrubIndex);
   const frame = typeof selectedLap === "number" && scrubIndex !== null
     ? lapView?.frameAt(scrubIndex) ?? null
     : null;
@@ -345,6 +386,11 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   // Speed peaks & valleys for the selected lap, vs the chosen reference.
   const [peaksRef, setPeaksRef] = useState<"predicted" | number>("predicted");
   useEffect(() => { if (newRaceSeq > 0) setPeaksRef("predicted"); }, [newRaceSeq]);
+  // Analysis compares against the track's stored reference. The peaks API only takes "predicted" or a
+  // lap of THIS session, so default to the stored lap when it belongs to the viewed session.
+  const storedPeaksLap = analysis && selectedRef.stored && selectedRef.stored.session_id === viewSessionId
+    ? selectedRef.stored.lap_number : null;
+  useEffect(() => { if (analysis) setPeaksRef(storedPeaksLap ?? "predicted"); }, [analysis, storedPeaksLap, viewSessionId]);
   const peaks = usePeaks(viewSessionId, typeof selectedLap === "number" ? selectedLap : null, peaksRef);
   // Cross-highlight state shared by the peaks table and the canvas markers (bidirectional): hover
   // previews, click pins. Keyed by ExtremumDTO.index. Cleared when the lap/reference/session changes.
@@ -456,15 +502,17 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     ? `stream error: ${error.message}`
     : lapNote
       ? lapNote
-      : sel.slug
+      : shownSlug
         ? null
+        : analysis
+          ? "no confirmed track"
         : !sel.autoClosed
           ? "detecting track..."
           : "no track detected";
 
   return (
     <>
-      {(!snapshot || error || snapshot.status === "idle") && (
+      {!analysis && (!snapshot || error || snapshot.status === "idle") && (
         <div className="conn-banner">
           {error
             ? `stream error: ${error.message}`
@@ -475,6 +523,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
       )}
 
       <SessionHeader
+        hideLive={analysis}
         view={displayView}
         selectedCorner={selectedCornerDetail}
         trackPicker={
@@ -482,7 +531,15 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
           // re-locks) -> render nothing rather than an empty "select track" dropdown.
           // Live (not viewing a stored session) the picker is always offered so the user can confirm
           // the track before detection (or pick for the next session from the menus).
-          !viewing || sel.slug || refSlug ? (
+          analysis ? (
+            <div className="track-cell-row">
+              <TrackPicker value={analysisTrack} items={analysisTracks(sessionsList.sessions, trackNames)}
+                onPick={slug => setAnalysisTrack(slug)} />
+              <ReferenceMenu key={refSlug ?? shownSlug ?? ""} slug={refSlug} stored={selectedRef.stored}
+                waitingTip="This session's laps have no confirmed track"
+                onChanged={() => setPinVersion(v => v + 1)} />
+            </div>
+          ) : !viewing || sel.slug || refSlug ? (
             <div className="track-cell-row">
               {(!viewing || sel.slug) && (
                 <TrackPicker
@@ -507,15 +564,25 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
         sessionPicker={
           <>
           <SessionPicker
-            sessions={sessionsList.sessions}
+            sessions={pickerSessions}
+            allowLive={!analysis}
             trackNames={trackNames}
             error={sessionsList.error}
             selectedId={selectedSessionId}
             replay={!!snapshot?.enrichment?.duplicate_of}
-            onSelect={setSelectedSessionId}
+            onSelect={analysis ? pickAnalysisSession : setSelectedSessionId}
             onOpen={sessionsList.refresh}
           />
-          {recordSlot && createPortal(
+          {recordSlot && analysis && createPortal(
+            <button type="button" className="chip" onClick={playback.toggle} disabled={!playback.canPlay}
+              aria-label={playback.playing ? "Pause" : "Play"}
+              title={playback.canPlay ? (playback.playing ? "Pause lap playback" : "Play the lap back in real time")
+                : "Select a single lap to play it back"}>
+              {playback.playing ? "❚❚ Pause" : "▶ Play"}
+            </button>,
+            recordSlot,
+          )}
+          {recordSlot && !analysis && createPortal(
             <RecordToggle
               live={live}
               available={!viewing && snapshot?.status === "live"}
@@ -539,7 +606,7 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
             }}
           >
             <option value="all">All laps</option>
-            <option value="current">Current lap</option>
+            {!analysis && <option value="current">Current lap</option>}
             {Array.from({ length: latestLap }, (_, i) => latestLap - i).map(n => (
               <option key={n} value={n}>Lap {n}</option>
             ))}
@@ -621,19 +688,21 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
               referenceLap={referenceLap}
               referenceControl={
                 <>
-                  <select aria-label="Reference source" className="header-select" value={refSource}
-                    onChange={e => setRefSource(e.target.value as RefSource)}>
-                    <option value="auto">Auto (fastest available)</option>
-                    <option value="stored">Stored lap</option>
-                    <option value="predicted">Predicted (this session)</option>
-                  </select>
-                  {refSource === "stored" && selectedRef.error && (
+                  {!analysis && (
+                    <select aria-label="Reference source" className="header-select" value={refSource}
+                      onChange={e => setRefSource(e.target.value as RefSource)}>
+                      <option value="auto">Auto (fastest available)</option>
+                      <option value="stored">Stored lap</option>
+                      <option value="predicted">Predicted (this session)</option>
+                    </select>
+                  )}
+                  {(analysis || refSource === "stored") && selectedRef.error && (
                     <span className="chip chip--red" role="alert">Couldn't load stored lap</span>
                   )}
-                  {refSource === "stored" && !selectedRef.error && !refSlug && (
+                  {(analysis || refSource === "stored") && !selectedRef.error && !refSlug && (
                     <span className="text-muted" role="status">track not confirmed yet</span>
                   )}
-                  {refSource === "stored" && selectedRef.noStored && (
+                  {(analysis || refSource === "stored") && selectedRef.noStored && (
                     <span className="text-muted" role="status">no stored lap for this track</span>
                   )}
                 </>

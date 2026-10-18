@@ -10,9 +10,10 @@ interface Props {
   trackPicker?: ReactNode;
   lapSelector?: ReactNode;
   sessionPicker?: ReactNode;
+  hideLive?: boolean; // analysis mode: drop the live-only cells (Position, Lap delta, Predicted)
 }
 
-export default function SessionHeader({ view, selectedCorner, trackPicker, lapSelector, sessionPicker }: Props) {
+export default function SessionHeader({ view, selectedCorner, trackPicker, lapSelector, sessionPicker, hideLive = false }: Props) {
   const ph = "—";
   const deltaClass =
     view?.deltaTone === "blue" ? "text-blue" : view?.deltaTone === "red" ? "text-red" : "text-muted";
@@ -22,10 +23,12 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
     <header className="session-header">
       <div className="header-bar">
 
-        <div className="header-cell">
-          <span className="label">Position</span>
-          <span className="mono header-val">{view ? view.position : ph}</span>
-        </div>
+        {!hideLive && (
+          <div className="header-cell">
+            <span className="label">Position</span>
+            <span className="mono header-val">{view ? view.position : ph}</span>
+          </div>
+        )}
 
         {sessionPicker && (
           <div className="header-cell header-cell--picker">
@@ -58,7 +61,7 @@ export default function SessionHeader({ view, selectedCorner, trackPicker, lapSe
               <span className="mono header-val text-red">+{selectedCorner.delta.toFixed(3)}s</span>
             </div>
           </>
-        ) : (
+        ) : hideLive ? null : (
           <>
             <div className="header-cell">
               <Tooltip text="Live gap to your best lap at this point on track (- ahead, + behind)."><span className="label">Lap delta</span></Tooltip>
