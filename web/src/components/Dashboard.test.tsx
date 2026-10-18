@@ -371,7 +371,7 @@ describe("Dashboard (live)", () => {
     expect(select.value).toBe("current");
   });
 
-  it("auto-selects the latest completed lap once live ends; an earlier lap shows its cached data at lap-end", async () => {
+  it("auto-selects the latest completed lap once live ends; an earlier lap shows its cached data at lap-start", async () => {
     const { source, push } = j3Source();
     render(<Dashboard source={source} />);
 
@@ -386,14 +386,28 @@ describe("Dashboard (live)", () => {
     const select = screen.getByLabelText<HTMLSelectElement>("Lap");
     // 3 completed laps -> auto-follow lands on the latest lap_number (3) now that live ended.
     await waitFor(() => expect(select.value).toBe("3"));
-    // lap_number 3's cached trace (single sample, fuel 55%) drives the right panel at lap-end.
+    // lap_number 3's cached trace (single sample, fuel 55%) drives the right panel.
     await waitFor(() => expect(screen.getByText("55%")).toBeTruthy());
 
     // Selecting an earlier lap (lap_number 2) switches the right panel to that lap's cached
-    // frame, scrubbed to its LAST sample by default (lap-end) — the same index the telemetry
+    // frame, scrubbed to its FIRST sample by default (start line) — the same index the telemetry
     // graphs and trace-canvas cursor default to, all derived from the single `scrubIndex` state.
     fireEvent.change(select, { target: { value: "2" } });
     await waitFor(() => expect(screen.getByText("91%")).toBeTruthy());
+  });
+
+  it("a stored lap defaults to its START sample (not the finish line) in the header", async () => {
+    const { source, push } = j3Source();
+    render(<Dashboard source={source} />);
+    act(() => push({ lap: 1, t: 1_000_000_000, fuel: 99 })); // primer, dropped
+    act(() => push({ lap: 2, t: 2_000_000_000, fuel: 91 }));
+    act(() => push({ lap: 2, t: 2_500_000_000, fuel: 80 })); // later sample of lap 2
+    act(() => push({ lap: 3, t: 3_000_000_000, fuel: 55 }));
+    act(() => push({ lap: 91, t: 4_000_000_000, fuel: 5, totalLaps: 90 }));
+    const select = screen.getByLabelText<HTMLSelectElement>("Lap");
+    await waitFor(() => expect(select.value).toBe("2"));
+    await waitFor(() => expect(screen.getByText("91%")).toBeTruthy()); // first sample
+    expect(screen.queryByText("80%")).toBeNull();
   });
 
   it("resets a stale numeric selection back to 'Current lap' on a new race", async () => {

@@ -345,10 +345,10 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
   const analysisLap = lapView?.points ?? null;
   const [scrubIndex, setScrubIndex] = useState<number | null>(null);
   // Header, graphs, and canvas cursor must agree on the default scrub position: a specific
-  // lap starts scrubbed to its LAST index (lap-end), not null/0. Re-keys off lapView so it
-  // settles once the (possibly async) trace resolves.
+  // lap starts scrubbed to its FIRST index (start line), not the finish; null only for the live
+  // "current" / "all" views. Re-keys off lapView so it settles once the (possibly async) trace resolves.
   useEffect(() => {
-    setScrubIndex(typeof selectedLap === "number" ? (lapView?.length ?? 1) - 1 : null);
+    setScrubIndex(typeof selectedLap === "number" ? 0 : null);
   }, [selectedLap, lapView]);
   // Analysis playback drives the same scrub cursor the graphs + track canvas already follow.
   const lapTimes = useMemo(() => (lapView ? lapView.points.map(p => p.t ?? 0) : null), [lapView]);
@@ -456,13 +456,13 @@ export default function Dashboard({ source = subscribeLive, theme = "light", onL
     if (!analysisLap) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") { // dismiss canvas selections: pinned peak/valley + scrub point
-        setPinnedPeak(null); setHoveredPeak(null); setScrubIndex(null);
+        setPinnedPeak(null); setHoveredPeak(null); setScrubIndex(0); // back to the start line
         return;
       }
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
       e.preventDefault();
       const dir = e.key === "ArrowRight" ? 1 : -1;
-      const cur = scrubIndex ?? analysisLap.length - 1;
+      const cur = scrubIndex ?? 0;
       const next = clampIndex(cur + dir, analysisLap.length);
       setScrubIndex(next);
       // Scrub-follow: if zoomed and the new point leaves the window, page the window (same width)
