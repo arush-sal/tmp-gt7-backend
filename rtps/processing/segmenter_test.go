@@ -269,14 +269,28 @@ func TestSegmenter_PartialFirstLap(t *testing.T) {
 
 // TestSegmenter_TakenFingerprintStoredWithout (#5): a later lap whose fingerprint another session
 // already owns (the unique index) is still stored, just without the fingerprint, and no error is
-// surfaced.
+// surfaced. The session's own first completed lap keeps its fingerprint.
 func TestSegmenter_TakenFingerprintStoredWithout(t *testing.T) {
+	roll1, roll2 := mkFrame(200, 2, 91_000, false), mkFrame(300, 3, 90_000, false)
+	store := NewMemLapStore()
+	_ = store.Save(&Lap{SessionID: "other", LapNumber: 2, Fingerprint: session.LapFingerprint(roll2, 2)})
+	errs, laps := segInto(store, mkFrame(0, 0, 0, false), mkFrame(100, 1, 30_000, false), roll1, roll2)
+	if errs != 0 || len(laps) != 4 || laps[1].Fingerprint != session.LapFingerprint(roll1, 1) ||
+		laps[2].LapNumber != 2 || laps[2].Fingerprint != "" || !laps[2].Valid {
+		t.Errorf("errs=%d laps=%+v, want lap 1 fingerprinted, lap 2 stored valid without fingerprint, no error", errs, laps)
+	}
+}
+
+// TestSegmenter_FirstLapTakenFingerprintSurfaced: the session's FIRST completed lap already owned by
+// another session means the Detector missed a duplicate (it decides on that lap). The lap is still
+// stored (without the fingerprint, like any taken one), but the miss is surfaced, never silent.
+func TestSegmenter_FirstLapTakenFingerprintSurfaced(t *testing.T) {
 	roll := mkFrame(200, 2, 90_000, false)
 	store := NewMemLapStore()
 	_ = store.Save(&Lap{SessionID: "other", LapNumber: 1, Fingerprint: session.LapFingerprint(roll, 1)})
+	var got []error
 	seg := NewLapSegmenter(store)
-	var errs int
-	seg.OnError = func(error) { errs++ }
+	seg.OnError = func(err error) { got = append(got, err) }
 	rec := &session.Record{ID: "s1"}
 	seg.OnSessionStart(rec)
 	for _, f := range []*telemetryv1.TelemetryFrame{mkFrame(0, 0, 0, false), mkFrame(100, 1, 30_000, false), roll} {
@@ -284,9 +298,27 @@ func TestSegmenter_TakenFingerprintStoredWithout(t *testing.T) {
 	}
 	seg.OnSessionEnd(rec)
 	laps := store.BySession("s1")
-	if errs != 0 || len(laps) != 3 || laps[1].LapNumber != 1 || laps[1].Fingerprint != "" || !laps[1].Valid {
-		t.Errorf("errs=%d laps=%+v, want lap 1 stored valid without fingerprint, no error", errs, laps)
+	if len(got) != 1 || !errors.Is(got[0], ErrDuplicateFingerprint) {
+		t.Errorf("errors = %v, want one wrapping ErrDuplicateFingerprint", got)
 	}
+	if len(laps) != 3 || laps[1].Fingerprint != "" || !laps[1].Valid {
+		t.Errorf("laps = %+v, want lap 1 still stored valid without fingerprint", laps)
+	}
+}
+
+// segInto runs frames through one session "s1" of a segmenter over store, returning the OnError count
+// and the stored laps.
+func segInto(store *MemLapStore, frames ...*telemetryv1.TelemetryFrame) (int, []*Lap) {
+	seg := NewLapSegmenter(store)
+	var errs int
+	seg.OnError = func(error) { errs++ }
+	rec := &session.Record{ID: "s1"}
+	seg.OnSessionStart(rec)
+	for _, f := range frames {
+		seg.OnFrame("s1", f)
+	}
+	seg.OnSessionEnd(rec)
+	return errs, store.BySession("s1")
 }
 
 // TestSegmenter_LabelsLapWithCurrentTrack: each lap carries the track TrackFn reports when it closes.

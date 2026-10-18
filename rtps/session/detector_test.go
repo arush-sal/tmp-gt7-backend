@@ -882,6 +882,40 @@ func TestDetector_PartialFirstLapNotCompleted(t *testing.T) {
 	}
 }
 
+// TestDetector_ConfirmOnRolloverFrameNotCompleted: a session that opens on lap 1 and confirms on the
+// very frame that rolls 1 -> 2 (the re-ingested redbull-ring capture's first loop) never forwarded any
+// of lap 1, so that rollover is not a completed lap: lap 2 is the partial first lap and lap 3 is the
+// first completed one. Its dedup decision must be lap 3's; before the fix the phantom lap 1 spent it,
+// lap 3's match became a "late duplicate", and a re-ingest stored a duplicate session.
+func TestDetector_ConfirmOnRolloverFrameNotCompleted(t *testing.T) {
+	dup := fpFrame(2000, 20, 4, 90_685, 9) // 3 -> 4: lap 3 is already stored under "orig"
+	h := &dupHooks{owner: map[string]string{LapFingerprint(dup, 3): "orig"}}
+	cfg := h.cfg()
+	var looked []int32
+	owner := cfg.FingerprintOwner
+	cfg.FingerprintOwner = func(fp string) (string, bool) {
+		if fp == LapFingerprint(dup, 3) {
+			looked = append(looked, 3)
+		} else {
+			looked = append(looked, -1)
+		}
+		return owner(fp)
+	}
+	frames := moving(0, 100, 5, 396, 1, 1, 0)             // lap 1, 0-400ms: not yet MinSession
+	frames = append(frames, fpFrame(500, 6, 2, 2_000, 5)) // 1 -> 2 at 500ms: confirms HERE
+	frames = append(frames, moving(600, 100, 4, 396, 7, 2, 0)...)
+	frames = append(frames, fpFrame(1100, 12, 3, 92_000, 6)) // 2 -> 3: the partial lap 2 ends
+	frames = append(frames, moving(1200, 100, 4, 396, 13, 3, 0)...)
+	frames = append(frames, dup, fpFrame(2100, 21, 4, 90_685, 9))
+	_, store := feed(cfg, frames...)
+	if len(looked) != 1 || looked[0] != 3 {
+		t.Errorf("lookups = %v, want only lap 3's ([3])", looked)
+	}
+	if len(store.List()) != 0 || len(h.dropped) != 1 || h.dropped[0] != "orig" {
+		t.Errorf("stored=%d dropped=%v, want 0/[orig] (a re-ingest must not store a duplicate)", len(store.List()), h.dropped)
+	}
+}
+
 // TestDetector_LateDuplicateKept (#5): only the first completed lap decides duplicates; a later lap
 // matching another session is reported once and the session is kept.
 func TestDetector_LateDuplicateKept(t *testing.T) {

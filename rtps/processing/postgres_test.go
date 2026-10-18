@@ -193,6 +193,11 @@ func TestPostgresLapStore_Fingerprint(t *testing.T) {
 	if err := ls.Save(mk("s2", 1, "fp1")); !errors.Is(err, ErrDuplicateFingerprint) {
 		t.Errorf("duplicate fingerprint save = %v, want ErrDuplicateFingerprint", err)
 	}
+	// A re-save of a stored lap without a fingerprint (the upsert path) never erases the one it has:
+	// the original lap must keep its dedup key, or a re-ingest of the same capture is stored again.
+	if err := ls.Save(mk("s1", 1, "")); err != nil {
+		t.Fatalf("re-save s1#1 without fingerprint: %v", err)
+	}
 	got := ls.BySession("s1")
 	if len(got) != 2 || got[0].Fingerprint != "" || got[1].Fingerprint != "fp1" {
 		t.Fatalf("BySession(s1) = %+v, want fingerprints \"\", fp1", got)

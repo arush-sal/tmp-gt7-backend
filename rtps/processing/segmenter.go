@@ -49,6 +49,9 @@ type lapState struct {
 	// GT7's last_lap at its rollover is a full lap time, so it is stored incomplete, invalid and
 	// unfingerprinted. Mirrors the Detector's partialLap, which likewise does not count it for rule B.
 	partial bool
+	// completed: a completed timed lap was already emitted. The first one is the lap the Detector's
+	// dedup decides on, so a taken fingerprint there means a missed duplicate (see emit).
+	completed bool
 }
 
 // NewLapSegmenter returns a segmenter that writes laps to store.
@@ -153,12 +156,20 @@ func (s *LapSegmenter) emit(sessionID string, st *lapState, complete bool, lastL
 		lap.TrackSlug, lap.TrackConfidence = s.TrackFn(sessionID)
 	}
 	err := s.store.Save(lap)
+	first := fp != "" && !st.completed
+	if fp != "" {
+		st.completed = true
+	}
 	if errors.Is(err, ErrDuplicateFingerprint) {
-		// Another session already owns this lap's fingerprint. Only a session's first completed lap
-		// decides duplicates (the Detector), so this is a later lap of a kept session: keep the lap,
-		// drop its fingerprint (the lap data matters; the fingerprint is only a dedup key).
+		// Another session already owns this lap's fingerprint. Keep the lap, drop its fingerprint (the
+		// lap data matters; the fingerprint is only a dedup key). Only a session's first completed lap
+		// decides duplicates (the Detector), so on a later lap this is the expected late duplicate; on
+		// the first it means the Detector missed one (e.g. its lookup failed): surface that.
 		lap.Fingerprint = ""
-		err = s.store.Save(lap)
+		if err = s.store.Save(lap); err == nil && first && s.OnError != nil {
+			s.OnError(fmt.Errorf("save lap %s#%d: first completed lap already stored under another session (duplicate session kept): %w",
+				sessionID, st.lapNumber, ErrDuplicateFingerprint))
+		}
 	}
 	if err != nil {
 		if s.OnError != nil {

@@ -26,7 +26,8 @@ func NewPostgresLapStore(pool *pgxpool.Pool) *PostgresLapStore {
 // lapUpsertSQL inserts a lap or replaces it on (session_id, lap_number) conflict — idempotent, though
 // the segmenter emits each lap once. An empty fingerprint is stored as NULL so the unique index on
 // laps.fingerprint (migration 00008) only constrains real fingerprints; an empty track slug/confidence
-// is stored as NULL (no track guess).
+// is stored as NULL (no track guess). A re-save never erases a stored fingerprint (COALESCE): it is the
+// lap's dedup key, and losing it lets a re-ingest of the same capture be stored as a new session.
 const lapUpsertSQL = `
 INSERT INTO laps
  (session_id, lap_number, start_time, end_time, duration_ns, frame_count, gap_count, complete, timed, valid, fingerprint,
@@ -35,7 +36,7 @@ INSERT INTO laps
  ON CONFLICT (session_id, lap_number) DO UPDATE SET
    start_time=EXCLUDED.start_time, end_time=EXCLUDED.end_time, duration_ns=EXCLUDED.duration_ns,
    frame_count=EXCLUDED.frame_count, gap_count=EXCLUDED.gap_count, complete=EXCLUDED.complete,
-   timed=EXCLUDED.timed, valid=EXCLUDED.valid, fingerprint=EXCLUDED.fingerprint,
+   timed=EXCLUDED.timed, valid=EXCLUDED.valid, fingerprint=COALESCE(EXCLUDED.fingerprint, laps.fingerprint),
    track_slug=EXCLUDED.track_slug, track_confidence=EXCLUDED.track_confidence`
 
 // Save upserts a lap. Duration stores as nanoseconds; counts widen to bigint (CHECK (>= 0) in the DB).

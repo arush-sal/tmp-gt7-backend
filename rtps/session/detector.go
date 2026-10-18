@@ -216,9 +216,14 @@ func (d *Detector) Observe(f *telemetryv1.TelemetryFrame) {
 	if inRace {
 		d.closePending = false // any in-race frame cancels a pending close (bridges brief dropouts)
 		prevLap := d.cur.CurrentLap
+		wasStarted := d.started
 		d.attribute(f, ts)
 		d.maybeConfirm(f, ts)
-		if d.started && isRollover(prevLap, f.GetCurrentLap()) {
+		// A rollover counts only for a session confirmed BEFORE this frame. Confirming on the rollover
+		// frame itself means none of prevLap was forwarded (the segmenter's first lap is this frame's,
+		// the partialLap just set), so it is no completed lap: counting it would spend the first-lap
+		// dedup decision on a phantom lap and let a re-ingested duplicate through.
+		if wasStarted && isRollover(prevLap, f.GetCurrentLap()) {
 			if prevLap == d.partialLap {
 				d.partialLap = 0 // the joined-mid-lap first lap: not a completed timed lap
 			} else {
