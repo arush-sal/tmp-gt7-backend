@@ -206,6 +206,7 @@ func (e *errLapStore) BySession(string) []*Lap                           { retur
 func (e *errLapStore) List() []*Lap                                      { return nil }
 func (e *errLapStore) SessionByFingerprint(string) (string, bool, error) { return "", false, nil }
 func (e *errLapStore) DeleteSession(string) error                        { return nil }
+func (e *errLapStore) DominantTracks() map[string]string                 { return nil }
 
 // TestSegmenter_SaveErrorSurfaced: a lap-store failure must reach OnError rather than being swallowed.
 func TestSegmenter_SaveErrorSurfaced(t *testing.T) {

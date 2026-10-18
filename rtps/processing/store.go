@@ -24,6 +24,10 @@ type LapStore interface {
 	SessionByFingerprint(fp string) (sessionID string, found bool, err error)
 	// DeleteSession removes all of a session's laps (rollback of a dropped duplicate session).
 	DeleteSession(sessionID string) error
+	// DominantTracks returns, per session, its dominant CONFIRMED track: the most common track_slug
+	// among laps with track_confidence = 'confident' (ties: the track of the earliest such lap).
+	// Sessions without a confident lap are absent. One aggregate for the whole list, not per session.
+	DominantTracks() map[string]string
 }
 
 // ErrDuplicateFingerprint is returned (wrapped) by LapStore.Save for a fingerprint already stored under
@@ -144,6 +148,39 @@ func (m *MemLapStore) DeleteSession(sessionID string) error {
 	delete(m.bySession, sessionID)
 	m.order = slices.DeleteFunc(m.order, func(id string) bool { return id == sessionID })
 	return nil
+}
+
+// DominantTracks implements LapStore.
+func (m *MemLapStore) DominantTracks() map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string)
+	for id, laps := range m.bySession {
+		count := map[string]int{}
+		first := map[string]time.Time{}
+		for _, l := range laps {
+			if l.TrackConfidence != ConfidenceConfident || l.TrackSlug == "" {
+				continue
+			}
+			count[l.TrackSlug]++
+			if f, ok := first[l.TrackSlug]; !ok || l.StartTime.Before(f) {
+				first[l.TrackSlug] = l.StartTime
+			}
+		}
+		best := ""
+		for slug, n := range count {
+			// Ties: earliest lap start, then slug (a total order, so the result never depends on map
+			// iteration and matches the Postgres query's ORDER BY ... first ASC, track_slug ASC).
+			if best == "" || n > count[best] ||
+				(n == count[best] && (first[slug].Before(first[best]) || (first[slug].Equal(first[best]) && slug < best))) {
+				best = slug
+			}
+		}
+		if best != "" {
+			out[id] = best
+		}
+	}
+	return out
 }
 
 // find returns the stored lap (not a copy) or nil. Caller holds m.mu.

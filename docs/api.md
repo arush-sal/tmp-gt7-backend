@@ -30,7 +30,11 @@ unless noted; errors use the shape `{"error": "..."}`. Durations encoded as stri
 
 Returns a JSON array of session summaries in store order. Each summary carries: `id`, `car_id`,
 `car_name`, `status`, `start_time`, `end_time`, `frame_count`, `gap_count`, `current_lap`,
-`total_laps`, `best_lap`.
+`total_laps`, `best_lap`, `track_slug`.
+
+`track_slug` is the session's dominant confirmed track: the most common `track_slug` among its laps
+detected `confident` (ties go to the track of the earliest such lap), or `null` when no lap has a
+confident track. Provisional guesses never count.
 
 `best_lap` is the session's best lap time in the same encoding as the live frame's `best_lap` (a
 protobuf Duration string such as `"115.583s"`), or `null` when the session has no timed lap.

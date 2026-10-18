@@ -284,3 +284,7 @@ func TestEnrichSink_CloseRace(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+func (r *recordingLapStore) DominantTracks() map[string]string { return r.inner.DominantTracks() }
+
+func (b *blockingLapStore) DominantTracks() map[string]string { return b.inner.DominantTracks() }

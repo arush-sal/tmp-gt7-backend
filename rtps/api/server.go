@@ -143,10 +143,17 @@ type sessionSummary struct {
 	// BestLap is GT7's best lap of the session in the same protobuf-Duration JSON encoding as the live
 	// frame's best_lap ("115.583s"), so clients parse both alike; null when no timed lap exists.
 	BestLap *string `json:"best_lap"`
+	// TrackSlug is the session's dominant confirmed track (most common confident lap track; ties: the
+	// earliest such lap); null when no lap has a confident track.
+	TrackSlug *string `json:"track_slug"`
 }
 
-func summaryOf(r *session.Record) sessionSummary {
-	return sessionSummary{
+func summaryOf(r *session.Record, track string) sessionSummary {
+	var slug *string
+	if track != "" {
+		slug = &track
+	}
+	return sessionSummary{TrackSlug: slug,
 		ID: r.ID, CarID: r.CarID, CarName: r.CarName, Status: string(r.Status),
 		StartTime: r.StartTime, EndTime: r.EndTime,
 		FrameCount: r.FrameCount, GapCount: r.GapCount,
@@ -175,9 +182,13 @@ func protoDuration(d time.Duration) *string {
 // handleListSessions: GET /v1/sessions -> the session summaries in store order.
 func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 	recs := s.sessions.List()
+	var tracks map[string]string
+	if s.laps != nil {
+		tracks = s.laps.DominantTracks()
+	}
 	out := make([]sessionSummary, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, summaryOf(r))
+		out = append(out, summaryOf(r, tracks[r.ID]))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

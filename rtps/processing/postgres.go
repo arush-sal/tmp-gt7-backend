@@ -82,6 +82,32 @@ func (s *PostgresLapStore) List() []*Lap {
 	return scanLaps(rows)
 }
 
+// DominantTracks implements LapStore with one grouped query: per session, the confident track with the
+// most laps, ties broken by the earliest lap start, then by slug (deterministic).
+// ponytail: aggregates every confident lap on each /v1/sessions call; fine for a personal history (~100s
+// of laps). If it grows, add a partial index on laps(session_id, track_slug) WHERE confident, or keep a
+// per-session summary.
+func (s *PostgresLapStore) DominantTracks() map[string]string {
+	rows, err := s.pool.Query(context.Background(), `
+SELECT DISTINCT ON (session_id) session_id, track_slug FROM (
+  SELECT session_id, track_slug, count(*) AS n, min(start_time) AS first
+  FROM laps WHERE track_confidence='confident' AND track_slug <> ''
+  GROUP BY session_id, track_slug) g
+ORDER BY session_id, n DESC, first ASC, track_slug ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var id, slug string
+		if rows.Scan(&id, &slug) == nil {
+			out[id] = slug
+		}
+	}
+	return out
+}
+
 // SessionByFingerprint returns the session owning a lap with fingerprint fp (uses the unique index).
 // No row is not-found; any other error is returned so the caller can tell a failed lookup apart.
 func (s *PostgresLapStore) SessionByFingerprint(fp string) (string, bool, error) {

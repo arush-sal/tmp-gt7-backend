@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/arush-sal/garage/backend/rtps/analysis"
 	"github.com/arush-sal/garage/backend/rtps/coach"
 	"github.com/arush-sal/garage/backend/rtps/live"
+	"github.com/arush-sal/garage/backend/rtps/processing"
 	"github.com/arush-sal/garage/backend/rtps/session"
 )
 
@@ -116,5 +118,36 @@ func TestAPI_SessionCoaching_NotFound(t *testing.T) {
 	var e errorResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &e); err != nil || e.Error == "" {
 		t.Errorf("error body = %q err=%v, want non-empty error shape", rr.Body.String(), err)
+	}
+}
+
+// TestAPI_ListSessionsTrackSlug: track_slug is the session's dominant confident track, null without one.
+func TestAPI_ListSessionsTrackSlug(t *testing.T) {
+	store := session.NewMemStore()
+	_ = store.Save(&session.Record{ID: "s1", Status: session.StatusFinished})
+	_ = store.Save(&session.Record{ID: "s2", Status: session.StatusFinished})
+	laps := processing.NewMemLapStore()
+	_ = laps.Save(&processing.Lap{SessionID: "s1", LapNumber: 1, TrackSlug: "suzuka", TrackConfidence: processing.ConfidenceConfident})
+	srv := NewServer(coach.New(fakeAnalyzer{}), store, live.New(), live.NewEnrichmentState(), nil, nil, nil, laps, nil, nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	var got []map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{"s1": `"suzuka"`, "s2": `null`}
+	for _, row := range got {
+		var id string
+		_ = json.Unmarshal(row["id"], &id)
+		if string(row["track_slug"]) != want[id] {
+			t.Errorf("%s track_slug = %s, want %s", id, row["track_slug"], want[id])
+		}
+	}
+	// A server without a lap store (nil) still lists, with null tracks.
+	nolaps, _ := testServer()
+	rr = httptest.NewRecorder()
+	nolaps.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"track_slug":null`) {
+		t.Errorf("nil lap store: %d %s", rr.Code, rr.Body.String())
 	}
 }
