@@ -19,7 +19,7 @@ describe("cardCatalog", () => {
   });
 
   it("default set is throttle, brake, speed, rpm, gear, tyre in order", () => {
-    expect(DEFAULT_CARD_KEYS).toEqual(["throttle","brake","speed","rpm","gear","tyre"]);
+    expect(DEFAULT_CARD_KEYS).toEqual(["throttle","brake","steering","gear","speed","rpm","tyre"]);
   });
 
   it("default keys all resolve to available catalog entries", () => {

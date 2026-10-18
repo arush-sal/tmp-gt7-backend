@@ -4,7 +4,7 @@ import type { LapView } from "../../lib/lapView";
 import type { MedianDTO, ReferenceDTO } from "../../contract/session";
 import { overlayColumns, type Overlay } from "../../lib/lapOverlays";
 import { getCard, type CardDef } from "./cardCatalog";
-import { loadCardConfig, saveCardConfig, defaultCardConfig, type PanelConfig, type CardState } from "../../lib/panelConfig";
+import { loadCardConfig, saveCardConfig, defaultCardConfig, newCardState, TELEMETRY_CARDS_KEY, type PanelConfig, type CardState } from "../../lib/panelConfig";
 import TelemetryGraph, { type HoverReadout } from "./TelemetryGraph";
 import GraphLegend from "./GraphLegend";
 import GraphPicker from "./GraphPicker";
@@ -132,7 +132,7 @@ function TelemetryCard({
  * floats (via the caller's FloatingPanel) over the center track-map canvas.
  */
 export default function TelemetryPanel({
-  store, storageKey = "gt7:telemetry-cards-v2", analysisLap = null, analysisScrubIndex = null,
+  store, storageKey = TELEMETRY_CARDS_KEY, analysisLap = null, analysisScrubIndex = null,
   median = null, reference = null, xRange = null, onXRange,
 }: Props) {
   const [cfg, setCfg] = useState<PanelConfig>(() => loadCardConfig(storageKey, defaultCardConfig()));
@@ -150,13 +150,13 @@ export default function TelemetryPanel({
     saveCardConfig(storageKey, next);
   }, [storageKey]);
 
-  const cardState = (key: string): CardState => cfgRef.current.cards[key] ?? { collapsed: false, hidden: [] };
+  const cardState = (key: string): CardState => cfgRef.current.cards[key] ?? newCardState();
 
   const add = (key: string) => {
     setPicking(false);
     const cur = cfgRef.current;
     if (cur.order.includes(key)) return;
-    commit({ order: [...cur.order, key], cards: { ...cur.cards, [key]: { collapsed: false, hidden: [] } } });
+    commit({ order: [...cur.order, key], cards: { ...cur.cards, [key]: newCardState() } });
   };
   const remove = (key: string) => {
     const cur = cfgRef.current;

@@ -31,6 +31,14 @@ describe("TelemetryPanel", () => {
     expect(screen.getAllByRole("button", { name: /median/i }).length).toBeGreaterThan(0);
   });
 
+  it("starts every default card with the median legend chip off", () => {
+    localStorage.clear();
+    render(<TelemetryPanel store={createHistoryStore()} />);
+    const chips = screen.getAllByRole("button", { name: /median/i });
+    expect(chips.length).toBeGreaterThan(0);
+    for (const c of chips) expect(c).toHaveClass("chip--off");
+  });
+
   it("persists a removed card across remount", () => {
     const KEY = "gt7:test-panel";
     localStorage.clear();
@@ -52,6 +60,7 @@ describe("TelemetryPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /add graph/i }));
     fireEvent.click(screen.getByRole("button", { name: /^Fuel$/i }));
     expect(screen.getByText(/^Fuel$/)).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(KEY)!).cards.fuel.hidden).toEqual(["median"]);
     unmount();
     render(<TelemetryPanel store={store} storageKey={KEY} />);
     expect(screen.getByText(/^Fuel$/)).toBeInTheDocument(); // survived reload

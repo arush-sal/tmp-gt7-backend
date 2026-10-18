@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { loadCardConfig, saveCardConfig, defaultCardConfig } from "./panelConfig";
+import { loadCardConfig, saveCardConfig, defaultCardConfig, newCardState, TELEMETRY_CARDS_KEY } from "./panelConfig";
 
 const KEY = "gt7:test-cards";
 beforeEach(() => localStorage.clear());
@@ -44,7 +44,25 @@ describe("panelConfig", () => {
 
   it("defaultCardConfig orders the default set with empty per-card state", () => {
     const d = defaultCardConfig();
-    expect(d.order).toEqual(["throttle","brake","speed","rpm","gear","tyre"]);
-    expect(d.cards.speed).toEqual({ collapsed: false, hidden: [] });
+    expect(d.order).toEqual(["throttle","brake","steering","gear","speed","rpm","tyre"]);
+    expect(d.cards.speed).toEqual({ collapsed: false, hidden: ["median"] });
+  });
+
+  it("median is hidden by default for every default card and for a newly added card", () => {
+    for (const k of defaultCardConfig().order) expect(defaultCardConfig().cards[k].hidden).toEqual(["median"]);
+    expect(newCardState()).toEqual({ collapsed: false, hidden: ["median"] });
+  });
+
+  it("ignores a config persisted under the previous version key", () => {
+    const old = { order: ["speed"], cards: { speed: { collapsed: true, hidden: [] } } };
+    localStorage.setItem("gt7:telemetry-cards-v2", JSON.stringify(old));
+    expect(TELEMETRY_CARDS_KEY).not.toBe("gt7:telemetry-cards-v2");
+    expect(loadCardConfig(TELEMETRY_CARDS_KEY, defaultCardConfig())).toEqual(defaultCardConfig());
+  });
+
+  it("respects a config saved under the current version key", () => {
+    const cfg = { order: ["speed"], cards: { speed: { collapsed: true, hidden: [] } } };
+    saveCardConfig(TELEMETRY_CARDS_KEY, cfg);
+    expect(loadCardConfig(TELEMETRY_CARDS_KEY, defaultCardConfig())).toEqual(cfg);
   });
 });

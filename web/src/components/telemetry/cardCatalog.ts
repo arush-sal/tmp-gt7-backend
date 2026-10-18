@@ -25,7 +25,7 @@ export const CARD_CATALOG: CardDef[] = [
   { key: "steering", title: "Steering", unit: "°", channels: ["steering"], kind: "single", availability: "available" },
 ];
 
-export const DEFAULT_CARD_KEYS = ["throttle", "brake", "speed", "rpm", "gear", "tyre"];
+export const DEFAULT_CARD_KEYS = ["throttle", "brake", "steering", "gear", "speed", "rpm", "tyre"];
 
 const BY_KEY = new Map(CARD_CATALOG.map(c => [c.key, c]));
 export function getCard(key: string): CardDef | undefined { return BY_KEY.get(key); }

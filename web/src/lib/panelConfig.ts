@@ -17,9 +17,20 @@ const isPanelConfig = (v: unknown): v is PanelConfig => {
   return Object.values(c.cards).every(isCardState);
 };
 
+/**
+ * localStorage key for the telemetry panel layout. Bumped v2 -> v3 on 2026-10-18 so every
+ * browser drops its saved layout ONCE and picks up the new defaults (throttle, brake, steering,
+ * gear first; median overlay off). Old layouts are deliberately not migrated. Bump again only
+ * when a default change must override saved layouts.
+ */
+export const TELEMETRY_CARDS_KEY = "gt7:telemetry-cards-v3";
+
+/** Fresh per-card state: expanded, median overlay off (reference/current stay visible). */
+export const newCardState = (): CardState => ({ collapsed: false, hidden: ["median"] });
+
 export function defaultCardConfig(): PanelConfig {
   const cards: Record<string, CardState> = {};
-  for (const k of DEFAULT_CARD_KEYS) cards[k] = { collapsed: false, hidden: [] };
+  for (const k of DEFAULT_CARD_KEYS) cards[k] = newCardState();
   return { order: [...DEFAULT_CARD_KEYS], cards };
 }
 
